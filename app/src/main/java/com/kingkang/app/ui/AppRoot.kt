@@ -8,6 +8,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -34,6 +36,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -59,6 +63,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
@@ -69,6 +74,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kingkang.app.MainViewModel
 import com.kingkang.app.agent.AgentConnection
@@ -78,6 +85,7 @@ import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Border
+import com.kingkang.app.ui.theme.OnAccent
 import com.kingkang.app.ui.theme.Red
 import com.kingkang.app.ui.theme.Success
 import com.kingkang.app.ui.theme.Accent
@@ -104,6 +112,11 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
     var screenName by rememberSaveable { mutableStateOf(AppScreen.Home.name) }
     val screen = AppScreen.valueOf(screenName)
     var showAbout by rememberSaveable { mutableStateOf(false) }
+    // First launch only: the setup guide explains the three prerequisites, including the
+    // API Key that dsh cannot call a model without. Dismissing it records it as seen.
+    var showGuide by rememberSaveable { mutableStateOf(vm.shouldShowOnboarding()) }
+    // "credentials" jumps Settings to the API Key card instead of the top of the page.
+    var settingsFocus by rememberSaveable { mutableStateOf<String?>(null) }
     // The session sheet lives at the window root, not inside the drawer: a sheet composed
     // in the drawer inherits its 300 dp width and stops looking like a system sheet.
     var pendingSession by remember { mutableStateOf<AgentSession?>(null) }
@@ -148,6 +161,7 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                             scope.launch { drawerState.close() }
                         },
                         onOpenSettings = {
+                            settingsFocus = null
                             screenName = AppScreen.Settings.name
                             scope.launch { drawerState.close() }
                         },
@@ -163,14 +177,24 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                     vm = vm,
                     onOpenDrawer = { scope.launch { drawerState.open() } },
                     onOpenTerminal = { screenName = AppScreen.Terminal.name },
-                    onOpenSettings = { screenName = AppScreen.Settings.name }
+                    onOpenSettings = {
+                        settingsFocus = null
+                        screenName = AppScreen.Settings.name
+                    },
+                    onConfigureKey = {
+                        settingsFocus = "credentials"
+                        screenName = AppScreen.Settings.name
+                    }
                 )
             }
 
             AppScreen.Terminal -> TerminalScreen(
                 vm = vm,
                 onBack = { screenName = AppScreen.Home.name },
-                onOpenSettings = { screenName = AppScreen.Settings.name }
+                onOpenSettings = {
+                    settingsFocus = null
+                    screenName = AppScreen.Settings.name
+                }
             )
 
             AppScreen.Harness -> HarnessScreen(
@@ -191,7 +215,11 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
 
             AppScreen.Settings -> SettingsScreen(
                 vm = vm,
-                onBack = { screenName = AppScreen.Home.name },
+                focusSection = settingsFocus,
+                onBack = {
+                    settingsFocus = null
+                    screenName = AppScreen.Home.name
+                },
                 onOpenTerminal = { screenName = AppScreen.Terminal.name },
                 onOpenHarness = { screenName = AppScreen.Harness.name },
                 onAbout = { showAbout = true }
@@ -240,6 +268,21 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
 
     if (showAbout) {
         AboutDialog(onDismiss = { showAbout = false })
+    }
+
+    if (showGuide) {
+        OnboardingDialog(
+            onOpenSettings = {
+                showGuide = false
+                vm.completeOnboarding()
+                settingsFocus = null
+                screenName = AppScreen.Settings.name
+            },
+            onDismiss = {
+                showGuide = false
+                vm.completeOnboarding()
+            }
+        )
     }
 }
 
@@ -357,7 +400,11 @@ private fun KingKangDrawer(
             }
             val longPressSession = { session: AgentSession -> onSessionLongPress(session) }
 
-            LazyColumn(Modifier.weight(1f)) {
+            Box(Modifier.weight(1f)) {
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 22.dp)
+                ) {
                 if (trimmedQuery.isNotEmpty()) {
                     item {
                         DrawerSectionLabel(
@@ -494,6 +541,16 @@ private fun KingKangDrawer(
                     }
 
                 }
+                }
+                // The rail fades into the fixed section below instead of ending on a hard
+                // edge, so the list reads as continuing under it.
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(26.dp)
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Surface)))
+                )
             }
 
             AgentStatusRow(agent.connection)
@@ -940,6 +997,166 @@ private fun DrawerAction(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+        }
+    }
+}
+
+/**
+ * First-run guide. It states the three setup steps in the order the app actually needs
+ * them, and names the API Key step explicitly: without it dsh connects but cannot answer.
+ */
+@Composable
+private fun OnboardingDialog(
+    onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            Modifier
+                .padding(horizontal = 24.dp)
+                .widthIn(max = 380.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(Surface)
+                .verticalScroll(rememberScrollState())
+                .padding(22.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TerminalMark(size = 32.dp)
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(
+                        "KINGKANG",
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.6.sp
+                    )
+                    Text(
+                        "本地安全测试工作台",
+                        color = TextMuted,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "开始之前",
+                color = TextPrimary,
+                fontSize = 21.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "对话由安装在 Kali 里的 DeepSeek Harness 提供。按顺序完成三步，就能开始。",
+                color = TextSecondary,
+                fontSize = 12.5.sp,
+                lineHeight = 19.sp
+            )
+
+            Spacer(Modifier.height(16.dp))
+            OnboardingStep(
+                index = 1,
+                title = "安装 Kali 环境",
+                detail = "设置 → Kali 环境，下载 NetHunter 根文件系统。"
+            )
+            OnboardingStep(
+                index = 2,
+                title = "安装 Agent 核心",
+                detail = "设置 → Agent 核心，安装 DeepSeek Harness（dsh）。"
+            )
+            OnboardingStep(
+                index = 3,
+                title = "配置 DeepSeek API Key",
+                detail = "设置 → Agent 连接 → 模型与凭据，填写 API Key。"
+            )
+
+            Spacer(Modifier.height(14.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(SurfaceVariant.copy(alpha = 0.6f))
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    "没有 API Key，Agent 能连上但无法调用模型，消息会一直失败。" +
+                        "密钥只写入 Kali 内的 dsh，不会回读。",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            }
+
+            Spacer(Modifier.height(18.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onOpenSettings,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Accent,
+                        contentColor = OnAccent
+                    )
+                ) {
+                    Text("打开设置", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = onDismiss) {
+                    Text("稍后", color = TextMuted, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingStep(index: Int, title: String, detail: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            Modifier
+                .padding(top = 1.dp)
+                .size(21.dp)
+                .clip(RoundedCornerShape(50))
+                .background(SurfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                "$index",
+                color = TextSecondary,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                color = TextPrimary,
+                fontSize = 12.5.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(
+                detail,
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp
+            )
         }
     }
 }

@@ -63,13 +63,28 @@ class ProotEngine : RuntimeEngine {
         sharedDir: File,
         cacheDir: File,
         scriptPath: String?
+    ): CommandSpec = buildCommand(rootfs, paths, resolvConf, sharedDir, cacheDir, scriptPath, emptyMap())
+
+    /**
+     * Same as [buildCommand], with guest environment variables added to the clean `env -i`
+     * the session starts from. Maintenance scripts use this to receive app settings such as
+     * the npm registry without writing a config file into the rootfs.
+     */
+    fun buildCommand(
+        rootfs: File,
+        paths: RuntimePaths,
+        resolvConf: File,
+        sharedDir: File,
+        cacheDir: File,
+        scriptPath: String?,
+        extraEnv: Map<String, String>
     ): CommandSpec {
         val tail = if (scriptPath == null) {
             listOf("/bin/bash", "-l")
         } else {
             listOf("/bin/bash", scriptPath)
         }
-        return build(rootfs, paths, resolvConf, sharedDir, cacheDir, tail, emptyMap())
+        return build(rootfs, paths, resolvConf, sharedDir, cacheDir, tail, extraEnv)
     }
 
     override fun buildExec(

@@ -49,6 +49,8 @@ object AgentEngine {
     private const val AGENT_PRESET_SETTINGS_NS = "agent-preset-registry"
     /** dsh ships `ptc` as its config default; the app's product default is 标准模式. */
     private const val STANDARD_PRESET_ID = "standard"
+    /** npm mirror used when the user has not picked a source. */
+    private const val DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com/"
 
     /**
      * Credential references dsh exposes for the DeepSeek provider. The name is the env var
@@ -619,6 +621,7 @@ object AgentEngine {
             describePermissions()
             describeAgentPresets()
             loadPlugins()
+            syncNpmRegistry()
             refreshPluginRegistry()
             bridge?.let { writeThemePreference(it, themePreference) }
         }
@@ -3173,15 +3176,36 @@ object AgentEngine {
                 val result = client.callObject("plugin.registry.get", JSONObject(), 20_000)
                 _state.update { it.copy(pluginRegistry = result.optText("registry") ?: "") }
             } catch (t: Throwable) {
-                appendLog("读取插件源失败：${readableError(t)}")
+                appendLog("读取 NPM 源失败：${readableError(t)}")
             }
         }
     }
 
     /**
+     * Applies the app's stored npm source to the dsh profile after every connect. The app
+     * owns this setting because the same value installs dsh before any bridge exists; a
+     * blank stored value means the Aliyun default.
+     */
+    private suspend fun syncNpmRegistry() {
+        val client = bridge ?: return
+        val registry = SettingsStore(appContext).npmRegistry.trim()
+            .ifBlank { DEFAULT_NPM_REGISTRY }
+        try {
+            val result = client.callObject(
+                "plugin.registry.set",
+                JSONObject().put("registry", registry),
+                20_000
+            )
+            _state.update { it.copy(pluginRegistry = result.optText("registry") ?: registry) }
+        } catch (t: Throwable) {
+            appendLog("同步 npm 源失败：${readableError(t)}")
+        }
+    }
+
+    /**
      * Sets the primary npm registry for plugin installs. dsh's manager runs pnpm in the
-     * profile directory, so this is one `registry=` line in that profile's `.npmrc`; an
-     * empty value restores dsh's own plan (npm official, then npmmirror).
+     * profile directory, so this is one `registry=` line in that profile's `.npmrc`. An
+     * empty value removes the line; the next bridge start restores the Aliyun default.
      */
     fun setPluginRegistry(registry: String) {
         val value = registry.trim()
@@ -3191,7 +3215,7 @@ object AgentEngine {
             return
         }
         if (value.isNotEmpty() && (!value.startsWith("http://") && !value.startsWith("https://"))) {
-            notifyState("插件源必须是 http(s) 地址")
+            notifyState("NPM 源必须是 http(s) 地址")
             return
         }
         scope.launch {
@@ -3204,10 +3228,11 @@ object AgentEngine {
                 val applied = result.optText("registry") ?: ""
                 _state.update { it.copy(pluginRegistry = applied) }
                 appendLog(
-                    if (applied.isBlank()) "插件源已恢复为 dsh 默认" else "插件源已设为 $applied"
+                    if (applied.isBlank()) "NPM 源已清除，下次连接恢复默认阿里源"
+                    else "NPM 源已设为 $applied"
                 )
             } catch (t: Throwable) {
-                addNotice("设置插件源失败：${readableError(t)}", isError = true)
+                addNotice("设置 NPM 源失败：${readableError(t)}", isError = true)
             }
         }
     }

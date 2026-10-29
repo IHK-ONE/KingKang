@@ -6,6 +6,11 @@ set -u
 export npm_config_update_notifier=false
 export npm_config_cache=/opt/kingkang/npm-cache
 export PATH=/opt/kingkang/node/bin:/opt/kingkang/dsh/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# The app passes its configured npm source (Aliyun by default). This also covers the
+# pnpm install below, and plugin installs later read the same value from the profile.
+if [ -n "${KINGKANG_NPM_REGISTRY:-}" ]; then
+  export npm_config_registry="$KINGKANG_NPM_REGISTRY"
+fi
 
 LOG=/tmp/kingkang-dsh.log
 : > "$LOG"

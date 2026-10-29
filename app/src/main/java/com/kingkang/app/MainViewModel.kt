@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.kingkang.app.agent.AgentAnswer
 import com.kingkang.app.agent.AgentApproval
+import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentDraftFile
 import com.kingkang.app.agent.AgentDraftImage
 import com.kingkang.app.agent.AgentEngine
@@ -113,6 +114,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Appearance choice: "system" | "light" | "dark". */
     private val _themeMode = MutableStateFlow(settingsStore.themeMode)
     val themeMode: StateFlow<String> = _themeMode.asStateFlow()
+
+    /** npm registry for dsh installs and plugin installs; blank means the Aliyun default. */
+    private val _npmRegistry = MutableStateFlow(settingsStore.npmRegistry)
+    val npmRegistry: StateFlow<String> = _npmRegistry.asStateFlow()
 
     private val _rootProbe = MutableStateFlow<RootProbe>(RootProbe.Unknown)
     val rootProbe: StateFlow<RootProbe> = _rootProbe.asStateFlow()
@@ -578,7 +583,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 }
                             }
                         },
-                        resetCancel = false
+                        resetCancel = false,
+                        extraEnv = harnessNpmEnv()
                     )
                 }
                 applyHarnessOutput(output)
@@ -629,7 +635,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var updateTo: String? = null
             try {
                 val output = withContext(Dispatchers.IO) {
-                    harnessManager.runAsset(HARNESS_CHECK_SCRIPT, HARNESS_CHECK_TIMEOUT)
+                    harnessManager.runAsset(
+                        HARNESS_CHECK_SCRIPT,
+                        HARNESS_CHECK_TIMEOUT,
+                        extraEnv = harnessNpmEnv()
+                    )
                 }
                 applyHarnessOutput(output)
                 val state = _harness.value
@@ -803,6 +813,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** The first-run guide is offered once; any dismissal records it as seen. */
+    fun shouldShowOnboarding(): Boolean = !settingsStore.hasCompletedOnboarding
+
+    fun completeOnboarding() {
+        settingsStore.hasCompletedOnboarding = true
+    }
+
     /** Switches the app palette and mirrors the choice into dsh's ui-theme setting. */
     fun setThemeMode(mode: String) {
         val value = when (mode) {
@@ -910,10 +927,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshPlugins() = AgentEngine.refreshPlugins()
 
-    fun refreshPluginRegistry() = AgentEngine.refreshPluginRegistry()
-
-    /** "" restores dsh's own registry plan; any other value becomes the profile's npm source. */
-    fun setPluginRegistry(registry: String) = AgentEngine.setPluginRegistry(registry)
+    /**
+     * Changes the npm source used both by Kali-side dsh installs/updates and by plugin
+     * installs. Stored app-side first so the value is available before dsh exists; the
+     * bridge applies it to the dsh profile whenever the agent connects.
+     */
+    fun setNpmRegistry(registry: String) {
+        val value = registry.trim()
+        if (value.isEmpty() ||
+            (!value.startsWith("http://") && !value.startsWith("https://"))
+        ) {
+            emitUiMessage("NPM 源必须是 http(s) 地址")
+            return
+        }
+        if (value == _npmRegistry.value) return
+        settingsStore.npmRegistry = value
+        _npmRegistry.value = value
+        if (AgentEngine.state.value.connection == AgentConnection.Ready) {
+            AgentEngine.setPluginRegistry(value)
+        }
+    }
 
     /**
      * Plugin bundles are enabled per dsh profile, not per chat, so a switch here changes
@@ -1065,6 +1098,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiMessages.tryEmit(message)
     }
 
+    /** The npm source handed to Kali maintenance scripts; blank means the app default. */
+    private fun harnessNpmEnv(): Map<String, String> =
+        mapOf("KINGKANG_NPM_REGISTRY" to _npmRegistry.value.ifBlank { NPM_REGISTRY_DEFAULT })
+
     override fun onCleared() {
         installJob?.cancel()
         startJob?.cancel()
@@ -1084,5 +1121,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val HARNESS_CHECK_TIMEOUT = 600_000L
         const val HARNESS_INSTALL_TIMEOUT = 90 * 60_000L
         const val HARNESS_UNINSTALL_TIMEOUT = 5 * 60_000L
+        const val NPM_REGISTRY_DEFAULT = "https://registry.npmmirror.com/"
     }
 }

@@ -167,11 +167,16 @@ fun HomeScreen(
     vm: MainViewModel,
     onOpenDrawer: () -> Unit,
     onOpenTerminal: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onConfigureKey: () -> Unit
 ) {
     val state by vm.agentState.collectAsState()
     val environment by vm.environment.collectAsState()
     val rootMode by vm.rootMode.collectAsState()
+    // dsh reports the reference only after its credential store has been read; before
+    // that the map is empty and prompting would be premature.
+    val apiKeyMissing = state.connection == AgentConnection.Ready &&
+        state.credentials["DEEPSEEK_API_KEY"]?.configured == false
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -318,9 +323,11 @@ fun HomeScreen(
                                 state = state,
                                 environment = environment,
                                 rootMode = rootMode,
+                                apiKeyMissing = apiKeyMissing,
                                 listState = listState,
                                 onOpenTerminal = onOpenTerminal,
                                 onOpenSettings = onOpenSettings,
+                                onConfigureKey = onConfigureKey,
                                 modifier = Modifier.fillMaxSize()
                             )
                             HomeTab.Trajectory -> TrajectoryPane(
@@ -335,9 +342,11 @@ fun HomeScreen(
                         state = state,
                         environment = environment,
                         rootMode = rootMode,
+                        apiKeyMissing = apiKeyMissing,
                         listState = listState,
                         onOpenTerminal = onOpenTerminal,
                         onOpenSettings = onOpenSettings,
+                        onConfigureKey = onConfigureKey,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -498,9 +507,11 @@ private fun ConversationBody(
     state: AgentState,
     environment: EnvironmentUi,
     rootMode: Boolean,
+    apiKeyMissing: Boolean,
     listState: LazyListState,
     onOpenTerminal: () -> Unit,
     onOpenSettings: () -> Unit,
+    onConfigureKey: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -510,8 +521,10 @@ private fun ConversationBody(
                 environment = environment,
                 rootMode = rootMode,
                 modelRoutable = state.models?.routable ?: true,
+                apiKeyMissing = apiKeyMissing,
                 onOpenTerminal = onOpenTerminal,
                 onOpenSettings = onOpenSettings,
+                onConfigureKey = onConfigureKey,
                 onSend = { text -> vm.sendChat(text) }
             )
         } else {
@@ -1259,8 +1272,10 @@ private fun EmptyState(
     environment: EnvironmentUi,
     rootMode: Boolean,
     modelRoutable: Boolean,
+    apiKeyMissing: Boolean,
     onOpenTerminal: () -> Unit,
     onOpenSettings: () -> Unit,
+    onConfigureKey: () -> Unit,
     onSend: (String) -> Unit
 ) {
     Column(
@@ -1284,7 +1299,10 @@ private fun EmptyState(
             fontSize = 13.sp,
             lineHeight = 20.sp
         )
-        if (!modelRoutable) {
+        if (apiKeyMissing) {
+            Spacer(Modifier.height(16.dp))
+            ApiKeyPrompt(onConfigureKey)
+        } else if (!modelRoutable) {
             Spacer(Modifier.height(10.dp))
             Text(
                 "当前模型 provider 不可用，请在设置中检查配置。",
@@ -1293,7 +1311,7 @@ private fun EmptyState(
             )
         }
 
-        Spacer(Modifier.height(26.dp))
+        Spacer(Modifier.height(if (apiKeyMissing) 16.dp else 26.dp))
         TerminalEntry(
             environment = environment,
             rootMode = rootMode,
@@ -1307,6 +1325,57 @@ private fun EmptyState(
         SuggestionRow("列出 /root 下的文件并说明用途") { onSend(it) }
         Spacer(Modifier.height(8.dp))
         SuggestionRow("帮我在 Kali 里验证一个本地实验") { onSend(it) }
+    }
+}
+
+/** The one setup step that has no terminal shortcut: dsh cannot call a model without it. */
+@Composable
+private fun ApiKeyPrompt(onClick: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(Surface)
+            .border(1.dp, Border.copy(alpha = 0.9f), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(Amber)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "还差一步：配置 DeepSeek API Key",
+                    color = TextPrimary,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Agent 需要 API Key 才能调用模型。密钥只写入 Kali 内的 dsh，" +
+                    "可在「设置 → Agent 连接」中填写。",
+                color = TextMuted,
+                fontSize = 11.5.sp,
+                lineHeight = 17.sp
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text("去配置", color = Accent, fontSize = 11.5.sp)
+        Spacer(Modifier.width(4.dp))
+        Icon(
+            Icons.Filled.ArrowForward,
+            contentDescription = null,
+            tint = TextMuted,
+            modifier = Modifier.size(15.dp)
+        )
     }
 }
 
@@ -2022,12 +2091,12 @@ private fun AssistantMessageRow(
         message.images.forEach { if (imageData(it) == null) onLoadImage(it) }
     }
     var preview by remember { mutableStateOf<String?>(null) }
+    // No avatar on the left: the reply starts at the same edge as the rest of the
+    // transcript, which keeps long answers quiet and gives their text the full width.
     Row(Modifier.fillMaxWidth()) {
-        TerminalMark(size = 26.dp, filled = false)
-        Spacer(Modifier.width(11.dp))
         Column(
             Modifier
-                .weight(1f)
+                .fillMaxWidth()
                 .combinedClickable(onClick = {}, onLongClick = { onCopy(message.text) })
         ) {
             if (message.reasoning.isNotBlank()) {
@@ -2501,9 +2570,7 @@ private fun NoticeRow(item: NoticeItem) {
 @Composable
 private fun TypingRow() {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 37.dp),
+        Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
         TypingDots()

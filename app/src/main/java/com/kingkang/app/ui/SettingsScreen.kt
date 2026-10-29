@@ -1,6 +1,7 @@
 package com.kingkang.app.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,6 +21,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,6 +70,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import com.kingkang.app.HarnessUi
 import com.kingkang.app.MainViewModel
 import com.kingkang.app.RootProbe
@@ -93,13 +97,15 @@ import com.kingkang.app.ui.theme.TextMuted
 import com.kingkang.app.ui.theme.TextPrimary
 import com.kingkang.app.ui.theme.TextSecondary
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SettingsScreen(
     vm: MainViewModel,
     onBack: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenHarness: () -> Unit,
-    onAbout: () -> Unit
+    onAbout: () -> Unit,
+    focusSection: String? = null
 ) {
     val environment by vm.environment.collectAsState()
     val rootMode by vm.rootMode.collectAsState()
@@ -107,8 +113,11 @@ fun SettingsScreen(
     val harness by vm.harness.collectAsState()
     val agent by vm.agentState.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
+    val npmRegistry by vm.npmRegistry.collectAsState()
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmUninstallHarness by remember { mutableStateOf(false) }
+    var showNpmSource by remember { mutableStateOf(false) }
+    val credentialsAnchor = remember { BringIntoViewRequester() }
 
     LaunchedEffect(Unit) {
         if (rootMode) vm.checkRoot()
@@ -116,6 +125,15 @@ fun SettingsScreen(
         vm.refreshAgentCredentials()
         vm.refreshAgentPermissions()
         vm.refreshAgentPresets()
+    }
+
+    // Entering from the "configure API Key" prompt lands on the credentials card instead
+    // of the top of a long page. A short wait lets the cards above finish first layout.
+    LaunchedEffect(focusSection) {
+        if (focusSection == "credentials") {
+            delay(220)
+            runCatching { credentialsAnchor.bringIntoView() }
+        }
     }
 
     Column(
@@ -178,6 +196,15 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
             SectionLabel("Agent 核心")
             Spacer(Modifier.height(8.dp))
+            // The npm source leads the section because dsh itself is installed from it;
+            // the same choice is later reused for plugin installs.
+            NpmSourceCard(
+                registry = npmRegistry,
+                onSelect = vm::setNpmRegistry,
+                onCustom = { showNpmSource = true }
+            )
+
+            Spacer(Modifier.height(10.dp))
             HarnessCard(
                 harness = harness,
                 liveVersion = agent.dshVersion,
@@ -199,12 +226,14 @@ fun SettingsScreen(
             )
 
             Spacer(Modifier.height(10.dp))
-            AgentCredentialsCard(
-                agent = agent,
-                onSave = vm::setAgentCredential,
-                onRemove = vm::removeAgentCredential,
-                onRefresh = vm::refreshAgentCredentials
-            )
+            Box(Modifier.bringIntoViewRequester(credentialsAnchor)) {
+                AgentCredentialsCard(
+                    agent = agent,
+                    onSave = vm::setAgentCredential,
+                    onRemove = vm::removeAgentCredential,
+                    onRefresh = vm::refreshAgentCredentials
+                )
+            }
 
             Spacer(Modifier.height(10.dp))
             AgentPermissionCard(
@@ -340,6 +369,17 @@ fun SettingsScreen(
             onConfirm = {
                 confirmDelete = false
                 vm.removeRootfs()
+            }
+        )
+    }
+
+    if (showNpmSource) {
+        NpmSourceDialog(
+            initial = npmRegistry,
+            onDismiss = { showNpmSource = false },
+            onSave = { value ->
+                showNpmSource = false
+                vm.setNpmRegistry(value)
             }
         )
     }
@@ -998,7 +1038,7 @@ private fun HarnessCard(
                     if (!kaliInstalled) {
                         "先安装 Kali 环境，再把 dsh 装进 Kali"
                     } else {
-                        "Kali 内的 Agent 核心 · 官方 npm 源"
+                        "Kali 内的 Agent 核心 · 使用所选 NPM 源"
                     },
                     color = TextMuted,
                     fontSize = 10.sp,
@@ -1172,8 +1212,9 @@ private fun HarnessCard(
                 }
                 Spacer(Modifier.height(7.dp))
                 Text(
-                    "会安装 Node.js 24 与官方 @deepseek-ai/dsh（约 1.4 GB，另用约 300 MB 依赖缓存），" +
-                        "首次安装视网络需要 20–40 分钟；Node.js 来自 nodejs.org 并校验 SHA-256。",
+                    "会安装 Node.js 24 与 @deepseek-ai/dsh（约 1.4 GB，另用约 300 MB 依赖缓存），" +
+                        "npm 包来自上方所选源；首次安装视网络需要 20–40 分钟，" +
+                        "Node.js 来自 nodejs.org 并校验 SHA-256。",
                     color = TextMuted,
                     fontSize = 9.5.sp,
                     lineHeight = 14.sp
@@ -1220,7 +1261,7 @@ private fun HarnessCard(
                 }
                 Spacer(Modifier.height(7.dp))
                 Text(
-                    "检查更新会比对 npm 上的最新版本，发现新版本时自动更新并重启本地桥接。",
+                    "检查更新会比对所选 NPM 源上的最新版本，发现新版本时自动更新并重启本地桥接。",
                     color = TextMuted,
                     fontSize = 9.5.sp,
                     lineHeight = 14.sp
@@ -1228,6 +1269,219 @@ private fun HarnessCard(
             }
         }
     }
+}
+
+/** Alibaba's public npm mirror; the app's default for dsh installs and plugin installs. */
+private const val NPM_SOURCE_ALIYUN = "https://registry.npmmirror.com/"
+private const val NPM_SOURCE_OFFICIAL = "https://registry.npmjs.org/"
+
+/** Aliyun leads the list because it is what a new profile gets. */
+private val NPM_SOURCE_OPTIONS = listOf(
+    Triple(NPM_SOURCE_ALIYUN, "阿里源", "registry.npmmirror.com · 默认"),
+    Triple(NPM_SOURCE_OFFICIAL, "npm 官方源", "registry.npmjs.org")
+)
+
+private fun npmSourceKey(value: String): String = value.trim().trimEnd('/')
+
+/**
+ * npm source shared by dsh installs/updates and plugin installs. It is stored app-side so
+ * it can be chosen before dsh exists; the bridge mirrors it into the profile's `.npmrc`.
+ */
+@Composable
+private fun NpmSourceCard(
+    registry: String,
+    onSelect: (String) -> Unit,
+    onCustom: () -> Unit
+) {
+    val key = npmSourceKey(registry)
+    // A blank value is the app's default; show Aliyun as selected without writing a line.
+    val effectiveKey = key.ifEmpty { npmSourceKey(NPM_SOURCE_ALIYUN) }
+    val custom = key.isNotEmpty() &&
+        NPM_SOURCE_OPTIONS.none { npmSourceKey(it.first) == key }
+    val label = when {
+        key.isEmpty() -> "阿里源（默认）"
+        key == npmSourceKey(NPM_SOURCE_ALIYUN) -> "阿里源"
+        key == npmSourceKey(NPM_SOURCE_OFFICIAL) -> "npm 官方源"
+        else -> "自定义"
+    }
+
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "NPM 源",
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                label,
+                color = TextMuted,
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "安装与更新 dsh、检查与安装插件时使用的 npm 源。默认阿里源，下次安装或更新生效。",
+            color = TextMuted,
+            fontSize = 9.5.sp,
+            lineHeight = 14.sp
+        )
+
+        Spacer(Modifier.height(8.dp))
+        HorizontalDivider(color = Border.copy(alpha = 0.7f))
+        NPM_SOURCE_OPTIONS.forEach { (value, title, detail) ->
+            NpmSourceRow(
+                title = title,
+                detail = detail,
+                selected = npmSourceKey(value) == effectiveKey,
+                // Picking the source already in use would only write the same file again.
+                tappable = npmSourceKey(value) != effectiveKey,
+                onClick = { onSelect(value) }
+            )
+        }
+        NpmSourceRow(
+            title = "自定义",
+            detail = if (custom) registry else "填写私有或自建 npm 源地址",
+            selected = custom,
+            // The custom row opens its editor, so it stays tappable even when selected.
+            tappable = true,
+            onClick = onCustom
+        )
+    }
+}
+
+@Composable
+private fun NpmSourceRow(
+    title: String,
+    detail: String,
+    selected: Boolean,
+    tappable: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(enabled = tappable, onClick = onClick)
+            .background(if (selected) AccentDim.copy(alpha = 0.6f) else Color.Transparent)
+            .padding(horizontal = 9.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(if (selected) Accent else Border)
+        )
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                color = TextPrimary,
+                fontSize = 12.5.sp
+            )
+            Text(
+                detail,
+                color = TextMuted,
+                fontSize = 9.5.sp,
+                lineHeight = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun NpmSourceDialog(
+    initial: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    val known = NPM_SOURCE_OPTIONS.any { npmSourceKey(it.first) == npmSourceKey(initial) }
+    var input by remember { mutableStateOf(if (known) "" else initial) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Surface,
+        titleContentColor = TextPrimary,
+        textContentColor = TextSecondary,
+        shape = RoundedCornerShape(20.dp),
+        title = { Text("自定义 NPM 源", style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Column {
+                Text(
+                    "填写 http(s) 地址，例如公司内网的 Verdaccio。",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(SurfaceVariant)
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    BasicTextField(
+                        value = input,
+                        onValueChange = {
+                            input = it.take(200)
+                            error = null
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = MaterialTheme.typography.bodySmall.copy(
+                            color = TextPrimary,
+                            fontSize = 12.sp
+                        ),
+                        cursorBrush = SolidColor(Accent),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            imeAction = ImeAction.Done
+                        ),
+                        decorationBox = { inner ->
+                            if (input.isEmpty()) {
+                                Text(
+                                    "https://npm.example.com/",
+                                    color = TextMuted,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            inner()
+                        }
+                    )
+                }
+                error?.let {
+                    Spacer(Modifier.height(10.dp))
+                    Text(it, color = ErrorText, fontSize = 10.5.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val value = input.trim()
+                    if (!value.startsWith("http://") && !value.startsWith("https://")) {
+                        error = "地址需要以 http:// 或 https:// 开头"
+                    } else {
+                        onSave(value)
+                    }
+                }
+            ) {
+                Text("保存", color = Accent)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextSecondary)
+            }
+        }
+    )
 }
 
 @Composable

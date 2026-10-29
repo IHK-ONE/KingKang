@@ -187,7 +187,8 @@ class HarnessManager(
         timeoutMillis: Long,
         onLine: (String) -> Unit = {},
         resetCancel: Boolean = true,
-        ensureShim: Boolean = true
+        ensureShim: Boolean = true,
+        extraEnv: Map<String, String> = emptyMap()
     ): String {
         if (resetCancel) cancelRequested = false
         if (cancelRequested) throw IOException("已取消")
@@ -213,7 +214,8 @@ class HarnessManager(
             resolvConf = resolvConf,
             sharedDir = rootfsManager.sharedDir,
             cacheDir = context.cacheDir,
-            scriptPath = guestScript
+            scriptPath = guestScript,
+            extraEnv = extraEnv
         )
 
         // ProcessBuilder uses argv[0] as the program path. ProotEngine's argv[0] is the

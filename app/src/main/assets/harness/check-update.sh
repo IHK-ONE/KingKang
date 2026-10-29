@@ -1,10 +1,14 @@
 #!/bin/sh
-# Compares the installed dsh with the latest version published on the official npm registry.
+# Compares the installed dsh with the latest version published on the configured npm source.
 export PATH=/opt/kingkang/node/bin:/opt/kingkang/dsh/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export npm_config_update_notifier=false
 # Keep npm's cache out of /root/.npm: overwriting an existing entry there can fail
 # (EEXIST/ENOSYS) under PRoot's link2symlink emulation.
 export npm_config_cache=/opt/kingkang/npm-cache
+# Same source the app uses for installs; blank means npm's own default.
+if [ -n "${KINGKANG_NPM_REGISTRY:-}" ]; then
+  export npm_config_registry="$KINGKANG_NPM_REGISTRY"
+fi
 mkdir -p "$npm_config_cache" 2>/dev/null
 
 if ! command -v npm >/dev/null 2>&1; then

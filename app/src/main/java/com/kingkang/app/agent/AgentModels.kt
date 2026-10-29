@@ -459,7 +459,9 @@ data class AgentState(
     val pluginLoaded: Boolean = false,
     /**
      * Primary npm registry the dsh plugin manager asks first, as written into the profile's
-     * `.npmrc`. Blank means dsh's own default (npm official, falling back to npmmirror).
+     * `.npmrc`. Blank means the profile has no line yet; the bridge writes Aliyun's mirror
+     * on startup, and the app pushes its stored choice (Alibaba by default) on every connect.
+     * dsh installs use the same stored choice, so this is only the profile-side echo.
      */
     val pluginRegistry: String = "",
     val activeSessionId: String? = null,

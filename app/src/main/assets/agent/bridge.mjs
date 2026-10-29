@@ -20,13 +20,15 @@ import { randomUUID } from "node:crypto";
 import process from "node:process";
 
 const PROTOCOL = 1;
-const BRIDGE_VERSION = "2.2.0";
+const BRIDGE_VERSION = "2.3.0";
 const NODE_BIN = process.env.KK_NODE_BIN || "/opt/kingkang/node/bin/node";
 const DSH_BIN = process.env.KK_DSH_BIN || "/opt/kingkang/dsh/bin/dsh";
 const WORKDIR = process.env.KK_WORKDIR || "/root";
 /** dsh profile the bridge starts; its directory is what pnpm reads `.npmrc` from. */
 const PROFILE_NAME = "web";
 const PROFILE_DIR = `${WORKDIR}/.dsh/profiles/${PROFILE_NAME}`;
+/** Alibaba's npm mirror; written into a profile that has no registry line of its own. */
+const DEFAULT_PLUGIN_REGISTRY = "https://registry.npmmirror.com/";
 const PATH = [
   "/opt/kingkang/node/bin",
   "/opt/kingkang/dsh/bin",
@@ -2429,10 +2431,22 @@ async function dispatch(method, params) {
 /**
  * pnpm — and with it dsh's plugin manager, which runs pnpm in the profile directory —
  * reads the project `.npmrc`, so the primary registry is one `registry=` line there.
- * An empty value removes the line and leaves dsh on its own default plan.
+ * A profile without that line gets Aliyun's mirror on startup, which keeps plugin
+ * checks and installs fast on mainland networks. An explicit line always wins.
  */
 function pluginRegistryFile() {
   return `${PROFILE_DIR}/.npmrc`;
+}
+
+/** Gives a fresh profile the app's default source once; never overwrites a choice. */
+function ensureDefaultPluginRegistry() {
+  if (readPluginRegistry()) return;
+  try {
+    writePluginRegistry(DEFAULT_PLUGIN_REGISTRY);
+    info(`npm 源默认为 ${DEFAULT_PLUGIN_REGISTRY}`);
+  } catch (error) {
+    info(`写入默认 npm 源失败：${describeError(error)}`);
+  }
 }
 
 function readPluginRegistry() {
@@ -2572,6 +2586,7 @@ async function main() {
     retireStaleDsh();
     const applicationUrl = await startDsh();
     await authenticateDsh(applicationUrl);
+    ensureDefaultPluginRegistry();
     await connectTransport();
     emit("ready", {
       dshVersion,

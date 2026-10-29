@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -49,12 +48,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -100,14 +96,10 @@ fun PluginsScreen(
     var inspecting by remember { mutableStateOf(false) }
     var inspected by remember { mutableStateOf<AgentPluginInspection?>(null) }
     var installError by remember { mutableStateOf<String?>(null) }
-    var showRegistry by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(agent.connection) {
-        if (ready) {
-            vm.refreshPlugins()
-            vm.refreshPluginRegistry()
-        }
+        if (ready) vm.refreshPlugins()
     }
 
     Column(
@@ -303,16 +295,13 @@ fun PluginsScreen(
             }
 
             Spacer(Modifier.height(24.dp))
-            SectionLabel("插件源")
-            Spacer(Modifier.height(8.dp))
-            SettingsLikeCard {
-                PluginRegistryCard(
-                    registry = agent.pluginRegistry,
-                    enabled = ready,
-                    onSelect = vm::setPluginRegistry,
-                    onCustom = { showRegistry = true }
-                )
-            }
+            Text(
+                "NPM 源在「设置 → Agent 核心」中配置，默认使用阿里源。",
+                modifier = Modifier.padding(horizontal = 4.dp),
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp
+            )
 
             Spacer(Modifier.height(28.dp))
         }
@@ -355,16 +344,6 @@ fun PluginsScreen(
         )
     }
 
-    if (showRegistry) {
-        RegistryDialog(
-            initial = agent.pluginRegistry,
-            onDismiss = { showRegistry = false },
-            onSave = { value ->
-                showRegistry = false
-                vm.setPluginRegistry(value)
-            }
-        )
-    }
 }
 
 /**
@@ -677,192 +656,6 @@ private fun refusalText(result: AgentPluginInspection): String {
         "network" -> "无法连接 registry，请检查网络后重试。"
         else -> reason?.let { "无法安装：$it" } ?: "无法安装这个插件。"
     }
-}
-
-/** Registry choices, in order. The empty value leaves dsh on its own plan. */
-private val REGISTRY_OPTIONS = listOf(
-    Triple("", "默认（跟随 dsh）", "先询问 npm 官方源，取不到时回退 npmmirror"),
-    Triple("https://registry.npmjs.org/", "npm 官方源", "registry.npmjs.org"),
-    Triple("https://registry.npmmirror.com/", "国内镜像", "registry.npmmirror.com")
-)
-
-private fun registryKey(value: String): String = value.trim().trimEnd('/')
-
-/**
- * dsh's plugin manager runs pnpm inside the profile, so the primary registry is the
- * profile's own `.npmrc`. Inspections and installs both start there; bundles that are
- * already installed keep working whichever source is chosen.
- */
-@Composable
-private fun PluginRegistryCard(
-    registry: String,
-    enabled: Boolean,
-    onSelect: (String) -> Unit,
-    onCustom: () -> Unit
-) {
-    val key = registryKey(registry)
-    val custom = key.isNotEmpty() && REGISTRY_OPTIONS.none { registryKey(it.first) == key }
-
-    Text(
-        "检查与安装插件时首先询问的 npm 源。已安装的插件不受影响。",
-        color = TextMuted,
-        fontSize = 10.5.sp,
-        lineHeight = 15.sp
-    )
-    REGISTRY_OPTIONS.forEach { (value, title, detail) ->
-        RegistryRow(
-            title = title,
-            detail = detail,
-            selected = registryKey(value) == key,
-            enabled = enabled,
-            // Picking the source already in use would write the same file again.
-            tappable = registryKey(value) != key,
-            onClick = { onSelect(value) }
-        )
-    }
-    RegistryRow(
-        title = "自定义",
-        detail = if (custom) registry else "填写私有或自建 npm 源地址",
-        selected = custom,
-        enabled = enabled,
-        // The custom row opens its editor, so it stays tappable even when selected.
-        tappable = true,
-        onClick = onCustom
-    )
-}
-
-@Composable
-private fun RegistryRow(
-    title: String,
-    detail: String,
-    selected: Boolean,
-    enabled: Boolean,
-    tappable: Boolean,
-    onClick: () -> Unit
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(top = 6.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(enabled = enabled && tappable, onClick = onClick)
-            .background(if (selected) SurfaceVariant.copy(alpha = 0.7f) else Color.Transparent)
-            .padding(horizontal = 9.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(RoundedCornerShape(50))
-                .background(if (selected) Accent else Border)
-        )
-        Spacer(Modifier.width(11.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                title,
-                color = if (enabled) TextPrimary else TextMuted,
-                fontSize = 12.5.sp
-            )
-            Text(
-                detail,
-                color = TextMuted,
-                fontSize = 9.5.sp,
-                lineHeight = 13.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
-private fun RegistryDialog(
-    initial: String,
-    onDismiss: () -> Unit,
-    onSave: (String) -> Unit
-) {
-    val known = REGISTRY_OPTIONS.any { registryKey(it.first) == registryKey(initial) }
-    var input by remember { mutableStateOf(if (known) "" else initial) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("自定义插件源", style = MaterialTheme.typography.titleMedium) },
-        text = {
-            Column {
-                Text(
-                    "填写 http(s) 地址，例如公司内网的 Verdaccio。",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp
-                )
-                Spacer(Modifier.height(12.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(SurfaceVariant)
-                        .padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    BasicTextField(
-                        value = input,
-                        onValueChange = {
-                            input = it.take(200)
-                            error = null
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        textStyle = MaterialTheme.typography.bodySmall.copy(
-                            color = TextPrimary,
-                            fontSize = 12.sp
-                        ),
-                        cursorBrush = SolidColor(Accent),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Uri,
-                            imeAction = ImeAction.Done
-                        ),
-                        decorationBox = { inner ->
-                            if (input.isEmpty()) {
-                                Text(
-                                    "https://npm.example.com/",
-                                    color = TextMuted,
-                                    fontSize = 12.sp
-                                )
-                            }
-                            inner()
-                        }
-                    )
-                }
-                error?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(it, color = ErrorText, fontSize = 10.5.sp)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val value = input.trim()
-                    if (!value.startsWith("http://") && !value.startsWith("https://")) {
-                        error = "地址需要以 http:// 或 https:// 开头"
-                    } else {
-                        onSave(value)
-                    }
-                }
-            ) {
-                Text("保存", color = Accent)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
-            }
-        }
-    )
 }
 
 @Composable
