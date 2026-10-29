@@ -11,11 +11,19 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.kingkang.app.agent.AgentEngine
 import com.kingkang.app.ui.KingKangApp
 import com.kingkang.app.ui.theme.KingKangTheme
 import com.kingkang.app.ui.theme.ThemeMode
 
 class MainActivity : ComponentActivity() {
+    override fun onStart() {
+        super.onStart()
+        // Some devices stop the foreground service while backgrounded; recover the bridge
+        // as soon as the app is visible again instead of leaving a dead connection.
+        AgentEngine.onAppForegrounded(this)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),

@@ -480,6 +480,11 @@ data class AgentState(
     val subagentTrail: List<AgentSubagent> = emptyList(),
     val items: List<AgentItem> = emptyList(),
     val running: Boolean = false,
+    /**
+     * A stop request is in flight. dsh acknowledges cancel immediately but settles the turn
+     * asynchronously, so the composer keeps its stop button disabled until the turn ends.
+     */
+    val turnStopping: Boolean = false,
     val approvals: List<AgentApproval> = emptyList(),
     val questions: List<AgentQuestion> = emptyList(),
     val todos: List<AgentTodo> = emptyList(),

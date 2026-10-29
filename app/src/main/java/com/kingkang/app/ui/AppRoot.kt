@@ -111,6 +111,25 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
     val scope = rememberCoroutineScope()
     var screenName by rememberSaveable { mutableStateOf(AppScreen.Home.name) }
     val screen = AppScreen.valueOf(screenName)
+    // Sub-screens opened from Settings/Plugins/Terminal return to their origin rather than
+    // dumping the user on Home. Not saveable: after process death, Home is a safe root.
+    var backStack by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    fun navigate(target: AppScreen) {
+        val current = AppScreen.valueOf(screenName)
+        if (target == AppScreen.Home) {
+            backStack = emptyList()
+        } else if (target != current) {
+            backStack = backStack + current.name
+        }
+        screenName = target.name
+    }
+
+    fun goBack() {
+        val previous = backStack.lastOrNull()
+        backStack = if (previous == null) emptyList() else backStack.dropLast(1)
+        screenName = previous ?: AppScreen.Home.name
+    }
     var showAbout by rememberSaveable { mutableStateOf(false) }
     // First launch only: the setup guide explains the three prerequisites, including the
     // API Key that dsh cannot call a model without. Dismissing it records it as seen.
@@ -120,6 +139,9 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
     // The session sheet lives at the window root, not inside the drawer: a sheet composed
     // in the drawer inherits its 300 dp width and stops looking like a system sheet.
     var pendingSession by remember { mutableStateOf<AgentSession?>(null) }
+    // Captured with the long-press: reading the whole agent state at the app root would
+    // recompose the whole navigation tree on every streamed token.
+    var pendingPinned by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -134,7 +156,7 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
         if (screen == AppScreen.Home && drawerState.isOpen) {
             scope.launch { drawerState.close() }
         } else {
-            screenName = AppScreen.Home.name
+            goBack()
         }
     }
 
@@ -149,24 +171,25 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                         vm = vm,
                         onDismiss = { scope.launch { drawerState.close() } },
                         onOpenTerminal = {
-                            screenName = AppScreen.Terminal.name
+                            navigate(AppScreen.Terminal)
                             scope.launch { drawerState.close() }
                         },
                         onOpenHarness = {
-                            screenName = AppScreen.Harness.name
+                            navigate(AppScreen.Harness)
                             scope.launch { drawerState.close() }
                         },
                         onOpenPlugins = {
-                            screenName = AppScreen.Plugins.name
+                            navigate(AppScreen.Plugins)
                             scope.launch { drawerState.close() }
                         },
                         onOpenSettings = {
                             settingsFocus = null
-                            screenName = AppScreen.Settings.name
+                            navigate(AppScreen.Settings)
                             scope.launch { drawerState.close() }
                         },
-                        onSessionLongPress = { session ->
+                        onSessionLongPress = { session, pinned ->
                             pendingSession = session
+                            pendingPinned = pinned
                             renaming = false
                             renameText = session.displayTitle
                         }
@@ -176,31 +199,31 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                 HomeScreen(
                     vm = vm,
                     onOpenDrawer = { scope.launch { drawerState.open() } },
-                    onOpenTerminal = { screenName = AppScreen.Terminal.name },
+                    onOpenTerminal = { navigate(AppScreen.Terminal) },
                     onOpenSettings = {
                         settingsFocus = null
-                        screenName = AppScreen.Settings.name
+                        navigate(AppScreen.Settings)
                     },
                     onConfigureKey = {
                         settingsFocus = "credentials"
-                        screenName = AppScreen.Settings.name
+                        navigate(AppScreen.Settings)
                     }
                 )
             }
 
             AppScreen.Terminal -> TerminalScreen(
                 vm = vm,
-                onBack = { screenName = AppScreen.Home.name },
+                onBack = { goBack() },
                 onOpenSettings = {
                     settingsFocus = null
-                    screenName = AppScreen.Settings.name
+                    navigate(AppScreen.Settings)
                 }
             )
 
             AppScreen.Harness -> HarnessScreen(
                 vm = vm,
                 onBack = {
-                    screenName = AppScreen.Home.name
+                    goBack()
                     // Plugins and workspaces may have changed inside dsh-web.
                     vm.refreshPlugins()
                     vm.refreshWorkspaces()
@@ -209,8 +232,8 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
 
             AppScreen.Plugins -> PluginsScreen(
                 vm = vm,
-                onBack = { screenName = AppScreen.Home.name },
-                onOpenHarness = { screenName = AppScreen.Harness.name }
+                onBack = { goBack() },
+                onOpenHarness = { navigate(AppScreen.Harness) }
             )
 
             AppScreen.Settings -> SettingsScreen(
@@ -218,10 +241,10 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                 focusSection = settingsFocus,
                 onBack = {
                     settingsFocus = null
-                    screenName = AppScreen.Home.name
+                    goBack()
                 },
-                onOpenTerminal = { screenName = AppScreen.Terminal.name },
-                onOpenHarness = { screenName = AppScreen.Harness.name },
+                onOpenTerminal = { navigate(AppScreen.Terminal) },
+                onOpenHarness = { navigate(AppScreen.Harness) },
                 onAbout = { showAbout = true }
             )
         }
@@ -259,6 +282,11 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                 vm.archiveChat(session.id)
                 pendingSession = null
             },
+            pinned = pendingPinned,
+            onTogglePin = { pin ->
+                vm.setChatPinned(session.id, pin)
+                pendingSession = null
+            },
             onDismiss = {
                 pendingSession = null
                 renaming = false
@@ -276,7 +304,7 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                 showGuide = false
                 vm.completeOnboarding()
                 settingsFocus = null
-                screenName = AppScreen.Settings.name
+                navigate(AppScreen.Settings)
             },
             onDismiss = {
                 showGuide = false
@@ -295,7 +323,7 @@ private fun KingKangDrawer(
     onOpenHarness: () -> Unit,
     onOpenPlugins: () -> Unit,
     onOpenSettings: () -> Unit,
-    onSessionLongPress: (AgentSession) -> Unit
+    onSessionLongPress: (AgentSession, Boolean) -> Unit
 ) {
     val agent by vm.agentState.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
@@ -312,17 +340,32 @@ private fun KingKangDrawer(
             (!it.blank || it.id == agent.activeSessionId)
     }
     val pinnedRank = agent.pinnedSessionIds.withIndex().associate { it.value to it.index }
+    // Archived chats keep their rows in the catalog so this section can name them and
+    // offer a way back; they never enter `history` or the fallback conversation.
+    val archived = agent.sessions
+        .filter { it.id in agent.archivedSessionIds && it.id !in trailIds }
+        .sortedByDescending { it.updatedAt }
     val ordered = history.sortedWith(
         compareBy<AgentSession> { pinnedRank[it.id] ?: Int.MAX_VALUE }
             .thenByDescending { it.updatedAt }
     )
+    // Pinned chats get their own section at the top of the drawer. Sorting them first
+    // inside a workspace did not move them anywhere visible, so pinning a chat that sat
+    // under a workspace looked like it had done nothing.
+    val pinned = ordered.filter { it.id in pinnedRank }
+    val unpinned = ordered.filter { it.id !in pinnedRank }
     val workspaceSessionIds = agent.workspaces.flatMapTo(mutableSetOf()) { it.sessionIds }
-    val ungrouped = ordered.filter { it.id !in workspaceSessionIds }
+    val ungrouped = unpinned.filter { it.id !in workspaceSessionIds }
     val workspaceSections = agent.workspaces.map { workspace ->
         workspace to workspace.sessionIds.mapNotNull { id ->
-            history.firstOrNull { it.id == id }
+            unpinned.firstOrNull { it.id == id }
         }
-    }.filter { (workspace, sessions) -> sessions.isNotEmpty() || workspace.sessionIds.isEmpty() }
+    }.filter { (workspace, sessions) ->
+        // A workspace whose chats are all pinned keeps its header so "新对话" stays
+        // reachable; one whose chats are all archived still disappears, as before.
+        sessions.isNotEmpty() || workspace.sessionIds.isEmpty() ||
+            workspace.sessionIds.any { id -> history.any { it.id == id } }
+    }
     val trimmedQuery = query.trim()
     val matches = if (trimmedQuery.isEmpty()) emptyList() else ordered.filter {
         it.displayTitle.contains(trimmedQuery, ignoreCase = true) ||
@@ -398,7 +441,9 @@ private fun KingKangDrawer(
                 vm.selectChat(session.id)
                 onDismiss()
             }
-            val longPressSession = { session: AgentSession -> onSessionLongPress(session) }
+            val longPressSession = { session: AgentSession ->
+                onSessionLongPress(session, session.id in agent.pinnedSessionIds)
+            }
 
             Box(Modifier.weight(1f)) {
                 LazyColumn(
@@ -427,11 +472,26 @@ private fun KingKangDrawer(
                                 session = session,
                                 selected = session.id == agent.activeSessionId,
                                 onClick = { openSession(session) },
-                                onLongClick = { longPressSession(session) }
+                                onLongClick = { longPressSession(session) },
+                                pinned = session.id in agent.pinnedSessionIds
                             )
                         }
                     }
                 } else {
+                    if (pinned.isNotEmpty()) {
+                        item(key = "pinned:label") {
+                            DrawerSectionLabel("置顶")
+                        }
+                        items(pinned, key = { "pinned:${it.id}" }) { session ->
+                            HistoryRow(
+                                session = session,
+                                selected = session.id == agent.activeSessionId,
+                                onClick = { openSession(session) },
+                                onLongClick = { longPressSession(session) },
+                                pinned = true
+                            )
+                        }
+                    }
                     // Workspaces are a dsh concept, so the section is always offered once
                     // dsh is reachable: without it a fresh profile has no way to add one.
                     item {
@@ -493,7 +553,8 @@ private fun KingKangDrawer(
                                         selected = session.id == agent.activeSessionId,
                                         onClick = { openSession(session) },
                                         onLongClick = { longPressSession(session) },
-                                        indent = true
+                                        indent = true,
+                                        pinned = session.id in agent.pinnedSessionIds
                                     )
                                 }
                                 if (workspaceSessions.isEmpty()) {
@@ -526,16 +587,32 @@ private fun KingKangDrawer(
                                 session = session,
                                 selected = session.id == agent.activeSessionId,
                                 onClick = { openSession(session) },
-                                onLongClick = { longPressSession(session) }
+                                onLongClick = { longPressSession(session) },
+                                pinned = session.id in agent.pinnedSessionIds
                             )
                         }
-                    } else if (agent.workspaces.isEmpty() && history.isEmpty()) {
+                    } else if (agent.workspaces.isEmpty() && history.isEmpty() && archived.isEmpty()) {
                         item {
                             Text(
                                 "还没有对话",
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
                                 color = TextMuted,
                                 fontSize = 12.sp
+                            )
+                        }
+                    }
+
+                    if (archived.isNotEmpty()) {
+                        item(key = "archived:label") {
+                            DrawerSectionLabel(
+                                "已归档",
+                                trailing = "${archived.size} 个 · 点按恢复"
+                            )
+                        }
+                        items(archived, key = { "archived:${it.id}" }) { session ->
+                            ArchivedRow(
+                                session = session,
+                                onClick = { vm.unarchiveChat(session.id) }
                             )
                         }
                     }
@@ -804,6 +881,8 @@ private fun SessionActionsSheet(
     onSaveRename: () -> Unit,
     onFork: () -> Unit,
     onArchive: () -> Unit,
+    pinned: Boolean,
+    onTogglePin: (Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -863,13 +942,17 @@ private fun SessionActionsSheet(
             } else {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "归档后仍保存在 dsh 中，不会删除 Kali 文件。",
+                    "归档后仍保存在 dsh 中，不会删除 Kali 文件；可在抽屉的「已归档」中恢复。",
                     color = TextMuted,
                     fontSize = 10.5.sp
                 )
                 Spacer(Modifier.height(8.dp))
                 SessionSheetAction("重命名", onClick = onStartRename)
                 SessionSheetAction("分叉对话", onClick = onFork)
+                SessionSheetAction(
+                    if (pinned) "取消置顶" else "置顶对话",
+                    onClick = { onTogglePin(!pinned) }
+                )
                 SessionSheetAction("归档对话", color = Amber, onClick = onArchive)
             }
         }
@@ -933,7 +1016,8 @@ private fun HistoryRow(
     selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    indent: Boolean = false
+    indent: Boolean = false,
+    pinned: Boolean = false
 ) {
     Row(
         Modifier
@@ -957,6 +1041,41 @@ private fun HistoryRow(
             fontSize = 13.5.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
+        )
+        if (pinned) {
+            Spacer(Modifier.width(8.dp))
+            Text("置顶", color = TextMuted, fontSize = 9.5.sp)
+        }
+    }
+}
+
+@Composable
+private fun ArchivedRow(
+    session: AgentSession,
+    onClick: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 1.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = session.displayTitle,
+            modifier = Modifier.weight(1f),
+            color = TextMuted,
+            fontSize = 13.5.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "恢复",
+            color = TextSecondary,
+            fontSize = 11.sp
         )
     }
 }

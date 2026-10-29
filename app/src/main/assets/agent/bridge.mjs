@@ -14,13 +14,22 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 
 const PROTOCOL = 1;
-const BRIDGE_VERSION = "2.3.0";
+const BRIDGE_VERSION = "2.4.0";
 const NODE_BIN = process.env.KK_NODE_BIN || "/opt/kingkang/node/bin/node";
 const DSH_BIN = process.env.KK_DSH_BIN || "/opt/kingkang/dsh/bin/dsh";
 const WORKDIR = process.env.KK_WORKDIR || "/root";
@@ -64,10 +73,14 @@ const CAPABILITIES = [
   "workspace.list",
   "workspace.create",
   "workspace.archiveSession",
+  "workspace.unarchiveSession",
+  "workspace.pinSession",
+  "workspace.unpinSession",
   "plugin.list",
   "plugin.setEnabled",
   "plugin.inspect",
   "plugin.install",
+  "plugin.update",
   "plugin.registry.get",
   "plugin.registry.set",
   "approval.respond",
@@ -1647,6 +1660,67 @@ function forgetDshPid(pid) {
   }
 }
 
+/**
+ * dsh's atomic writer only takes over a `<file>.lock` sibling when it records the dead
+ * holder's pid. A process killed between creating the lock and writing that record
+ * leaves an empty lock, which every later writer waits on until it times out: settings
+ * changes (including the theme sync), plugin installs and updates then fail for good.
+ * Called before dsh starts, when no writer can own a lock in this profile.
+ */
+function clearIncompleteWriteLocks() {
+  let names;
+  try {
+    names = readdirSync(PROFILE_DIR);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".lock")) continue;
+    const file = `${PROFILE_DIR}/${name}`;
+    try {
+      if (readFileSync(file).length === 0) {
+        unlinkSync(file);
+        info(`已清理损坏的写入锁 ${name}`);
+      }
+    } catch {
+      // Another writer removed it, or it is unreadable: nothing to repair.
+    }
+  }
+}
+
+/**
+ * dsh runs `pnpm` from PATH for every plugin operation. The Harness installer installs
+ * pnpm into the Node prefix and links it into place, but on this sandbox that install
+ * can leave the package extracted while the bin link never appears, which makes every
+ * plugin install and update end in "pnpm was not found". Restore the link from the
+ * package's own entry point while the guest is idle.
+ */
+function ensurePnpmLink() {
+  const target = "/opt/kingkang/node/lib/node_modules/pnpm/bin/pnpm.cjs";
+  if (!existsSync(target)) return;
+  for (const link of ["/opt/kingkang/node/bin/pnpm", "/usr/local/bin/pnpm"]) {
+    let current = null;
+    try {
+      current = readlinkSync(link);
+    } catch {
+      // Missing, or a regular file someone placed there on purpose.
+    }
+    if (current === target) continue;
+    if (current === null && existsSync(link)) continue;
+    try {
+      unlinkSync(link);
+    } catch {
+      // Nothing to replace.
+    }
+    try {
+      symlinkSync(target, link);
+      info(`已恢复 pnpm 入口 ${link}`);
+    } catch (error) {
+      info(`恢复 pnpm 入口失败：${describeError(error)}`);
+    }
+  }
+}
+
 function retireStaleDsh() {
   let recorded;
   try {
@@ -2307,6 +2381,51 @@ async function dispatch(method, params) {
         version: change?.version ? String(change.version) : null,
       };
     }
+    case "plugin.update": {
+      // dsh refuses to install a package its profile already records, so a plugin pinned
+      // to an older dsh release cannot be repaired through pluginManager/installBundle.
+      // dsh's own CLI forwards `plugin add` to pnpm, which does replace a recorded
+      // dependency at a new exact version; run that, then let the app restart dsh.
+      const name = String(payload.name || "").trim();
+      const version = String(payload.version || "").trim();
+      if (!/^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(name)) {
+        throw codedError("invalid-argument", "插件名称无效");
+      }
+      if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+        throw codedError("invalid-argument", "插件版本无效");
+      }
+      // Only a package the profile already depends on may be updated here: this action
+      // repairs a version pin, it is not a second way to install something new.
+      if (!Object.hasOwn(readProfileDependencies(), name)) {
+        throw codedError("invalid-argument", `${name} 不在 profile 的依赖中`);
+      }
+      let outcome = await runPluginUpdate(name, version);
+      if (outcome.code !== 0 && /pnpm|Cannot find module|SyntaxError|ERR_MODULE_NOT_FOUND/i.test(outcome.output)) {
+        // An interrupted harness install can leave pnpm's package truncated while its
+        // entry file still exists; dsh then dies inside require(). Reinstall the package
+        // once so an already-installed harness repairs itself instead of failing forever.
+        info("插件更新失败，正在修复 pnpm 后重试");
+        const repair = await repairPnpm();
+        info(`pnpm 修复结果：exit=${repair.code ?? "null"}`);
+        if (repair.code === 0) {
+          ensurePnpmLink();
+          outcome = await runPluginUpdate(name, version);
+        }
+      }
+      if (outcome.code !== 0) {
+        throw codedError(
+          "install-failed",
+          failureDetail(outcome.output, outcome.code)
+        );
+      }
+      const recorded = readProfileDependencies()[name];
+      return {
+        changed: true,
+        bundle: name,
+        version: String(recorded || version),
+        error: null,
+      };
+    }
     case "plugin.setEnabled": {
       const name = String(payload.name || "");
       if (!name) throw codedError("invalid-argument", "缺少插件名称");
@@ -2335,6 +2454,18 @@ async function dispatch(method, params) {
           sessionId: String(payload.sessionId || ""),
           ...(payload.stopActivity === true ? { stopActivity: true } : {}),
         },
+      });
+    case "workspace.unarchiveSession":
+      return callDsh("workspace/unarchiveSession", {
+        request: { sessionId: String(payload.sessionId || "") },
+      });
+    case "workspace.pinSession":
+      return callDsh("workspace/pinSession", {
+        request: { sessionId: String(payload.sessionId || "") },
+      });
+    case "workspace.unpinSession":
+      return callDsh("workspace/unpinSession", {
+        request: { sessionId: String(payload.sessionId || "") },
       });
     case "credentials.describe": {
       const refs = Array.isArray(payload.refs)
@@ -2486,6 +2617,150 @@ function writePluginRegistry(registry) {
   return registry;
 }
 
+/** The profile's recorded dependencies; empty when the profile has no readable manifest. */
+function readProfileDependencies() {
+  try {
+    const manifest = JSON.parse(readFileSync(`${PROFILE_DIR}/package.json`, "utf8"));
+    const dependencies = manifest?.dependencies;
+    return dependencies && typeof dependencies === "object" ? dependencies : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Runs dsh's own plugin command, which forwards `add` to the profile's pnpm. It is a
+ * separate process from the live dsh web server; pnpm rewrites package.json and
+ * node_modules under the same lock dsh's plugin manager uses, so a live install is safe.
+ * A package update downloads new files, so it gets the same generous budget as installs.
+ */
+function runPluginUpdate(name, version) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      DSH_BIN,
+      [
+        "plugin",
+        "--profile",
+        PROFILE_NAME,
+        "add",
+        `${name}@${version}`,
+        "--save-exact",
+      ],
+      {
+        cwd: WORKDIR,
+        env: {
+          ...process.env,
+          HOME: WORKDIR,
+          TERM: "dumb",
+          LANG: "C.UTF-8",
+          PATH,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+    let output = "";
+    const collect = (chunk) => {
+      output = (output + String(chunk)).slice(-16_000);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // Already gone.
+      }
+      reject(codedError("timeout", "更新插件超时：pnpm 未在 10 分钟内完成"));
+    }, 10 * 60_000);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(codedError("install-failed", `无法运行 dsh: ${error.message}`));
+    });
+    child.on("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, output });
+    });
+  });
+}
+
+/**
+ * The part of a failed command's output that explains the failure. pnpm floods the stream
+ * with progress lines, and the cause sits at one end: a Node crash prints its message
+ * first, while dsh's own summary is last. Keep both ends and drop the middle.
+ */
+function failureDetail(text, exitCode) {
+  const lines = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim() && !/^Progress: resolved /.test(line));
+  if (lines.length === 0) {
+    return `dsh plugin add 失败（exit=${exitCode ?? "null"}）`;
+  }
+  const selected =
+    lines.length > 7
+      ? [...lines.slice(0, 3), "…", ...lines.slice(-4)]
+      : lines;
+  const joined = selected.join("\n");
+  return joined.length > 1500
+    ? `${joined.slice(0, 700)}\n…\n${joined.slice(-700)}`
+    : joined;
+}
+
+/**
+ * Reinstalls pnpm into the shared Node prefix. Only used to recover from an interrupted
+ * install; a healthy pnpm is never touched.
+ */
+function repairPnpm() {
+  return new Promise((resolve) => {
+    const child = spawn(
+      "npm",
+      [
+        "install",
+        "-g",
+        "--prefix",
+        "/opt/kingkang/node",
+        "pnpm@10",
+        "--force",
+        "--no-audit",
+        "--no-fund",
+      ],
+      {
+        cwd: WORKDIR,
+        env: {
+          ...process.env,
+          HOME: WORKDIR,
+          TERM: "dumb",
+          LANG: "C.UTF-8",
+          PATH,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+    let output = "";
+    const collect = (chunk) => {
+      output = (output + String(chunk)).slice(-8_000);
+    };
+    child.stdout.on("data", collect);
+    child.stderr.on("data", collect);
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // Already gone.
+      }
+      resolve({ code: null, output });
+    }, 5 * 60_000);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ code: null, output: `${output}\n${error.message}` });
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve({ code, output });
+    });
+  });
+}
+
 async function handleRequest(request) {
   if (!request || typeof request !== "object") {
     fail(null, "bad-request", "request is not an object");
@@ -2584,6 +2859,8 @@ async function main() {
 
   try {
     retireStaleDsh();
+    clearIncompleteWriteLocks();
+    ensurePnpmLink();
     const applicationUrl = await startDsh();
     await authenticateDsh(applicationUrl);
     ensureDefaultPluginRegistry();

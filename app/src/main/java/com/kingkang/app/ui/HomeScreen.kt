@@ -172,6 +172,7 @@ fun HomeScreen(
 ) {
     val state by vm.agentState.collectAsState()
     val environment by vm.environment.collectAsState()
+    val harness by vm.harness.collectAsState()
     val rootMode by vm.rootMode.collectAsState()
     // dsh reports the reference only after its credential store has been read; before
     // that the map is empty and prompting would be premature.
@@ -255,15 +256,22 @@ fun HomeScreen(
         if (state.connection == AgentConnection.Failed) {
             AgentSetupState(
                 state = state,
+                installing = harness.busy,
+                installingStep = harness.step,
                 onRetry = vm::restartAgent,
                 onOpenSettings = onOpenSettings,
                 modifier = Modifier.weight(1f)
             )
-        } else if (state.connection == AgentConnection.Starting ||
-            state.connection == AgentConnection.Stopped
-        ) {
+        } else if (state.connection == AgentConnection.Starting) {
             AgentLoadingState(
                 state = state,
+                modifier = Modifier.weight(1f)
+            )
+        } else if (state.connection == AgentConnection.Stopped) {
+            AgentStoppedState(
+                state = state,
+                onRetry = vm::restartAgent,
+                onOpenSettings = onOpenSettings,
                 modifier = Modifier.weight(1f)
             )
         } else {
@@ -386,6 +394,7 @@ fun HomeScreen(
                     state.models?.routable != false &&
                     state.subagentView?.continuable != false,
                 running = state.running,
+                stopping = state.turnStopping,
                 steerable = state.subagentView == null,
                 hint = state.subagentView?.takeIf { !it.continuable }?.let {
                     "只读子 Agent 不接受后续消息，它的结果会回到主对话。"
@@ -1166,6 +1175,61 @@ private fun SubagentRow(subagent: AgentSubagent, onClick: () -> Unit) {
 }
 
 @Composable
+private fun AgentStoppedState(
+    state: AgentState,
+    onRetry: () -> Unit,
+    onOpenSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val kaliRemoved = state.status.contains("Kali 环境已删除")
+    val uninstalled = state.status.contains("卸载") || kaliRemoved
+    Column(
+        modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 22.dp, vertical = 48.dp)
+    ) {
+        Text(
+            when {
+                kaliRemoved -> "Kali 环境已删除"
+                uninstalled -> "Agent 核心已卸载"
+                else -> "Agent 已停止"
+            },
+            color = TextPrimary,
+            fontSize = 23.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            when {
+                kaliRemoved -> "Kali 环境与其中的 dsh 都已删除。可在设置里重新安装 Kali 环境。"
+                uninstalled -> "dsh 已从 Kali 中移除。可在设置里重新安装 Agent 核心。"
+                else -> "Agent 连接已停止。dsh 仍在 Kali 中，重新连接即可继续之前的会话。"
+            },
+            color = TextSecondary,
+            fontSize = 13.5.sp,
+            lineHeight = 20.sp
+        )
+        Spacer(Modifier.height(20.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (uninstalled) {
+                // Retrying cannot bring dsh back; reinstalling is the only real path.
+                PrimaryPill("打开设置", onOpenSettings)
+            } else {
+                PrimaryPill("重新连接", onRetry)
+                OutlinePill("打开设置", onOpenSettings)
+            }
+        }
+        Spacer(Modifier.height(28.dp))
+        Text(
+            "连接只发生在应用与 Kali 内的回环地址之间。",
+            color = TextMuted,
+            fontSize = 11.sp
+        )
+    }
+}
+
+@Composable
 private fun AgentLoadingState(state: AgentState, modifier: Modifier = Modifier) {
     Column(
         modifier
@@ -1197,6 +1261,8 @@ private fun AgentLoadingState(state: AgentState, modifier: Modifier = Modifier) 
 @Composable
 private fun AgentSetupState(
     state: AgentState,
+    installing: Boolean,
+    installingStep: String?,
     onRetry: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
@@ -1207,30 +1273,38 @@ private fun AgentSetupState(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 22.dp, vertical = 48.dp)
     ) {
+        // A missing runtime and an install in progress both leave the agent disconnected,
+        // but telling the reader "Node.js 尚未安装" while it downloads reads as an error.
         Text(
-            "Agent 还没有就绪",
+            if (installing) "正在安装 Agent 核心" else "Agent 还没有就绪",
             color = TextPrimary,
             fontSize = 23.sp,
             fontWeight = FontWeight.SemiBold
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            state.error ?: state.status,
+            if (installing) installingStep ?: "安装完成后会自动连接。" else state.error ?: state.status,
             color = TextSecondary,
             fontSize = 13.5.sp,
             lineHeight = 20.sp
         )
         Spacer(Modifier.height(10.dp))
-        Text(
-            "对话由 Kali 内的 dsh 提供。先在设置里安装 Kali 环境、Node.js 和 Agent 核心。",
-            color = TextMuted,
-            fontSize = 12.5.sp,
-            lineHeight = 19.sp
-        )
+        if (!installing) {
+            Text(
+                "对话由 Kali 内的 dsh 提供。先在设置里安装 Kali 环境、Node.js 和 Agent 核心。",
+                color = TextMuted,
+                fontSize = 12.5.sp,
+                lineHeight = 19.sp
+            )
+        }
         Spacer(Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            PrimaryPill("重试连接", onRetry)
-            OutlinePill("打开设置", onOpenSettings)
+            if (installing) {
+                PrimaryPill("查看安装进度", onOpenSettings)
+            } else {
+                PrimaryPill("重试连接", onRetry)
+                OutlinePill("打开设置", onOpenSettings)
+            }
         }
         Spacer(Modifier.height(28.dp))
         Text(
@@ -2973,6 +3047,7 @@ private fun Composer(
     skills: List<AgentSkill>,
     enabled: Boolean,
     running: Boolean,
+    stopping: Boolean = false,
     steerable: Boolean = true,
     hint: String? = null,
     models: AgentModels? = null,
@@ -3006,13 +3081,19 @@ private fun Composer(
         attachError = null
         scope.launch {
             val room = (MAX_DRAFT_IMAGES - drafts.size).coerceAtLeast(0)
+            if (room == 0) {
+                attachError = "最多附加 ${MAX_DRAFT_IMAGES} 张图片"
+                return@launch
+            }
             val loaded = withContext(Dispatchers.IO) {
                 uris.take(room).mapNotNull { readDraftImage(context, it) }
             }
-            when {
+            attachError = when {
+                uris.size > room ->
+                    "最多附加 ${MAX_DRAFT_IMAGES} 张图片，已保留前 $room 张"
                 loaded.size < uris.take(room).size ->
-                    attachError = "有图片无法使用：仅支持 PNG / JPEG / WEBP / GIF，单张不超过 8 MB"
-                else -> attachError = null
+                    "有图片无法使用：仅支持 PNG / JPEG / WEBP / GIF，单张不超过 8 MB"
+                else -> null
             }
             if (loaded.isNotEmpty()) drafts = (drafts + loaded).take(MAX_DRAFT_IMAGES)
         }
@@ -3106,12 +3187,13 @@ private fun Composer(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    if (steerable) "当前任务运行中" else "子 Agent 运行中",
+                    if (stopping) "正在停止当前任务…"
+                    else if (steerable) "当前任务运行中" else "子 Agent 运行中",
                     color = TextMuted,
                     fontSize = 10.sp
                 )
                 Spacer(Modifier.weight(1f))
-                if (steerable) {
+                if (steerable && !stopping) {
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(8.dp))
@@ -3377,15 +3459,23 @@ private fun Composer(
                         .size(34.dp)
                         .clip(CircleShape)
                         .background(SurfaceVariant)
-                        .clickable(onClick = onStop),
+                        .clickable(enabled = !stopping, onClick = onStop),
                     contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        Modifier
-                            .size(9.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(TextSecondary)
-                    )
+                    if (stopping) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(13.dp),
+                            strokeWidth = 1.5.dp,
+                            color = TextSecondary
+                        )
+                    } else {
+                        Box(
+                            Modifier
+                                .size(9.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(TextSecondary)
+                        )
+                    }
                 }
             }
             Spacer(Modifier.width(7.dp))

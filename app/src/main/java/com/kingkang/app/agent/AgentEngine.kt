@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -81,6 +82,16 @@ object AgentEngine {
     private val loadingImages: MutableSet<String> =
         java.util.concurrent.ConcurrentHashMap.newKeySet()
     private var stopping = false
+    /** True after a user stop/uninstall, so returning from the background must not restart. */
+    @Volatile
+    private var userStopped = false
+    /**
+     * The foreground service was torn down by the system (not by the user). The next time
+     * the app becomes visible the agent is restarted instead of showing a dead connection.
+     */
+    @Volatile
+    private var resumeRecoveryPending = false
+    private var cancelVerifyJob: Job? = null
     private var creatingSession = false
     private var createRetryPending = false
 
@@ -194,6 +205,8 @@ object AgentEngine {
         }
 
         stopping = false
+        userStopped = false
+        resumeRecoveryPending = false
         _state.update {
             it.copy(
                 connection = AgentConnection.Starting,
@@ -242,6 +255,7 @@ object AgentEngine {
                         error = null,
                         items = emptyList(),
                         running = false,
+                        turnStopping = false,
                         approvals = emptyList(),
                         questions = emptyList(),
                         todos = emptyList(),
@@ -314,18 +328,40 @@ object AgentEngine {
     fun stop() {
         subagentPoll?.cancel()
         subagentPoll = null
+        userStopped = true
+        resumeRecoveryPending = false
         killBridge()
         _state.update {
             it.copy(
                 connection = AgentConnection.Stopped,
                 status = "Agent 已停止",
-                running = false
+                running = false,
+                turnStopping = false
             )
         }
         stopServiceQuietly()
     }
 
+    /**
+     * Drops everything derived from the dsh install after the user removes the Agent core.
+     * A plain [stop] only ends the connection; the harness card and connection panel would
+     * otherwise keep showing the last known dsh version and the old session list.
+     */
+    fun forgetHarness(status: String = "Agent 核心已卸载") {
+        subagentPoll?.cancel()
+        subagentPoll = null
+        userStopped = true
+        resumeRecoveryPending = false
+        _state.value = AgentState(
+            connection = AgentConnection.Stopped,
+            status = status
+        )
+    }
+
     fun onServiceDestroyed() {
+        // Read this before killBridge() flips it: only a teardown the user did not ask for
+        // is repaired automatically when the app comes back to the foreground.
+        val systemTeardown = !stopping && !userStopped
         killBridge()
         if (_state.value.connection != AgentConnection.Failed) {
             _state.update {
@@ -333,10 +369,28 @@ object AgentEngine {
                     connection = AgentConnection.Stopped,
                     status = "Agent 已停止",
                     running = false,
+                    turnStopping = false,
                     webPort = null
                 )
             }
         }
+        if (systemTeardown) resumeRecoveryPending = true
+    }
+
+    /**
+     * Called whenever the app becomes visible. Android may stop a foreground service in the
+     * background (battery savers on some ROMs); without this the user returns to a dead
+     * agent and has to restart it by hand. A user-requested stop is respected.
+     */
+    fun onAppForegrounded(context: Context) {
+        init(context)
+        if (!resumeRecoveryPending || userStopped) return
+        if (_state.value.connection != AgentConnection.Stopped) {
+            resumeRecoveryPending = false
+            return
+        }
+        resumeRecoveryPending = false
+        ensureStarted(context)
     }
 
     private fun stopServiceQuietly() {
@@ -349,6 +403,8 @@ object AgentEngine {
         everReady = false
         reconnectJob?.cancel()
         reconnectJob = null
+        cancelVerifyJob?.cancel()
+        cancelVerifyJob = null
         defaultPermissionEnsured = false
         startupTimeout?.cancel()
         startupTimeout = null
@@ -742,9 +798,9 @@ object AgentEngine {
                 // become the fallback conversation. `parentId` alone is not the marker —
                 // a forked root also records its fork point there.
                 if (item.optString("origin") == "subagent") continue
-                // dsh's list can still name an archived session; the drawer and the
-                // fallback conversation both treat archive as "not in the list".
-                if (id in _state.value.archivedSessionIds) continue
+                // Archived sessions stay in the catalog so the drawer can list them under
+                // "已归档" with their titles; every normal list filters them out, and the
+                // fallback conversation below never picks one.
                 remote += AgentSession(
                     id = id,
                     title = item.optString("title").ifBlank { knownTitles[id].orEmpty() },
@@ -770,6 +826,28 @@ object AgentEngine {
         val merged = (remote + synthetic).sortedByDescending { it.updatedAt }
         _state.update { it.copy(sessions = merged) }
 
+        // dsh's row is the authority on whether a turn is live. Keep the transcript's own
+        // flag in step so a missed turn.end (for example after a background outage) cannot
+        // leave the composer showing a turn that has already finished.
+        if (view == null && current.connection == AgentConnection.Ready) {
+            val active = merged.firstOrNull { it.id == current.activeSessionId }
+            if (active != null && !active.running && (current.running || current.turnStopping)) {
+                _state.update {
+                    it.copy(
+                        running = false,
+                        turnStopping = false,
+                        items = it.items.map { item ->
+                            if (item is AssistantItem && item.streaming) {
+                                item.copy(streaming = false)
+                            } else {
+                                item
+                            }
+                        }
+                    )
+                }
+            }
+        }
+
         if (view != null) {
             // While reading a child, a catalog refresh must never yank the user back to
             // some other conversation; only an empty transcript needs loading.
@@ -779,9 +857,10 @@ object AgentEngine {
             return
         }
 
-        val target = merged.firstOrNull { it.id == current.activeSessionId }
-            ?: merged.firstOrNull { !it.blank }
-            ?: merged.firstOrNull()
+        val live = merged.filter { it.id !in current.archivedSessionIds }
+        val target = live.firstOrNull { it.id == current.activeSessionId }
+            ?: live.firstOrNull { !it.blank }
+            ?: live.firstOrNull()
         if (target == null) {
             requestCreateSession()
         } else if (forceReloadActive || target.id != current.activeSessionId || current.items.isEmpty()) {
@@ -801,7 +880,7 @@ object AgentEngine {
         scope.launch {
             delay(1_500)
             createRetryPending = false
-            if (_state.value.sessions.isNotEmpty()) {
+            if (_state.value.sessions.any { it.id !in _state.value.archivedSessionIds }) {
                 refreshSessions(forceReloadActive = false)
                 return@launch
             }
@@ -1133,17 +1212,24 @@ object AgentEngine {
                     val reason = data.optJSONObject("reason")
                     val reasonKind = reason?.optString("kind").orEmpty()
                     val message = reason?.optString("message").orEmpty()
+                    val cancelled = reasonKind == "user" || reasonKind == "cancel" ||
+                        reasonKind == "cancelled"
+                    cancelVerifyJob?.cancel()
                     _state.update { state ->
                         state.copy(
                             running = false,
+                            turnStopping = false,
                             items = state.items.map {
-                                if (it is ToolItem && it.running) {
-                                    it.copy(
+                                when {
+                                    it is AssistantItem && it.streaming ->
+                                        it.copy(streaming = false)
+                                    it is ToolItem && it.running -> it.copy(
                                         running = false,
-                                        resultText = it.resultText.ifBlank { "（没有返回结果）" }
+                                        resultText = it.resultText.ifBlank {
+                                            if (cancelled) "（已停止）" else "（没有返回结果）"
+                                        }
                                     )
-                                } else {
-                                    it
+                                    else -> it
                                 }
                             },
                             lastEventAt = now()
@@ -1509,7 +1595,19 @@ object AgentEngine {
         val state = _state.value
         val viewed = state.subagentView
         if (sid == state.activeSessionId) {
-            _state.update { it.copy(running = running) }
+            _state.update { current ->
+                current.copy(
+                    running = running,
+                    turnStopping = if (running) current.turnStopping else false,
+                    items = if (running) current.items else current.items.map {
+                        if (it is AssistantItem && it.streaming) {
+                            it.copy(streaming = false)
+                        } else {
+                            it
+                        }
+                    }
+                )
+            }
         }
         // A settled conversation is when its children appear or stop running, so the
         // catalog on screen is refreshed at that boundary rather than polled continuously.
@@ -1524,16 +1622,22 @@ object AgentEngine {
         }
     }
 
-    private fun handleSessionRemoved(id: String) {
+    private fun handleSessionRemoved(id: String, keepRow: Boolean = false) {
         if (id.isBlank()) return
         // dsh disposes an idle child's activation while its durable session stays
         // readable. Every level of the open trail is still valid, so keep the synthetic
         // rows instead of yanking the reader back to some ancestor.
         if (_state.value.subagentTrail.any { it.id == id }) return
-        val remaining = _state.value.sessions.filterNot { it.id == id }
-        _state.update { it.copy(sessions = remaining) }
+        val remaining = if (keepRow) {
+            _state.value.sessions
+        } else {
+            _state.value.sessions.filterNot { it.id == id }
+        }
+        if (!keepRow) _state.update { it.copy(sessions = remaining) }
         if (id == _state.value.activeSessionId) {
-            val next = remaining.firstOrNull { !it.blank } ?: remaining.firstOrNull()
+            val archived = _state.value.archivedSessionIds
+            val next = remaining.firstOrNull { it.id != id && it.id !in archived && !it.blank }
+                ?: remaining.firstOrNull { it.id != id && it.id !in archived }
             if (next != null) activateSession(next.id, forceLoad = true) else scope.launch {
                 createSessionInternal()
             }
@@ -2600,18 +2704,57 @@ object AgentEngine {
                     }
                 }
             } catch (t: Throwable) {
+                val timedOut = t is TimeoutCancellationException
                 eventMutex.withLock {
                     _state.update { current ->
                         current.copy(
                             items = current.items.map {
-                                if (it.key == key && it is UserItem) it.copy(pending = false) else it
+                                // A timed-out prompt may still be admitted by dsh; keep its
+                                // bubble pending until the resync below decides.
+                                if (it.key == key && it is UserItem && !timedOut) {
+                                    it.copy(pending = false)
+                                } else {
+                                    it
+                                }
                             },
-                            running = false
+                            running = if (timedOut) current.running else false
                         )
                     }
                 }
                 if ((t as? AgentBridgeException)?.code == "auth") {
                     recoverExpiredSession()
+                } else if (timedOut) {
+                    eventMutex.withLock {
+                        addNotice("发送回执超时，正在确认这一条是否已送达…", isError = false)
+                    }
+                    scope.launch {
+                        delay(2_500)
+                        refreshSessions(forceReloadActive = false)
+                        delay(2_500)
+                        val current = _state.value
+                        val delivered = current.items.any {
+                            it is UserItem && it.rpcId == rpcId && !it.pending
+                        }
+                        val stillRunning = current.sessions
+                            .firstOrNull { it.id == sessionId }?.running == true
+                        if (!delivered && !stillRunning) {
+                            eventMutex.withLock {
+                                _state.update { state ->
+                                    state.copy(
+                                        items = state.items.map {
+                                            if (it.key == key && it is UserItem) {
+                                                it.copy(pending = false)
+                                            } else {
+                                                it
+                                            }
+                                        },
+                                        running = false
+                                    )
+                                }
+                                addNotice("这条消息可能没有送达，请重新发送。", isError = true)
+                            }
+                        }
+                    }
                 } else {
                     eventMutex.withLock {
                         addNotice("发送失败：${readableError(t)}", isError = true)
@@ -2849,15 +2992,17 @@ object AgentEngine {
         val sessionId = _state.value.activeSessionId ?: return
         val client = bridge ?: return
         val view = _state.value.subagentView
+        if (_state.value.turnStopping) return
+        if (view != null && !view.continuable) {
+            notifyState("一次性子 Agent 无法中断")
+            return
+        }
+        _state.update { it.copy(turnStopping = true) }
         scope.launch {
             try {
                 if (view != null) {
                     // Subagent interrupts are fire-and-return: `accepted` is admitted, not
                     // quiescence, so the child may stay visibly running for a moment.
-                    if (!view.continuable) {
-                        notifyState("一次性子 Agent 无法中断")
-                        return@launch
-                    }
                     client.call(
                         "subagent.interrupt",
                         JSONObject()
@@ -2874,10 +3019,72 @@ object AgentEngine {
                         timeoutMs = 30_000
                     )
                 }
+                verifyTurnStopped(sessionId, view)
             } catch (t: Throwable) {
+                val dshCode = (t as? AgentBridgeException)
+                    ?.details?.optString("dshCode").orEmpty()
                 eventMutex.withLock {
-                    addNotice("停止失败：${readableError(t)}", isError = true)
+                    when (dshCode) {
+                        // dsh already settled or detached this turn; the local projection is
+                        // the stale side, so adopt dsh's truth instead of leaving a spinner.
+                        "session/not-found", "session/not-attached" -> {
+                            _state.update { state ->
+                                state.copy(
+                                    running = false,
+                                    turnStopping = false,
+                                    sessions = state.sessions.map {
+                                        if (it.id == sessionId) it.copy(running = false) else it
+                                    }
+                                )
+                            }
+                            addNotice("这一轮已经结束", isError = false)
+                        }
+                        else -> {
+                            _state.update { it.copy(turnStopping = false) }
+                            addNotice(
+                                "停止失败：${readableError(t)}。可以在设置中重启 Agent。",
+                                isError = true
+                            )
+                        }
+                    }
                 }
+                if (view == null) {
+                    // The request may have raced a dsh restart; reconcile what dsh reports.
+                    scope.launch { refreshSessions(forceReloadActive = false) }
+                }
+            }
+        }
+    }
+
+    /**
+     * dsh acknowledges `session/cancel` before the turn actually unwinds. If the turn does
+     * not settle shortly after, resync from dsh and give the stop button back so a second
+     * tap is possible; otherwise the composer would sit in "stopping" with no way out.
+     */
+    private fun verifyTurnStopped(sessionId: String, view: AgentSubagent?) {
+        cancelVerifyJob?.cancel()
+        cancelVerifyJob = scope.launch {
+            delay(8_000)
+            if (!_state.value.turnStopping) return@launch
+            if (view == null) {
+                refreshSessions(forceReloadActive = false)
+                delay(1_500)
+            } else {
+                pollSubagent(view)
+                delay(1_500)
+            }
+            if (!_state.value.turnStopping) return@launch
+            if (_state.value.running) {
+                _state.update { it.copy(turnStopping = false) }
+                eventMutex.withLock {
+                    addNotice(
+                        "已请求停止，但 dsh 仍显示本轮在运行。可以再点一次停止，" +
+                            "或到设置中重启 Agent。",
+                        isError = true
+                    )
+                }
+            } else {
+                _state.update { it.copy(turnStopping = false) }
             }
         }
     }
@@ -2999,14 +3206,68 @@ object AgentEngine {
                     30_000
                 )
                 // Archive is a Workspace-navigation fact: reflect it before the session
-                // list is re-read so the archived chat cannot be merged back in.
+                // list is re-read so the archived chat cannot be merged back in. The row
+                // itself stays in `sessions` so the drawer can offer "恢复".
                 _state.update { state -> state.copy(archivedSessionIds = state.archivedSessionIds + id) }
-                handleSessionRemoved(id)
+                handleSessionRemoved(id, keepRow = true)
                 refreshWorkspacesNow(client)
                 refreshSessions(forceReloadActive = false)
             } catch (t: Throwable) {
                 eventMutex.withLock {
                     addNotice("归档失败：${readableError(t)}", isError = true)
+                }
+            }
+        }
+    }
+
+    fun unarchiveSession(id: String) {
+        val client = bridge ?: return
+        scope.launch {
+            try {
+                client.callObject(
+                    "workspace.unarchiveSession",
+                    JSONObject().put("sessionId", id),
+                    30_000
+                )
+                _state.update { state -> state.copy(archivedSessionIds = state.archivedSessionIds - id) }
+                refreshWorkspacesNow(client)
+                refreshSessions(forceReloadActive = false)
+            } catch (t: Throwable) {
+                eventMutex.withLock {
+                    addNotice("恢复对话失败：${readableError(t)}", isError = true)
+                }
+            }
+        }
+    }
+
+    fun setSessionPinned(id: String, pinned: Boolean) {
+        val client = bridge ?: return
+        scope.launch {
+            val method = if (pinned) "workspace.pinSession" else "workspace.unpinSession"
+            try {
+                val result = client.callObject(
+                    method,
+                    JSONObject().put("sessionId", id),
+                    30_000
+                )
+                val ids = result.optJSONArray("pinnedSessionIds").stringList()
+                if (ids.isNotEmpty() || !pinned) {
+                    _state.update { state -> state.copy(pinnedSessionIds = ids) }
+                } else {
+                    // Some dsh builds omit the resulting set; apply the intent locally.
+                    _state.update { state ->
+                        state.copy(
+                            pinnedSessionIds = if (pinned) listOf(id) + state.pinnedSessionIds
+                            else state.pinnedSessionIds - id
+                        )
+                    }
+                }
+            } catch (t: Throwable) {
+                eventMutex.withLock {
+                    addNotice(
+                        if (pinned) "置顶失败：${readableError(t)}" else "取消置顶失败：${readableError(t)}",
+                        isError = true
+                    )
                 }
             }
         }
@@ -3302,6 +3563,47 @@ object AgentEngine {
                 "error=${install.error ?: "none"}"
         )
         return install
+    }
+
+    /**
+     * Replaces one recorded profile dependency with another exact version. dsh's plugin
+     * manager refuses a package it already has installed, so this goes through dsh's own
+     * CLI (`dsh plugin add`), which forwards to pnpm and rewrites the profile manifest.
+     * The running dsh keeps the old code until it restarts.
+     */
+    suspend fun updatePlugin(name: String, version: String): AgentPluginInstall {
+        val pluginName = name.trim()
+        val targetVersion = version.trim()
+        if (pluginName.isEmpty() || targetVersion.isEmpty()) {
+            throw IllegalArgumentException("缺少插件名称或版本")
+        }
+        val client = bridge ?: throw IllegalStateException("Agent 尚未连接")
+        if (_state.value.connection != AgentConnection.Ready) {
+            throw IllegalStateException("Agent 尚未连接")
+        }
+        val result = try {
+            client.callObject(
+                "plugin.update",
+                JSONObject().put("name", pluginName).put("version", targetVersion),
+                20 * 60_000L
+            )
+        } catch (t: Throwable) {
+            loadPluginsNow(client)
+            throw t
+        }
+        loadPluginsNow(client)
+        val update = AgentPluginInstall(
+            changed = result.optBoolean("changed", false),
+            restartRequired = result.optBoolean("restartRequired", false),
+            bundle = result.optText("bundle"),
+            version = result.optText("version"),
+            error = result.optText("error")
+        )
+        appendLog(
+            "插件更新结果：$pluginName $targetVersion " +
+                "changed=${update.changed} version=${update.version ?: "unknown"}"
+        )
+        return update
     }
 
     /**

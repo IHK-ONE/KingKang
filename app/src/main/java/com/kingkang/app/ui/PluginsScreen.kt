@@ -96,7 +96,17 @@ fun PluginsScreen(
     var inspecting by remember { mutableStateOf(false) }
     var inspected by remember { mutableStateOf<AgentPluginInspection?>(null) }
     var installError by remember { mutableStateOf<String?>(null) }
+    // Dismissing the dialog or editing the spec must invalidate an inspection that is
+    // still in flight; otherwise its result starts a real pnpm install after 取消.
+    var inspectSeq by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
+    fun dismissInstall() {
+        inspectSeq++
+        showInstall = false
+        inspecting = false
+        inspected = null
+        installError = null
+    }
 
     LaunchedEffect(agent.connection) {
         if (ready) vm.refreshPlugins()
@@ -197,7 +207,11 @@ fun PluginsScreen(
             SettingsLikeCard {
                 if (!ready) {
                     Text(
-                        "连接 Agent 后读取插件。",
+                        if (agent.connection == AgentConnection.Starting) {
+                            "Agent 正在重启，连接后自动读取插件。"
+                        } else {
+                            "Agent 未连接，连接后读取插件。"
+                        },
                         color = TextMuted,
                         fontSize = 10.5.sp
                     )
@@ -223,9 +237,13 @@ fun PluginsScreen(
                         }
                         InstalledPluginRow(
                             plugin = plugin,
+                            dshVersion = agent.dshVersion,
+                            updating = incompatibleUpdateVersion(plugin, agent.dshVersion)
+                                ?.let { installing == "${plugin.name}@$it" } == true,
                             changing = changing == plugin.name,
                             enabled = ready && changing == null && installing == null,
-                            onToggle = { vm.setPluginEnabled(plugin.name, it) }
+                            onToggle = { vm.setPluginEnabled(plugin.name, it) },
+                            onUpdate = { version -> vm.updatePlugin(plugin.name, version) }
                         )
                     }
                 }
@@ -311,7 +329,9 @@ fun PluginsScreen(
         InstallPluginDialog(
             spec = spec,
             onSpecChange = {
+                inspectSeq++
                 spec = it
+                inspecting = false
                 inspected = null
                 installError = null
             },
@@ -319,25 +339,28 @@ fun PluginsScreen(
             inspected = inspected,
             error = installError,
             enabled = ready && installing == null,
-            onDismiss = { showInstall = false },
+            onDismiss = ::dismissInstall,
             onConfirm = {
                 val value = spec.trim()
                 if (value.isBlank() || inspecting) return@InstallPluginDialog
+                inspectSeq++
+                val seq = inspectSeq
                 inspecting = true
                 inspected = null
                 installError = null
                 scope.launch {
                     try {
                         val result = vm.inspectPlugin(value)
+                        if (seq != inspectSeq) return@launch
                         inspected = result
-                        if (result.accepted) {
+                        if (result.accepted && showInstall) {
                             showInstall = false
                             vm.installPlugin(value)
                         }
                     } catch (t: Throwable) {
-                        installError = t.message ?: "检查插件失败"
+                        if (seq == inspectSeq) installError = t.message ?: "检查插件失败"
                     } finally {
-                        inspecting = false
+                        if (seq == inspectSeq) inspecting = false
                     }
                 }
             }
@@ -377,13 +400,31 @@ private fun PluginInstallNoteCard(note: PluginInstallNote, onDismiss: () -> Unit
     }
 }
 
+/**
+ * dsh refuses a profile bundle built for another dsh release and disables it at startup,
+ * but the profile keeps listing it as installed and switched on. Every official plugin
+ * shares dsh's release version, so a mismatch is that incompatibility; the fix is
+ * updating the package to the running dsh version.
+ */
+private fun incompatibleUpdateVersion(plugin: AgentPlugin, dshVersion: String?): String? {
+    val installed = plugin.version ?: return null
+    val running = dshVersion?.takeIf { it.isNotBlank() } ?: return null
+    if (!plugin.official || !plugin.name.startsWith("@deepseek-ai/")) return null
+    if (installed == running) return null
+    return running
+}
+
 @Composable
 private fun InstalledPluginRow(
     plugin: AgentPlugin,
+    dshVersion: String?,
+    updating: Boolean,
     changing: Boolean,
     enabled: Boolean,
-    onToggle: (Boolean) -> Unit
+    onToggle: (Boolean) -> Unit,
+    onUpdate: (String) -> Unit
 ) {
+    val updateVersion = incompatibleUpdateVersion(plugin, dshVersion)
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -420,6 +461,36 @@ private fun InstalledPluginRow(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+            if (updateVersion != null && dshVersion != null) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "与 dsh $dshVersion 版本不匹配，已被 dsh 停用。",
+                        modifier = Modifier.weight(1f, fill = false),
+                        color = ErrorText,
+                        fontSize = 10.sp,
+                        lineHeight = 14.sp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    if (updating) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(13.dp),
+                            color = TextMuted,
+                            strokeWidth = 1.5.dp
+                        )
+                    } else {
+                        Text(
+                            "更新",
+                            color = if (enabled) Accent else TextMuted,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.clickable(enabled = enabled) {
+                                onUpdate(updateVersion)
+                            }
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.width(12.dp))

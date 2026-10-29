@@ -118,6 +118,16 @@ fun TerminalScreen(
 
     LaunchedEffect(Unit) { vm.prepareTerminal() }
 
+    // A terminal opened while the environment is being installed shows a status pane
+    // instead of an error. When the install/delete settles, prepare again so the pane
+    // does not keep the "正在安装或删除" failure after the operation finished.
+    LaunchedEffect(environment.installing, environment.deleting, state) {
+        val busy = environment.installing || environment.deleting
+        val staleInstallError = (state as? TerminalUiState.Failed)
+            ?.message?.contains("正在安装或删除") == true
+        if (!busy && staleInstallError) vm.prepareTerminal()
+    }
+
     LaunchedEffect(activeSession) {
         val active = activeSession
         if (active != null) {
@@ -161,6 +171,11 @@ fun TerminalScreen(
                     state = state,
                     viewState = viewState,
                     onRestart = { vm.restartTerminal() }
+                )
+
+                environment.installing || environment.deleting -> CenteredStatus(
+                    title = if (environment.installing) "Kali 环境正在安装…" else "Kali 环境正在删除…",
+                    subtitle = "完成后会自动准备终端"
                 )
 
                 state is TerminalUiState.NeedsSetup -> SetupPane(

@@ -162,6 +162,9 @@ All methods are optional by capability. Unknown methods fail with
 | `settings.describe` | `{}` | `{writable,namespaces:[SettingsNamespace]}` |
 | `settings.mutate` | `{ns,ops,expectedRevision?}` | `{revision,...}` |
 | `workspace.archiveSession` | `{sessionId}` | `{archivedSessionIds}` |
+| `workspace.unarchiveSession` | `{sessionId}` | `{archivedSessionIds}` |
+| `workspace.pinSession` | `{sessionId}` | `{pinnedSessionIds}` |
+| `workspace.unpinSession` | `{sessionId}` | `{pinnedSessionIds}` |
 | `credentials.describe` | `{refs:[string]}` | `{refs:{<ref>:{configured,source?,writable}}}` |
 | `credentials.set` | `{ref,value}` | `{stored:true}` |
 | `credentials.unset` | `{ref}` | `{removed:true}` |

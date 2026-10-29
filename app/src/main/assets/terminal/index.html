@@ -136,6 +136,27 @@
     resize();
   };
 
+  // Some Android IMEs commit a whole word (swipe typing, pinyin candidates) in one
+  // gesture, and this xterm build then replays the tail of that commit as it finalizes
+  // the composition: "abcdef" arrives as abcdef, bcdef, cdef, def, ef, f. Sending only
+  // the first message keeps the typed word intact; a genuine second input never equals
+  // a proper suffix of the text sent microseconds earlier.
+  // Android IMEs deliver typed text as insertText input events that land in xterm's
+  // hidden textarea. xterm's composition fallback then reconciles the textarea against
+  // a snapshot taken at keydown, and under fast input those snapshots are stale, so one
+  // word reaches the PTY as overlapping fragments ("ec", "ch", "ho"). Cancel the
+  // mutation and forward the committed text exactly once instead.
+  var helperTextarea = document.querySelector('.xterm-helper-textarea');
+  if (helperTextarea) {
+    helperTextarea.addEventListener('beforeinput', function (event) {
+      if (event.inputType !== 'insertText' || !event.data) {
+        return;
+      }
+      event.preventDefault();
+      window.KingKangBridge.send(event.data);
+    }, true);
+  }
+
   term.onData(function (data) {
     window.KingKangBridge.send(data);
   });

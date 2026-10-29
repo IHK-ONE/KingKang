@@ -187,6 +187,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         refreshEnvironment()
+        val env = _environment.value
+        if (env.installing || env.deleting) {
+            _terminalState.value = TerminalUiState.Failed("Kali 环境正在安装或删除，请稍候")
+            return
+        }
         if (rootfsManager.isInstalled()) {
             startTerminal()
         } else {
@@ -196,6 +201,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startTerminal(debugShell: Boolean = false) {
         if (startJob?.isActive == true) return
+        val env = _environment.value
+        if (!debugShell && (env.installing || env.deleting)) {
+            _terminalState.value = TerminalUiState.Failed("Kali 环境正在安装或删除，请稍候")
+            return
+        }
         if (!debugShell && !rootfsManager.isInstalled()) {
             _terminalState.value = TerminalUiState.NeedsSetup
             return
@@ -298,9 +308,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun installRootfs(startAfter: Boolean, expectedSha256: String? = null) {
         if (_environment.value.installing || _environment.value.deleting) return
-        closeSession()
-        if (!startAfter) {
-            _terminalState.value = TerminalUiState.NeedsSetup
+        if (_harness.value.busy) {
+            _environment.update {
+                it.copy(error = "Agent 核心正在安装或卸载，请稍候")
+            }
+            return
         }
         val spec = currentSpec()
         if (spec == null) {
@@ -308,6 +320,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(error = "当前设备架构暂不支持内置 Kali 环境")
             }
             return
+        }
+        val hadEnvironment = rootfsManager.isInstalled()
+        closeSession()
+        // Replacing a live rootfs under dsh/bridge leaves them running against deleted
+        // files. Stop them first; success below reconnects if dsh was preserved.
+        if (hadEnvironment) {
+            AgentEngine.stop()
+            cancelHarnessWork()
+        }
+        if (!startAfter) {
+            _terminalState.value = TerminalUiState.NeedsSetup
         }
 
         installJob?.cancel()
@@ -361,6 +384,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         updateAvailable = false
                     )
                 }
+                if (File(rootfsManager.rootfsDir, "opt/kingkang/dsh/bin/dsh").isFile) {
+                    AgentEngine.restart()
+                } else {
+                    // The environment exists now but dsh does not. Re-evaluate readiness so
+                    // Home stops showing the stale "Kali 环境尚未安装" from before.
+                    AgentEngine.ensureStarted(getApplication())
+                }
                 if (startAfter) {
                     startTerminal()
                 }
@@ -376,6 +406,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (startAfter && _terminalState.value !is TerminalUiState.Running) {
                     _terminalState.value = TerminalUiState.NeedsSetup
                 }
+                // A cancelled download/verify usually leaves the old rootfs untouched;
+                // bring dsh back instead of leaving the app disconnected.
+                reconnectAgentIfHarnessPresent(hadEnvironment)
                 throw c
             } catch (t: Throwable) {
                 val message = t.message?.takeIf { it.isNotBlank() } ?: "安装失败"
@@ -390,15 +423,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (startAfter) {
                     _terminalState.value = TerminalUiState.Failed(message)
                 }
+                reconnectAgentIfHarnessPresent(hadEnvironment)
             }
         }
     }
 
     fun cancelInstall() {
-        installJob?.cancel()
-        installJob = null
-        _environment.update {
-            it.copy(installing = false, progress = null, status = "已取消下载")
+        val job = installJob ?: return
+        if (!job.isActive) return
+        // Leave `installing` set until the job actually exits: extraction is not
+        // interruptible, and claiming the install stopped while it keeps writing the
+        // rootfs was misleading.
+        _environment.update { it.copy(status = "正在取消…") }
+        job.cancel()
+    }
+
+    /** Restarts dsh after a failed environment update when the runtime is still there. */
+    private fun reconnectAgentIfHarnessPresent(hadEnvironment: Boolean) {
+        if (!hadEnvironment) return
+        if (File(rootfsManager.rootfsDir, "opt/kingkang/dsh/bin/dsh").isFile) {
+            AgentEngine.restart()
         }
     }
 
@@ -407,7 +451,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * reports progress so the settings screen never blocks on the main thread.
      */
     fun removeRootfs() {
-        if (_environment.value.deleting) return
+        if (_environment.value.deleting || _environment.value.installing) return
+        if (_harness.value.busy) {
+            _environment.update {
+                it.copy(error = "Agent 核心正在安装或卸载，请稍候")
+            }
+            return
+        }
         installJob?.cancel()
         installJob = null
         closeSession()
@@ -438,6 +488,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 refreshEnvironment()
                 _environment.update { it.copy(deleting = false, status = null) }
+                // Sessions, plugins and the dsh version all lived inside the deleted image.
+                AgentEngine.forgetHarness("Kali 环境已删除")
                 emitUiMessage("Kali 环境已删除")
             } catch (c: CancellationException) {
                 throw c
@@ -518,6 +570,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _harness.value = HarnessUi()
             return
         }
+        if (_environment.value.installing || _environment.value.deleting) return
         if (_harness.value.busy || _harness.value.checkingUpdate) return
         if (harnessJob?.isActive == true) return
 
@@ -543,6 +596,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startHarnessInstall(update: Boolean) {
         if (_harness.value.busy) return
+        if (_environment.value.installing || _environment.value.deleting) {
+            _harness.update { it.copy(error = "Kali 环境正在安装或删除，请稍候") }
+            return
+        }
         if (!rootfsManager.isInstalled()) {
             _harness.update { it.copy(error = "请先安装 Kali 环境") }
             return
@@ -620,6 +677,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun checkHarnessUpdate() {
         if (_harness.value.busy || _harness.value.checkingUpdate) return
+        if (_environment.value.installing || _environment.value.deleting) {
+            _harness.update { it.copy(error = "Kali 环境正在安装或删除，请稍候") }
+            return
+        }
         if (!rootfsManager.isInstalled()) {
             _harness.update { it.copy(error = "请先安装 Kali 环境") }
             return
@@ -668,6 +729,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Removes dsh, the Node.js runtime and the npm cache from Kali. */
     fun removeHarness() {
         if (_harness.value.busy) return
+        if (_environment.value.installing || _environment.value.deleting) {
+            _harness.update { it.copy(error = "Kali 环境正在安装或删除，请稍候") }
+            return
+        }
         if (!rootfsManager.isInstalled()) {
             _harness.value = HarnessUi()
             return
@@ -678,6 +743,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(busy = true, step = "正在卸载 Agent 核心…", progress = null, error = null)
             }
             try {
+                // Stop dsh before touching its files: a running dsh can keep writing to the
+                // npm cache, and the app must not keep reporting a live connection to a
+                // runtime that is about to disappear.
+                AgentEngine.stop()
                 val removed = withContext(Dispatchers.IO) {
                     // The script clears the PATH symlinks; the tree itself is deleted from
                     // here because `rm` inside PRoot cannot see all of npm's cache files.
@@ -694,8 +763,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _harness.update {
                         it.copy(busy = false, step = null, error = "卸载失败，请重试")
                     }
+                    // Nothing was actually removed; bring the bridge back rather than
+                    // leaving the app disconnected after a failed uninstall.
+                    AgentEngine.restart()
                 } else {
-                    AgentEngine.stop()
+                    AgentEngine.forgetHarness()
                     _harness.value = HarnessUi()
                     emitUiMessage("Agent 核心已卸载")
                 }
@@ -707,6 +779,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _harness.update {
                     it.copy(busy = false, step = null, error = t.readableMessage("卸载失败"))
                 }
+                AgentEngine.restart()
             }
         }
     }
@@ -868,6 +941,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Moves one installed plugin to another exact version. dsh loads plugin code only at
+     * startup, so an idle agent restarts here; a running turn is never cut off for it.
+     */
+    fun updatePlugin(name: String, version: String) {
+        if (_pluginInstalling.value != null) return
+        viewModelScope.launch {
+            _pluginInstalling.value = "$name@$version"
+            _pluginInstallNote.value = null
+            try {
+                val update = AgentEngine.updatePlugin(name, version)
+                val bundle = update.bundle ?: name
+                val installed = update.version ?: version
+                val busy = AgentEngine.state.value.running
+                val note = if (busy) {
+                    PluginInstallNote("已更新 $bundle 至 $installed，当前任务结束后重启 Agent 生效")
+                } else {
+                    PluginInstallNote("已更新 $bundle 至 $installed，正在重启 Agent")
+                }
+                _pluginInstallNote.value = note
+                emitUiMessage(note.text)
+                if (!busy) AgentEngine.restart()
+            } catch (t: Throwable) {
+                val text = "更新插件失败：${t.message ?: "未知错误"}"
+                _pluginInstallNote.value = PluginInstallNote(text, failed = true)
+                emitUiMessage(text)
+            } finally {
+                _pluginInstalling.value = null
+            }
+        }
+    }
+
     fun setRootMode(enabled: Boolean) {
         if (!enabled) {
             settingsStore.rootMode = false
@@ -1002,6 +1107,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectChat(id: String) = AgentEngine.openSession(id)
 
     fun archiveChat(id: String) = AgentEngine.archiveSession(id)
+
+    fun unarchiveChat(id: String) = AgentEngine.unarchiveSession(id)
+
+    fun setChatPinned(id: String, pinned: Boolean) = AgentEngine.setSessionPinned(id, pinned)
 
     fun renameChat(id: String, title: String) = AgentEngine.renameSession(id, title)
 

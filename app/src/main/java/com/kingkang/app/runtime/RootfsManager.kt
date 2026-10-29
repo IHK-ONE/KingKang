@@ -182,14 +182,21 @@ class RootfsManager(private val context: Context) {
     }
 
     /**
-     * Deletes /opt/kingkang (Node.js, dsh, npm caches) from the app side and reports
-     * whether it is really gone. Must be called from a background thread.
+     * Deletes /opt/kingkang (Node.js, dsh and their packages) plus npm's package cache
+     * from the app side and reports whether the runtime is really gone. The cache lives
+     * under /root and PRoot cannot see all of it, so it is removed here too. Must be
+     * called from a background thread.
      */
     fun removeHarnessRuntime(): Boolean {
         val dir = File(rootfsDir, "opt/kingkang")
-        if (!dir.exists()) return true
-        deleteTree(dir, {})
-        return !dir.exists()
+        val removed = if (dir.exists()) {
+            deleteTree(dir, {})
+            !dir.exists()
+        } else {
+            true
+        }
+        deleteTree(File(rootfsDir, "root/.npm"), {})
+        return removed
     }
 
     private fun deleteTree(root: File, onProgress: (Int) -> Unit): Int {

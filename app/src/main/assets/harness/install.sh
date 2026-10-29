@@ -46,13 +46,23 @@ install_dsh >>"$LOG" 2>&1 || fail "DSH_INSTALL_FAILED"
 ln -sf /opt/kingkang/dsh/bin/dsh /usr/local/bin/dsh
 
 step "正在安装插件管理器（pnpm）…"
-# dsh's plugin manager runs pnpm inside the profile; the Harness plugin UI (and the
-# app's plugin list) is only complete when it exists. Best effort: dsh itself keeps
-# working without it, and plugin installs then report their own failure.
-if npm install -g --prefix /opt/kingkang/node pnpm@10 --no-audit --no-fund >>"$LOG" 2>&1; then
-  ln -sf /opt/kingkang/node/bin/pnpm /usr/local/bin/pnpm
-  ln -sf /opt/kingkang/node/bin/pnpx /usr/local/bin/pnpx
-  echo "KK_PNPM=$(pnpm --version 2>/dev/null | head -n 1 | tr -d '\r')"
+# dsh runs `pnpm` from PATH for every plugin operation; the Harness plugin UI (and the
+# app's plugin list and updates) only work when it does. npm's own bin links do not
+# always survive this sandbox, so link the package entry point directly and verify it.
+PNPM_PKG=/opt/kingkang/node/lib/node_modules/pnpm
+pnpm_ok() {
+  [ -f "$PNPM_PKG/bin/pnpm.cjs" ] &&
+    node "$PNPM_PKG/bin/pnpm.cjs" --version >/dev/null 2>&1
+}
+# A run that was killed midway can leave the package truncated while its entry file still
+# exists, so check that pnpm actually starts and reinstall when it does not.
+if ! pnpm_ok; then
+  npm install -g --prefix /opt/kingkang/node pnpm@10 --force --no-audit --no-fund >>"$LOG" 2>&1 || true
+fi
+if pnpm_ok; then
+  ln -sf "$PNPM_PKG/bin/pnpm.cjs" /opt/kingkang/node/bin/pnpm
+  ln -sf "$PNPM_PKG/bin/pnpm.cjs" /usr/local/bin/pnpm
+  echo "KK_PNPM=$(node "$PNPM_PKG/bin/pnpm.cjs" --version 2>/dev/null | head -n 1 | tr -d '\r')"
 else
   echo "KK_WARN=PNPM_INSTALL_FAILED"
 fi

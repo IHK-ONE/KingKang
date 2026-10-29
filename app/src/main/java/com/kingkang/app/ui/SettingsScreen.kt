@@ -122,9 +122,17 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         if (rootMode) vm.checkRoot()
         vm.refreshHarness()
-        vm.refreshAgentCredentials()
-        vm.refreshAgentPermissions()
-        vm.refreshAgentPresets()
+    }
+
+    // These cards read from the bridge, which may still be starting when Settings is
+    // opened from the drawer. Re-run when it becomes Ready instead of leaving them on
+    // "读取中…" until the user taps 刷新状态 by hand.
+    LaunchedEffect(agent.connection) {
+        if (agent.connection == AgentConnection.Ready) {
+            vm.refreshAgentCredentials()
+            vm.refreshAgentPermissions()
+            vm.refreshAgentPresets()
+        }
     }
 
     // Entering from the "configure API Key" prompt lands on the credentials card instead
@@ -207,7 +215,10 @@ fun SettingsScreen(
             Spacer(Modifier.height(10.dp))
             HarnessCard(
                 harness = harness,
-                liveVersion = agent.dshVersion,
+                // A stopped bridge no longer proves dsh is present. After an uninstall its
+                // last version would otherwise survive in the card as a fake "已安装".
+                liveVersion = agent.dshVersion
+                    ?.takeIf { agent.connection == AgentConnection.Ready },
                 kaliInstalled = environment.installed,
                 onInstall = vm::installHarness,
                 onCheckUpdate = vm::checkHarnessUpdate,
@@ -216,15 +227,8 @@ fun SettingsScreen(
                 onDismissError = vm::dismissHarnessError
             )
 
-            Spacer(Modifier.height(24.dp))
-            SectionLabel("Agent 连接")
-            Spacer(Modifier.height(8.dp))
-            AgentConnectionCard(
-                agent = agent,
-                onRestart = vm::restartAgent,
-                onStop = vm::stopAgent
-            )
-
+            // Credentials follow the dsh card and sit above Agent 连接: filling in the
+            // API Key is the step users need first, before the bridge's diagnostics.
             Spacer(Modifier.height(10.dp))
             Box(Modifier.bringIntoViewRequester(credentialsAnchor)) {
                 AgentCredentialsCard(
@@ -234,6 +238,15 @@ fun SettingsScreen(
                     onRefresh = vm::refreshAgentCredentials
                 )
             }
+
+            Spacer(Modifier.height(24.dp))
+            SectionLabel("Agent 连接")
+            Spacer(Modifier.height(8.dp))
+            AgentConnectionCard(
+                agent = agent,
+                onRestart = vm::restartAgent,
+                onStop = vm::stopAgent
+            )
 
             Spacer(Modifier.height(10.dp))
             AgentPermissionCard(
@@ -726,6 +739,13 @@ private fun EnvironmentCard(
     onDelete: () -> Unit,
     onOpenTerminal: () -> Unit
 ) {
+    val postDownload = environment.installing && (
+        environment.status?.contains("解压") == true ||
+            environment.status?.contains("校验") == true ||
+            environment.status?.contains("安装") == true
+        )
+    val cancelling = environment.installing &&
+        environment.status?.startsWith("正在取消") == true
     SettingsCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -826,15 +846,26 @@ private fun EnvironmentCard(
             }
             if (environment.installing) {
                 Spacer(Modifier.height(6.dp))
-                OutlinedButton(
-                    onClick = onCancel,
-                    modifier = Modifier.height(30.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, Border),
-                    contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
-                ) {
-                    Text("取消", fontSize = 10.5.sp)
+                if (postDownload || cancelling) {
+                    // Extraction is not interruptible, and a download already being
+                    // cancelled must not offer the button again.
+                    Text(
+                        if (cancelling) "正在取消，请稍候…"
+                        else "解压阶段无法取消，请保持应用在前台。",
+                        color = TextMuted,
+                        fontSize = 9.5.sp
+                    )
+                } else {
+                    OutlinedButton(
+                        onClick = onCancel,
+                        modifier = Modifier.height(30.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Border),
+                        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                    ) {
+                        Text("取消", fontSize = 10.5.sp)
+                    }
                 }
             }
         }
@@ -988,9 +1019,10 @@ private fun HarnessCard(
     // (for example when dsh was installed outside the in-app flow).
     val installed = harness.installed || !liveVersion.isNullOrBlank()
     val versionText = harness.version ?: liveVersion
+    val uninstalling = harness.busy && harness.step?.contains("卸载") == true
     val statusLabel = when {
         harness.busy -> when {
-            harness.step?.contains("卸载") == true -> "卸载中"
+            uninstalling -> "卸载中"
             harness.step?.contains("更新") == true -> "更新中"
             else -> "安装中"
         }
@@ -1122,15 +1154,25 @@ private fun HarnessCard(
                 )
             }
             Spacer(Modifier.height(6.dp))
-            OutlinedButton(
-                onClick = onCancel,
-                modifier = Modifier.height(30.dp),
-                shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, Border),
-                contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
-            ) {
-                Text("取消", fontSize = 10.5.sp)
+            if (uninstalling) {
+                // Cancelling a half-finished removal would leave a broken dsh behind, so the
+                // only honest state to show is "let it finish".
+                Text(
+                    "卸载过程中请保持应用在前台。",
+                    color = TextMuted,
+                    fontSize = 9.5.sp
+                )
+            } else {
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.height(30.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Border),
+                    contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                ) {
+                    Text("取消", fontSize = 10.5.sp)
+                }
             }
         }
 
@@ -1322,7 +1364,8 @@ private fun NpmSourceCard(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "安装与更新 dsh、检查与安装插件时使用的 npm 源。默认阿里源，下次安装或更新生效。",
+            "安装与更新 dsh、检查与安装插件时使用的 npm 源。默认阿里源，下次安装或更新生效；" +
+                "如果这台设备走代理上网，请选择 npm 官方源。",
             color = TextMuted,
             fontSize = 9.5.sp,
             lineHeight = 14.sp
