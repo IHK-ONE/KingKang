@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<link rel="stylesheet" href="xterm.css">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #101112;
+    color-scheme: dark;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #terminal {
+    /* Fixed, not absolute: the WebView reports a zero-height body here, and a
+       percentage height against it collapses the terminal to a single row. */
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    box-sizing: border-box;
+    background: #101112;
+  }
+  .xterm { height: 100%; }
+  .xterm-viewport {
+    background: transparent !important;
+    scrollbar-width: thin;
+    scrollbar-color: #2A2C2F transparent;
+  }
+  .xterm .xterm-screen canvas { image-rendering: auto; }
+  .xterm .xterm-cursor-layer { filter: drop-shadow(0 0 4px rgba(139, 233, 168, 0.45)); }
+</style>
+</head>
+<body>
+<div id="terminal"></div>
+<script src="xterm.js"></script>
+<script src="xterm-addon-fit.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'block',
+    fontFamily: '"JetBrains Mono", "Cascadia Mono", "SFMono-Regular", Menlo, Consolas, monospace',
+    fontSize: 13.5,
+    fontWeight: '400',
+    fontWeightBold: '600',
+    lineHeight: 1.22,
+    letterSpacing: 0,
+    scrollback: 8000,
+    convertEol: false,
+    allowProposedApi: true,
+    theme: {
+      background: '#101112',
+      foreground: '#D7DEE4',
+      cursor: '#8FD8AC',
+      cursorAccent: '#101112',
+      selectionBackground: '#2A3A32',
+      selectionForeground: '#F2F7F4',
+      black: '#11171C',
+      red: '#E58A8A',
+      green: '#8FD3A8',
+      yellow: '#DDBB72',
+      blue: '#8FB6DD',
+      magenta: '#C9A6DE',
+      cyan: '#8BD6DA',
+      white: '#D7DEE4',
+      brightBlack: '#5B646C',
+      brightRed: '#F0A3A3',
+      brightGreen: '#A9E3BE',
+      brightYellow: '#EFD196',
+      brightBlue: '#ADCBF0',
+      brightMagenta: '#DCC0EC',
+      brightCyan: '#AEE7EA',
+      brightWhite: '#FFFFFF'
+    }
+  });
+
+  var fitAddon = new FitAddon.FitAddon();
+  term.loadAddon(fitAddon);
+  term.open(document.getElementById('terminal'));
+
+  var lastCols = 0;
+  var lastRows = 0;
+
+  function resize() {
+    try {
+      fitAddon.fit();
+      if (term.cols > 0 && term.rows > 0 &&
+          (term.cols !== lastCols || term.rows !== lastRows)) {
+        lastCols = term.cols;
+        lastRows = term.rows;
+        window.KingKangBridge.resize(term.cols, term.rows);
+      }
+    } catch (e) {
+      // A fit against a transiently zero-sized host is harmless; the retry
+      // schedule below will run again once layout settles.
+    }
+  }
+
+  function focus() {
+    term.focus();
+    resize();
+  }
+
+  function decodeBase64(value) {
+    var binary = atob(value);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  window.kingkangWriteB64 = function (payload) {
+    try {
+      term.write(decodeBase64(payload));
+    } catch (e) {
+      // Ignore a malformed chunk rather than tearing down the terminal.
+    }
+  };
+  window.kingkangFit = resize;
+  window.kingkangFocus = focus;
+  window.kingkangReset = function () {
+    lastCols = 0;
+    lastRows = 0;
+    term.reset();
+    resize();
+  };
+
+  term.onData(function (data) {
+    window.KingKangBridge.send(data);
+  });
+
+  window.addEventListener('resize', function () {
+    setTimeout(resize, 80);
+  });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', function () {
+      setTimeout(resize, 80);
+    });
+  }
+
+  if (window.ResizeObserver) {
+    var observer = new ResizeObserver(function () {
+      setTimeout(resize, 80);
+    });
+    observer.observe(document.getElementById('terminal'));
+    observer.observe(document.documentElement);
+    observer.observe(document.body);
+  }
+
+  // The WebView can report a zero-height viewport for the first few frames while
+  // Compose is still measuring. Retry the fit across the initial layout window so the
+  // PTY does not stay stuck at one row.
+  [0, 60, 150, 300, 600, 1200, 2400, 4000].forEach(function (delay) {
+    setTimeout(resize, delay);
+  });
+
+  setTimeout(function () {
+    window.KingKangBridge.ready();
+    term.focus();
+  }, 60);
+})();
+</script>
+</body>
+</html>

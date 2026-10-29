@@ -1,0 +1,1303 @@
+<title>KingKang 设计文档</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&amp;family=Noto+Sans+SC:wght@400;500;700&amp;family=Noto+Serif+SC:wght@600;700&amp;display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #F3F5F4;
+    --surface: #FFFFFF;
+    --surface-2: #E9EEEC;
+    --ink: #17211E;
+    --muted: #5A6964;
+    --line: #D3DCD8;
+    --line-strong: #B7C5BF;
+    --accent: #9B4A22;
+    --accent-ink: #7E3A19;
+    --accent-soft: #F2E4DB;
+    --ok: #1E6A58;
+    --ok-soft: #E1EFE9;
+    --warn: #7E5600;
+    --warn-soft: #F4EAD3;
+    --danger: #9E2B2B;
+    --danger-soft: #F4E0E0;
+    --code-bg: #0F1714;
+    --code-ink: #DCE8E2;
+    --code-muted: #8CA198;
+    --serif: "Noto Serif SC", "Songti SC", "SimSun", serif;
+    --sans: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0E1513;
+      --surface: #141D1A;
+      --surface-2: #1B2722;
+      --ink: #E5EDE9;
+      --muted: #9AADA5;
+      --line: #26332E;
+      --line-strong: #3A4B44;
+      --accent: #D99167;
+      --accent-ink: #E7A67E;
+      --accent-soft: #31221A;
+      --ok: #69B9A4;
+      --ok-soft: #153029;
+      --warn: #D3A64F;
+      --warn-soft: #302713;
+      --danger: #DE8A8A;
+      --danger-soft: #371E1E;
+      --code-bg: #080D0B;
+      --code-ink: #DCE8E2;
+      --code-muted: #7D9188;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0E1513;
+    --surface: #141D1A;
+    --surface-2: #1B2722;
+    --ink: #E5EDE9;
+    --muted: #9AADA5;
+    --line: #26332E;
+    --line-strong: #3A4B44;
+    --accent: #D99167;
+    --accent-ink: #E7A67E;
+    --accent-soft: #31221A;
+    --ok: #69B9A4;
+    --ok-soft: #153029;
+    --warn: #D3A64F;
+    --warn-soft: #302713;
+    --danger: #DE8A8A;
+    --danger-soft: #371E1E;
+    --code-bg: #080D0B;
+    --code-ink: #DCE8E2;
+    --code-muted: #7D9188;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.78;
+    -webkit-font-smoothing: antialiased;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+
+  .shell {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 200px minmax(0, 1fr);
+    gap: 64px;
+    padding-block: 48px 96px;
+  }
+
+  main { min-width: 0; }
+
+  .toc { align-self: start; position: sticky; top: 24px; }
+  .toc-title {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 12px;
+  }
+  .toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+  .toc li { margin: 0; }
+  .toc a {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 5px 0 5px 10px;
+    border-left: 1px solid transparent;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .toc a span {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--line-strong);
+    letter-spacing: 0.04em;
+  }
+  .toc a:hover { color: var(--ink); border-left-color: var(--accent); }
+  .toc a:hover span { color: var(--accent); }
+
+  .masthead { padding: 4px 0 32px; border-bottom: 1px solid var(--line-strong); }
+  .kicker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .kicker span { color: var(--muted); }
+  h1 {
+    font-family: var(--serif);
+    font-size: clamp(36px, 5.2vw, 56px);
+    line-height: 1.12;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    margin: 18px 0 14px;
+    text-wrap: balance;
+  }
+  .lede {
+    max-width: 66ch;
+    margin: 0 0 26px;
+    color: var(--muted);
+    font-size: 16.5px;
+    line-height: 1.75;
+  }
+
+  .spec {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin: 0;
+  }
+  .spec div { background: var(--surface); padding: 12px 14px 13px; }
+  .spec dt {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .spec dd { margin: 4px 0 0; font-size: 12.5px; font-weight: 700; line-height: 1.5; }
+
+  .section { margin-top: 58px; scroll-margin-top: 24px; }
+  .section:first-of-type { margin-top: 44px; }
+  .sec-no {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  h2 {
+    font-family: var(--serif);
+    font-size: clamp(25px, 3.1vw, 31px);
+    line-height: 1.3;
+    font-weight: 600;
+    margin: 6px 0 14px;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1.5;
+    margin: 30px 0 10px;
+    text-wrap: balance;
+  }
+  h4 {
+    font-size: 14px;
+    font-weight: 700;
+    margin: 20px 0 6px;
+  }
+  p { margin: 0 0 14px; max-width: 74ch; }
+  ul, ol { margin: 0 0 16px; padding-left: 1.35em; max-width: 74ch; }
+  li { margin: 6px 0; }
+  li::marker { color: var(--accent); }
+  strong { font-weight: 700; }
+  a { color: var(--accent-ink); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  .callout {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    background: var(--surface);
+    padding: 16px 18px;
+    margin: 22px 0;
+    border-radius: 2px;
+  }
+  .callout .label {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  .callout p:last-child, .callout ul:last-child, .callout ol:last-child { margin-bottom: 0; }
+  .callout.ok { border-left-color: var(--ok); }
+  .callout.ok .label { color: var(--ok); }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.warn .label { color: var(--warn); }
+  .callout.danger { border-left-color: var(--danger); }
+  .callout.danger .label { color: var(--danger); }
+
+  .table-wrap {
+    overflow-x: auto;
+    margin: 16px 0 24px;
+    border-top: 1px solid var(--line-strong);
+    border-bottom: 1px solid var(--line-strong);
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 640px;
+    font-size: 13.2px;
+    line-height: 1.62;
+  }
+  .table-wrap.wide table { min-width: 880px; }
+  th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line-strong);
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td:first-child { font-weight: 600; }
+  tr.group td {
+    background: var(--surface-2);
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 7px 12px;
+  }
+  tr.group td:first-child { font-weight: 500; }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 9.5px;
+    line-height: 1.4;
+    letter-spacing: 0.03em;
+    padding: 1px 5px;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .badge.rec { color: var(--ok); }
+  .badge.no { color: var(--danger); }
+  .badge.check { color: var(--warn); }
+  .badge.neutral { color: var(--muted); }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    padding: 1px 4px;
+    overflow-wrap: anywhere;
+  }
+  pre {
+    margin: 10px 0 20px;
+    padding: 16px 18px;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 12.4px;
+    line-height: 1.68;
+    tab-size: 2;
+  }
+  pre code {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+    overflow-wrap: normal;
+  }
+  .code-cap {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 18px 0 0;
+  }
+  .code-cap + pre { margin-top: 6px; }
+
+  figure { margin: 24px 0 30px; }
+  .fig-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 18px 18px 10px;
+  }
+  .fig-scroll svg { display: block; width: 100%; min-width: 760px; height: auto; }
+  figcaption {
+    font-size: 12.2px;
+    line-height: 1.65;
+    color: var(--muted);
+    margin-top: 8px;
+    max-width: 78ch;
+  }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin: 18px 0 24px;
+  }
+  .two-col > div { background: var(--surface); padding: 16px 18px; }
+  .two-col h4 { margin: 0 0 8px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  .two-col ul { margin: 0; padding-left: 1.2em; font-size: 13.5px; }
+
+  .refs { list-style: none; padding: 0; margin: 16px 0 0; border-top: 1px solid var(--line-strong); }
+  .refs li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+    align-items: baseline;
+    margin: 0;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 13.2px;
+  }
+  .refs li span { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line-strong);
+    color: var(--muted);
+    font-size: 12.2px;
+    line-height: 1.7;
+  }
+
+  @media (max-width: 960px) {
+    .shell { grid-template-columns: minmax(0, 1fr); gap: 0; padding-block: 24px 72px; }
+    .toc { position: static; padding: 0 0 10px; margin-bottom: 22px; border-bottom: 1px solid var(--line); }
+    .toc ol { flex-direction: row; overflow-x: auto; gap: 6px; padding-bottom: 6px; }
+    .toc a { white-space: nowrap; border: 1px solid var(--line); padding: 5px 9px; background: var(--surface); font-size: 12px; }
+    .toc a span { display: none; }
+    .toc-title { display: none; }
+    .section { scroll-margin-top: 12px; }
+  }
+
+  @media (max-width: 640px) {
+    body { font-size: 15.5px; }
+    .spec { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .two-col { grid-template-columns: minmax(0, 1fr); }
+    .refs li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    .refs li span { white-space: normal; }
+    .fig-scroll { padding: 12px 12px 6px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+</style>
+
+<div class="shell">
+  <nav class="toc" aria-label="目录">
+    <p class="toc-title">目录 / Contents</p>
+    <ol>
+      <li><a href="#s01"><span>01</span>目标与边界</a></li>
+      <li><a href="#s02"><span>02</span>路线选择</a></li>
+      <li><a href="#s03"><span>03</span>开源基座</a></li>
+      <li><a href="#s04"><span>04</span>总体架构</a></li>
+      <li><a href="#s05"><span>05</span>Kali 集成</a></li>
+      <li><a href="#s06"><span>06</span>终端体验</a></li>
+      <li><a href="#s07"><span>07</span>安全与发行</a></li>
+      <li><a href="#s08"><span>08</span>工程计划</a></li>
+      <li><a href="#s09"><span>09</span>风险登记</a></li>
+      <li><a href="#s10"><span>10</span>参考资料</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="masthead">
+      <div class="kicker">
+        <span style="color: var(--accent)">设计文档</span>
+        <span>v0.2</span>
+        <span>2026-10-27</span>
+        <span>Draft for review</span>
+      </div>
+      <h1>KingKang 移动终端</h1>
+      <p class="lede">一款内置终端、可在 Android 设备本地运行 Linux、并以 Kali 为最终目标的应用。无 root 用户通过标准模式和内置 Kali 终端体验 Kali，并在设置中安装 DeepSeek Harness（dsh）作为 Agent 核心；root 玩家保留 chroot、完整终端与高级扩展。本文给出技术路线、可二开的开源基座、系统架构、Kali 集成、终端体验、发行合规与实施计划。</p>
+
+      <dl class="spec">
+        <div><dt>Target OS</dt><dd>Android 10–17</dd></div>
+        <div><dt>Primary ABI</dt><dd>arm64-v8a</dd></div>
+        <div><dt>Default runtime</dt><dd>PRoot，无 root</dd></div>
+        <div><dt>Product</dt><dd>标准 / Pro / 远程三模式</dd></div>
+      </dl>
+    </header>
+
+    <div class="callout ok" style="margin-top: 30px;">
+      <div class="label">结论先行</div>
+      <ol>
+        <li><strong>产品形态</strong>：一个 GPLv3 应用、三条运行时。标准模式（无 root，PRoot）面向普通用户；Pro 模式（root，chroot）面向进阶玩家；远程模式（SSH）作为补充。不要拆成两个 App。</li>
+        <li><strong>代码基座</strong>：fork <code>termux-app</code> 的终端、PTY 与会话核心，重写 app 层为 Kali 优先的 Compose 工作台。不要直接把 Termux 的开发者 UI 当作最终产品。</li>
+        <li><strong>无 root 体验</strong>：用标准模式（PRoot）与内置 Kali 终端承载功能体验；Agent 核心采用安装在 Kali 内的 DeepSeek Harness（dsh）。PRoot 下不承诺监听模式、注入、HID 或 raw socket。</li>
+        <li><strong>Kali</strong>：以官方 NetHunter Rootless 的 rootfs 与启动流程为准。<code>proot-distro</code> 的官方发行版列表不收录 Kali，社区方案可用，但不适合作为产品基线。</li>
+        <li><strong>发行</strong>：以 F-Droid、自建仓库和 APK 直发为主。Google Play 的 W^X 变通方案脆弱且有政策风险，不适合作为唯一渠道。</li>
+      </ol>
+    </div>
+
+    <section class="section" id="s01">
+      <div class="sec-no">01 / Scope</div>
+      <h2>目标与边界</h2>
+      <p>这个产品不是“能连 SSH 的终端”，而是在 Android 应用沙箱里维护一套真实的 Linux 用户空间：有 rootfs、有包管理器、有本地进程，Kali 是最终交付形态。终端只是它的入口。</p>
+
+      <div class="two-col">
+        <div>
+          <h4>范围内</h4>
+          <ul>
+            <li>一键下载、校验、解压并启动 Debian / Kali rootfs</li>
+            <li>多标签终端、会话保活、前台服务与通知</li>
+            <li>apt / pip / git / 编译工具链等本地命令</li>
+            <li>内置 Kali 终端，以及 DeepSeek Harness（dsh）核心的安装、版本检测、更新与原生对话</li>
+            <li>标准 / Pro / 远程三种模式，共用同一份 rootfs</li>
+            <li>可选的图形界面（VNC / X11）</li>
+            <li>root 设备上的 chroot 增强模式</li>
+            <li>SSH 到远程主机，作为第三条运行时</li>
+          </ul>
+        </div>
+        <div>
+          <h4>范围外</h4>
+          <ul>
+            <li>自动 root、自动刷入内核或 recovery</li>
+            <li>内置漏洞利用、凭据或武器化载荷</li>
+            <li>承诺无 root 下的监听模式、数据包注入、USB HID</li>
+            <li>替代桌面 Linux 或通用 Android 开发环境</li>
+            <li>iOS / 桌面端（架构可复用，不在本期）</li>
+          </ul>
+        </div>
+      </div>
+
+      <p>产品定位是“移动端的本地 Linux 工作台”，面向安全学习者、授权测试人员、需要在手机上跑工具链的开发者，以及需要离线应急环境的运维人员。Kali 工具的使用范围必须在首次启动时明确提示：仅限授权目标与合法用途。</p>
+
+      <h3>1.1 真正决定架构的约束</h3>
+      <div class="table-wrap wide">
+        <table>
+          <thead>
+            <tr><th>约束</th><th>具体表现</th><th>设计应对</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Android 10+ W^X</td><td><code>targetSdk ≥ 29</code> 的应用不能对应用数据目录中的文件调用 <code>exec()</code>。Termux 长期停在 <code>targetSdk 28</code> 就是为了绕开这条限制。</td><td>FOSS 版保持 28；现代 targetSdk 版本需要 APK 原生库 / linker64 变通，或只做 root 模式。</td></tr>
+            <tr><td>SELinux untrusted_app</td><td>普通应用没有 <code>CAP_NET_RAW</code>，不能 mount，不能改内核网络配置。PRoot 的假 root 只改路径解析，不给内核权限。</td><td>把能力差异写进 UI；需要 raw socket 时提示切换 root 模式，而不是假装支持。</td></tr>
+            <tr><td>非特权 user namespace</td><td>Android 普遍不向普通应用开放，rootless 容器（runc / podman）不可用。</td><td>用 PRoot 的 ptrace 路径重写作为无 root 方案；不要把它宣传成安全隔离。</td></tr>
+            <tr><td>Phantom process killer</td><td>Android 12+ 会在子进程超过约 32 个或 CPU 异常时杀进程，表现为 <code>signal 9</code>。</td><td>前台服务 + 会话保活 + 在应用内给出 ADB/开发者选项指引；不要静默改系统设置。</td></tr>
+            <tr><td>16 KB 页大小</td><td>Android 15+ 的 16 KB 页设备要求原生库与可执行文件正确对齐，发行版二进制也需要重建或验证。</td><td>NDK r28+、<code>-Wl,-z,max-page-size=16384</code>；把 16 KB 设备纳入发布门禁。</td></tr>
+            <tr><td>Google Play 政策</td><td>“下载并执行代码”与安全工具类应用都容易被审查；Termux 的 Play 版本依赖额外的 exec 变通。</td><td>主渠道不依赖 Play；Play 作为独立 flavor，而不是唯一构建。</td></tr>
+            <tr><td>无 KVM、设备碎片化</td><td>应用拿不到 KVM；QEMU 只能用 TCG；OEM ROM 的后台策略差异很大。</td><td>VM 只做研究项；运行时引擎抽象；建立设备兼容矩阵。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" id="s02">
+      <div class="sec-no">02 / Runtime</div>
+      <h2>路线选择：Linux 以什么形态存在</h2>
+      <p>先决定 Linux 运行在哪里，再谈终端和 UI。五条路线的能力边界差别很大，不能靠后期优化弥补。</p>
+
+      <div class="table-wrap wide">
+        <table>
+          <thead>
+            <tr><th>路线</th><th>需要 root</th><th>性能</th><th>本地 Kali</th><th>主要限制</th><th>结论</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Termux 原生</td><td>否</td><td>原生</td><td>否，需 PRoot 才是完整发行版</td><td>不是 Kali 发行版；包集合独立</td><td><span class="badge neutral">仅作基座</span></td></tr>
+            <tr><td>PRoot 无 root chroot</td><td>否</td><td>系统调用密集场景约 1.5–5× 开销，CPU 密集接近原生</td><td>是，NetHunter Rootless</td><td>无 raw socket、mount、systemd；不是安全沙箱</td><td><span class="badge rec">默认</span></td></tr>
+            <tr><td>Root chroot</td><td>是</td><td>接近原生</td><td>是</td><td>依赖 root 方案与设备；SELinux/挂载差异</td><td><span class="badge neutral">可选增强</span></td></tr>
+            <tr><td>QEMU / AVF 虚拟机</td><td>否 / 部分</td><td>TCG 慢一个数量级；AVF 设备受限</td><td>是，运行自己的内核</td><td>体积、发热、兼容性、开发量大</td><td><span class="badge check">研究项</span></td></tr>
+            <tr><td>SSH / 云主机</td><td>否</td><td>取决于网络与远端</td><td>仅远程</td><td>离线不可用；依赖账号与网络</td><td><span class="badge neutral">附加</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>2.1 为什么默认 PRoot</h3>
+      <p>PRoot 通过 <code>ptrace</code> 拦截子进程的系统调用，把路径重写到 rootfs 内，并用 <code>-0</code> 伪造 uid 0。它不需要 root，也不需要内核支持 user namespace，因此在绝大多数 Android 设备上可用。代价是所有系统调用多一层用户态转发，<code>apt</code>、<code>git</code>、编译这类系统调用密集的操作会明显变慢。</p>
+      <p>必须明确：<strong>PRoot 不是安全边界</strong>。容器里的“root”只是伪造的 uid，恶意程序仍然以应用 uid 运行，能读写应用私有数据；如果绑定了共享存储，也能读写用户文件。产品的安全模型必须按“运行受信任的发行版”来设计，而不是按“运行不可信代码”来设计。</p>
+
+      <h3>2.2 为什么保留 root chroot</h3>
+      <p>检测到设备已 root 时，通过 <code>su</code> 进入真实 chroot，能获得接近原生的性能、真实的 mount、raw socket 和 iptables 能力。它仍然不能凭空提供 Wi-Fi 监听模式或 USB HID，那需要 NetHunter 内核与驱动。chroot 模式的工程重点是挂载生命周期和退出清理：<code>/dev</code>、<code>/proc</code>、<code>/sys</code> 必须成对挂载与卸载，异常退出不能留下脏挂载。</p>
+
+      <h3>2.3 为什么暂不做 VM</h3>
+      <p>Android 应用无法直接使用 KVM，QEMU 只能跑 TCG，启动和 I/O 都慢一个数量级；AVF 只在部分新设备上可用，且不是通用的 Kali 交付方案。VM 的优势是“真内核”，但 MVP 的用户价值主要来自 apt、脚本和 CLI 工具，PRoot 已能覆盖。把 VM 留到有明确付费场景时再评估。</p>
+
+      <div class="callout">
+        <div class="label">架构决定</div>
+        <p>从第一天就把运行时抽象成 <code>RuntimeEngine</code>，默认实现 PRoot，root 设备追加 Chroot，远程追加 SSH。不要在 UI 或会话层散落 <code>proot</code> 命令拼接，否则以后接 Play 变通方案或 VM 会重写一遍。</p>
+      </div>
+
+      <h3>2.4 推荐的产品形态：一个应用，三条运行时</h3>
+      <p>普通用户和 Pro 玩家不应该用两个 App 解决。同一个应用、同一份 rootfs，用运行时能力分层；用户换设备或 root 后，模式可以原地升级，不需要重装或迁移数据。</p>
+
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>模式</th><th>前提</th><th>运行时</th><th>能做什么</th><th>面向</th></tr></thead>
+          <tbody>
+            <tr><td>标准模式</td><td>无 root</td><td>PRoot</td><td>Kali 终端、apt、可用的 CLI 工具、KeX 桌面、DeepSeek Harness（dsh）</td><td>普通用户、学习者</td></tr>
+            <tr><td>Pro 模式</td><td>已 root</td><td>chroot</td><td>标准模式全部 + raw socket、mount、iptables、原生性能、自定义 rootfs、X11、SSH/自动化</td><td>进阶玩家、专业测试</td></tr>
+            <tr><td>远程模式</td><td>任意</td><td>SSH</td><td>远端 Kali 的完整能力；本地只做终端与文件传输</td><td>需要完整能力但不想 root 的用户</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>模式不是三个 App，也不是三套安装包。标准与 Pro 共用同一份 Kali rootfs，只切换执行引擎；远程模式复用同一个终端与工具目录。UI 在启动时检测 root 与 SSH 配置，给出“可用能力”而不是弹一堆权限请求。</p>
+
+      <h3>2.5 Agent 核心：DeepSeek Harness（dsh）</h3>
+      <p>对话界面只是壳，Agent 能力由安装在 Kali rootfs 内的 DeepSeek Harness 提供。dsh 是 DeepSeek 官方以 npm 包 <code>@deepseek-ai/dsh</code> 分发的 agent harness CLI，支持 web、tui、headless 三种 profile。把它装在 Kali 内而不是 Android 侧，会话可以直接使用同一环境里的 nmap、sqlmap 等工具，不需要跨进程拼接命令。</p>
+      <p>设置页提供独立的“Agent 核心”卡片：未安装时只显示安装，安装后只保留检查更新（发现新版本自动更新）与卸载，用户不必回到终端手动处理 Node 与 npm：</p>
+      <ul>
+        <li><strong>安装</strong>：应用直接用 HTTPS 从 <code>nodejs.org/dist</code> 下载当前架构的 Node.js 24 官方 tarball，在应用内校验 SHA-256 后流式解压到 <code>/opt/kingkang/node</code>，不依赖 Kali 的 <code>apt</code> 或 <code>curl</code>；随后执行 <code>npm install -g --prefix /opt/kingkang/dsh @deepseek-ai/dsh@latest</code>，并把入口链接到 <code>/usr/local/bin/dsh</code>。dsh 的依赖树较大，安装后约 1.4 GB（另占约 300 MB npm 缓存），首次安装视网络需要 20–40 分钟，界面显示当前步骤并允许取消。</li>
+        <li><strong>版本</strong>：读取 <code>dsh --version</code> 与 <code>npm view @deepseek-ai/dsh version</code>，明确显示已安装版本、Node 版本，以及“已是最新”或“可更新到 x.y.z”。</li>
+        <li><strong>更新</strong>：重新执行同一套 npm 安装并刷新链接；安装前缀固定，不覆盖系统 Node。更新失败时保留日志，可在设置中重试。</li>
+        <li><strong>rename 兼容层</strong>：Android 给应用进程装的 seccomp 过滤器把旧的 <code>rename(2)</code> 系统调用直接回 <code>ENOSYS</code>，而这个过滤器会被 PRoot 启动的所有 guest 进程继承；npm 正是用 <code>rename</code> 把下载内容挪进缓存，于是第一次写缓存就失败（npm 把错误改写成 <code>EEXIST</code>，日志里能看到真实的 <code>ENOSYS: rename</code>）。应用在第一次启动 PRoot 会话前，用 Kali 自带的 gcc 把一小段 <code>rename()</code> 兼容库（改用 <code>renameat2(2)</code>）编译到 <code>/usr/local/lib/kingkang/libkkrename.so</code>，之后终端与所有脚本都以 <code>LD_PRELOAD</code> 加载它；镜像里没有 gcc 时跳过，会话照常启动。</li>
+        <li><strong>执行</strong>：安装与检查在 PRoot 内以一次性脚本运行，有超时、可取消；Kali 环境未就绪时禁用入口。脚本与下载日志留在 Kali 的 <code>/tmp</code>，不依赖来源不明的远程安装脚本。</li>
+      </ul>
+
+      <h4>对话链路：KK-Agent v1</h4>
+      <p>对话不是 WebView，也不把 dsh 的 RPC 泄漏到 UI。应用启动一个 Node 侧车 <code>bridge.mjs</code>，两者通过 stdio 上的 NDJSON 通信；侧车再以 <code>--profile web</code> 启动 dsh，只绑定 <code>127.0.0.1</code>，并消费它的 SSE 事件流。应用只认识稳定的 <code>KK-Agent v1</code> 事件（文本增量、工具调用、审批、提问、队列、投影），dsh 改事件名或字段时由侧车吸收，不必重发 APK。</p>
+      <ul>
+        <li><strong>会话归属</strong>：会话、历史、标题、模型选择全部由 dsh 保存，应用不维护第二份 <code>chats.json</code>。恢复会话时按 <code>seq</code> 分页读取更早历史。</li>
+        <li><strong>生命周期</strong>：前台服务持有桥接进程；停止、重启、切换会话与 dsh 语义一致。流中断会在对话内明确提示，并可从设置重启桥接。</li>
+        <li><strong>子 Agent</strong>：顶部条显示 dsh 委派出的直接子会话及运行状态；打开后复用同一套转录渲染，可继续对话或停止（仅 continuable），一次性子 Agent 保持只读。子 Agent 再向下委派时按同一路径逐层下钻（“下级子 Agent”），返回按钮一级一级退回，能走多深由 dsh 的委派深度上限决定（应用不覆盖 dsh 默认配置）；子会话不会混进会话列表。dsh 拒绝的操作会在界面上明确提示，而不是静默失败。</li>
+        <li><strong>界面</strong>：流式回答与思考过程、工具卡片、审批/提问、待办与计划、排队/引导消息、模型选择、停止与归档都是原生 Compose 组件，与终端、设置共用同一套视觉语言。</li>
+        <li><strong>安全</strong>：没有面向应用的 HTTP 监听；dsh 的 loopback 服务不暴露到局域网；模型输出只作为文本/卡片渲染，永不作为 HTML 执行。</li>
+      </ul>
+
+      <p>Kali 的 <code>kali-motd</code> 会在登录 shell 里无条件打印 “This is a minimal installation of Kali Linux”，即使是完整的 NetHunter 镜像也一样，容易让人误以为装错了版本。应用在准备运行目录时按 Kali 自己的用户级开关写入 <code>/root/.local/share/kali-motd/disable-minimal-warning</code>，只隐藏这一段提示；该文件位于 <code>/root</code>，镜像更新时随用户数据保留。</p>
+
+      <div class="callout">
+        <div class="label">产品判断</div>
+        <p>dsh 是“可安装、可升级的 Agent 核心”，应用提供原生对话而不是嵌网页。当前版本已接通安装、版本、更新、卸载与 KK-Agent 对话链路；图片附件、斜杠命令（来自 dsh 的命令注册表）、会话权限预设、凭据图形化配置与子 Agent 面板都已接入；dsh 原生工具卡片视图尚未接入，缺失时退回通用工具卡片，界面不伪造分析结果。安装源只使用 DeepSeek 官方 npm 包与 nodejs.org 官方二进制。</p>
+      </div>
+    </section>
+
+    <section class="section" id="s03">
+      <div class="sec-no">03 / Open source</div>
+      <h2>开源基座与二开策略</h2>
+      <p>可以复用的核心不在一个仓库里，而是四层：终端内核、PTY/exec、容器运行时、发行版引导。分别选型，比“找一个 App 整个抄”更稳。</p>
+
+      <div class="table-wrap wide">
+        <table>
+          <thead>
+            <tr><th>项目 / 仓库</th><th>许可证</th><th>可复用的核心</th><th>二开方式</th><th>注意事项</th></tr>
+          </thead>
+          <tbody>
+            <tr class="group"><td colspan="5">终端与交互</td></tr>
+            <tr>
+              <td><a href="https://github.com/termux/termux-app">termux/termux-app</a></td>
+              <td>GPL-3.0；<code>terminal-emulator</code> 与 <code>terminal-view</code> 为 Apache-2.0 例外</td>
+              <td>VT 解析、TerminalView、PTY/exec JNI、会话服务、额外按键</td>
+              <td>M0 整体 fork 验证；产品化 fork 核心 + 新壳</td>
+              <td>主体 GPLv3；长期 <code>targetSdk 28</code>；UI 需重做</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/jackpal/Android-Terminal-Emulator">jackpal/Android-Terminal-Emulator</a></td>
+              <td>Apache-2.0</td>
+              <td>VT100/xterm 解析与 Canvas 终端视图，Termux 终端模块的源头</td>
+              <td>直接抽模块</td>
+              <td>停更多年，需补 CJK、真彩色、OSC 8、现代输入法</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/NeoTerrm/NeoTerm">NeoTerrm/NeoTerm</a></td>
+              <td>GPL-3.0</td>
+              <td>终端 UI、插件模型</td>
+              <td>参考</td>
+              <td>社区较小，维护弱，不适合作为主基座</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/connectbot/connectbot">connectbot/connectbot</a></td>
+              <td>Apache-2.0</td>
+              <td>SSH 传输、密钥管理、终端</td>
+              <td>远程模式抽 SSH 层</td>
+              <td>架构较老；建议只取传输与密钥部分</td>
+            </tr>
+
+            <tr class="group"><td colspan="5">运行时与容器</td></tr>
+            <tr>
+              <td><a href="https://github.com/termux/proot">termux/proot</a></td>
+              <td>GPL-2.0</td>
+              <td>Android 可用的 PRoot 二进制：ptrace 路径重写、<code>--link2symlink</code></td>
+              <td>作为独立可执行文件分发</td>
+              <td>不是库；需履行 GPLv2 源码义务，是否构成衍生作品请法务确认</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/termux/proot-distro">termux/proot-distro</a></td>
+              <td>GPL-3.0</td>
+              <td>发行版安装/登录脚本、rootfs 插件结构</td>
+              <td>fork 或借鉴流程</td>
+              <td>官方发行版列表不含 Kali；不要直接当 Kali 方案</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/termux-play-store">termux/termux-play-store</a></td>
+              <td><span class="badge check">按仓库核验</span></td>
+              <td>现代 targetSdk 下的 exec 变通：APK 原生库 + linker64</td>
+              <td>参考实现，不建议照搬</td>
+              <td>依赖环境变量与启动路径，脆弱；Play 政策仍有风险</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/meefik/linuxdeploy">meefik/linuxdeploy</a></td>
+              <td>GPL-3.0</td>
+              <td>root chroot 的 mount、启动、清理逻辑</td>
+              <td>参考</td>
+              <td>2022 年后停更；仅 root，界面与架构过时</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/topjohnwu/libsu">topjohnwu/libsu</a></td>
+              <td>Apache-2.0</td>
+              <td>root shell、su 管理、进程封装</td>
+              <td>直接依赖（root 模式）</td>
+              <td>仅在用户已 root 的设备上启用</td>
+            </tr>
+
+            <tr class="group"><td colspan="5">Kali 与发行版</td></tr>
+            <tr>
+              <td><a href="https://www.kali.org/docs/nethunter/nethunter-rootless/">Kali NetHunter Rootless</a></td>
+              <td><span class="badge check">以官方仓库为准</span></td>
+              <td>Kali rootfs、PRoot 启动流程、KeX 图形方案</td>
+              <td>复用 rootfs 与引导流程</td>
+              <td>官方基线是 Termux；无 root 能力受限；rootfs 体积大</td>
+            </tr>
+            <tr>
+              <td><a href="https://gitlab.com/kalilinux/nethunter/apps/kali-nethunter-app">Kali NetHunter App</a></td>
+              <td>GPL-2.0</td>
+              <td>KeX/VNC、chroot 管理、HID 相关 UI</td>
+              <td>产品参考</td>
+              <td>完整能力需 root + NetHunter 内核；与 GPLv3 代码合并需评估兼容性</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/EXALAB/AnLinux-App">EXALAB/AnLinux-App</a></td>
+              <td>Apache-2.0</td>
+              <td>各发行版安装脚本、命令生成</td>
+              <td>复用脚本与参数模板</td>
+              <td>依赖 Termux，不是独立运行时</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/CypherpunkArmory/UserLAnd">CypherpunkArmory/UserLAnd</a></td>
+              <td><span class="badge no">不明确</span></td>
+              <td>PRoot 发行版管理、SSH/VNC 连接体验</td>
+              <td>不建议复制代码</td>
+              <td>仓库无 LICENSE 文件；F-Droid 标 MIT，Wikipedia 标 GPLv3，需法务核验</td>
+            </tr>
+
+            <tr class="group"><td colspan="5">图形与参考产品</td></tr>
+            <tr>
+              <td><a href="https://github.com/termux/termux-x11">termux/termux-x11</a></td>
+              <td>GPL-3.0</td>
+              <td>X11 显示服务、输入桥</td>
+              <td>作为配套 APK，或 fork</td>
+              <td>额外安装；GPLv3；与 VNC 方案二选一</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/limboemu/limbo">limbo / QEMU</a></td>
+              <td>GPL-2.0</td>
+              <td>全系统虚拟化</td>
+              <td>仅研究</td>
+              <td>无 KVM 时性能差；不作为 MVP</td>
+            </tr>
+            <tr>
+              <td>Andronix</td>
+              <td><span class="badge no">闭源</span></td>
+              <td>无</td>
+              <td>不可复用</td>
+              <td>仅作产品与定价参考</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>3.1 三条现实可行的二开路径</h3>
+      <div class="table-wrap wide">
+        <table>
+          <thead>
+            <tr><th>策略</th><th>做法</th><th>到可运行原型</th><th>许可证结果</th><th>适合</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>A · 整体 fork termux-app（M0 验证）</td><td>换包名与品牌，保留终端与 PTY 层，先跑通 Kali 链路</td><td class="num">2–4 周</td><td>整个应用 GPLv3</td><td>最快验证；不作为最终产品形态</td></tr>
+            <tr><td>A+ · fork 核心 + 新壳（推荐）</td><td>复用 terminal/PTY/会话服务，重写 app 层为 Kali 工作台；新增 dsh 核心与能力检测</td><td class="num">6–8 周</td><td>整个应用 GPLv3</td><td>产品化；同时服务普通用户与 Pro</td></tr>
+            <tr><td>B · 新壳 + Apache 模块</td><td>Compose 新应用，抽 <code>terminal-emulator</code>/<code>terminal-view</code>，自写 PTY JNI 与运行时管理</td><td class="num">8–12 周</td><td>可闭源；保留 Apache NOTICE</td><td>商业产品、需要品牌与 UI 控制</td></tr>
+            <tr><td>C · 包一层 AnLinux 脚本</td><td>调用 Termux 安装脚本，应用只做向导与按钮</td><td class="num">2 周</td><td>Apache-2.0</td><td>验证需求，不适合作为独立产品</td></tr>
+            <tr><td>D · fork UserLAnd</td><td>在其 PRoot 管理上改 UI</td><td class="num">—</td><td><span class="badge no">许可证不明</span></td><td>不建议，先解决法务问题</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout ok">
+        <div class="label">已定方案 · GPLv3</div>
+        <p>既然接受 GPLv3，推荐 <strong>A+</strong>：fork <code>termux-app</code> 的运行时核心（terminal-emulator、terminal-view、PTY/exec、会话服务），但不要把它的开发者 UI 当作最终产品。用新的 Compose 工作台重写 app 层，保留 Termux 的核心能力。M0 可以先整体 fork 验证链路，M1 起抽核心、替换界面。这样既不重造终端轮子，也不会被 Termux 的产品形态限制。</p>
+      </div>
+
+      <h3>3.2 GPL 边界与许可证审计</h3>
+      <ul>
+        <li><strong>GPLv3 应用代码</strong>：链接或包含进同一个应用，整个应用按 GPLv3 分发；需要提供完整对应源码、安装信息，且不能附加额外限制。闭源商业版不能走这条路。</li>
+        <li><strong>Apache-2.0 终端模块</strong>：可以进入闭源应用，但要保留 LICENSE/NOTICE、标注修改，并遵守专利与商标条款。抢手的“Termux 终端”多数价值就在这两个模块。</li>
+        <li><strong>PRoot 二进制</strong>：GPLv2。通常作为独立进程分发，随包提供源码或书面要约；不要把它编译成静态库链接进应用。具体是否构成衍生作品，交给法务确认。</li>
+        <li><strong>GPLv2 与 GPLv3 混用</strong>：NetHunter App 的 LICENSE 是 GPLv2 文本。若项目未声明 “or later”，把它与 GPLv3 的 <code>termux-app</code> 代码直接合并可能不兼容；按独立模块、独立进程或仅参考处理最稳。</li>
+        <li><strong>Kali 工具与 rootfs</strong>：工具许可证混合，例如 Nmap 使用 NPSL（非标准开源许可），打包进应用商店前需要逐项审计。发行 rootfs 镜像和自己分发 Kali 是两件事。</li>
+        <li><strong>商标</strong>：不要使用 Kali 的龙形 logo 或暗示官方背书；“Kali Linux”仅作描述性使用，应用名与图标必须独立。</li>
+      </ul>
+      <p>上表按 2026-10 的仓库状态整理。二开前应以目标 commit 的 LICENSE 与 NOTICE 为准，不要以本文替代法务意见。</p>
+    </section>
+
+    <section class="section" id="s04">
+      <div class="sec-no">04 / Architecture</div>
+      <h2>总体架构</h2>
+      <p>核心是把“终端 I/O”和“Linux 运行时”解耦。终端只负责字节流、渲染与输入；运行时负责把字节流接到 PRoot、chroot 或 SSH 上。这样更换执行引擎不会影响 UI。</p>
+
+      <figure>
+        <div class="fig-scroll">
+          <svg viewBox="0 0 960 570" role="img" aria-label="KingKang 架构图：UI、会话服务、终端核心、PTY 桥接层，向下连接 PRoot 与 Chroot 引擎，右侧是 rootfs 仓库与 SSH 引擎，底部是 Android 内核。">
+            <defs>
+              <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+              </marker>
+              <marker id="arr-accent" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"></path>
+              </marker>
+            </defs>
+
+            <rect x="16" y="24" width="700" height="348" rx="2" fill="none" stroke="var(--line-strong)" stroke-dasharray="5 5"></rect>
+            <text x="32" y="45" font-family="'JetBrains Mono', Consolas, monospace" font-size="10" letter-spacing="1" fill="var(--muted)">应用进程 · UID 沙箱</text>
+
+            <rect x="40" y="64" width="652" height="48" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="366" y="88" text-anchor="middle" dominant-baseline="middle" font-size="13" fill="currentColor">Compose UI · 终端标签 · 文件 · 设置</text>
+
+            <rect x="40" y="128" width="652" height="48" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="366" y="152" text-anchor="middle" dominant-baseline="middle" font-size="13" fill="currentColor">SessionManager · 前台服务 · 通知 · 会话恢复</text>
+
+            <rect x="40" y="192" width="310" height="64" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="195" y="216" text-anchor="middle" font-size="12.5" fill="currentColor">Terminal Core</text>
+            <text x="195" y="236" text-anchor="middle" font-size="10.5" fill="var(--muted)">VT 解析 · 渲染 · 回滚 · Unicode</text>
+
+            <rect x="366" y="192" width="326" height="64" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="529" y="216" text-anchor="middle" font-size="12.5" fill="currentColor">输入 / IME</text>
+            <text x="529" y="236" text-anchor="middle" font-size="10.5" fill="var(--muted)">额外按键 · 手势 · 硬件键盘</text>
+
+            <rect x="40" y="272" width="652" height="48" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="366" y="296" text-anchor="middle" dominant-baseline="middle" font-size="12.5" fill="currentColor">PTY Bridge（JNI · forkpty · TIOCSWINSZ · UTF-8 流）</text>
+
+            <line x1="366" y1="112" x2="366" y2="125" stroke="currentColor" stroke-width="1" marker-end="url(#arr)"></line>
+            <line x1="366" y1="176" x2="366" y2="189" stroke="currentColor" stroke-width="1" marker-end="url(#arr)"></line>
+            <line x1="366" y1="256" x2="366" y2="269" stroke="currentColor" stroke-width="1" marker-end="url(#arr)"></line>
+
+            <line x1="366" y1="320" x2="366" y2="350" stroke="currentColor" stroke-width="1"></line>
+            <line x1="195" y1="350" x2="521" y2="350" stroke="currentColor" stroke-width="1"></line>
+            <line x1="195" y1="350" x2="195" y2="389" stroke="currentColor" stroke-width="1" marker-end="url(#arr)"></line>
+            <line x1="521" y1="350" x2="521" y2="389" stroke="currentColor" stroke-width="1" marker-end="url(#arr)"></line>
+            <text x="378" y="343" font-family="'JetBrains Mono', Consolas, monospace" font-size="9.5" fill="var(--muted)">fork / exec</text>
+
+            <rect x="40" y="392" width="310" height="72" rx="2" fill="var(--surface)" stroke="var(--accent)"></rect>
+            <text x="195" y="416" text-anchor="middle" font-size="12.5" fill="currentColor">PRoot Engine · 默认</text>
+            <text x="195" y="437" text-anchor="middle" font-size="10.5" fill="var(--muted)">无 root · ptrace 路径重写</text>
+
+            <rect x="366" y="392" width="310" height="72" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="521" y="416" text-anchor="middle" font-size="12.5" fill="currentColor">Chroot Engine · 可选</text>
+            <text x="521" y="437" text-anchor="middle" font-size="10.5" fill="var(--muted)">需 root · su + mount --bind</text>
+
+            <rect x="752" y="64" width="192" height="88" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="848" y="88" text-anchor="middle" font-size="12" fill="currentColor">Rootfs Store</text>
+            <text x="848" y="108" text-anchor="middle" font-size="10.5" fill="var(--muted)">manifest · SHA-256</text>
+            <text x="848" y="126" text-anchor="middle" font-size="10.5" fill="var(--muted)">Ed25519 签名</text>
+
+            <rect x="752" y="176" width="192" height="76" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="848" y="200" text-anchor="middle" font-size="12" fill="currentColor">下载 / 解压</text>
+            <text x="848" y="222" text-anchor="middle" font-size="10.5" fill="var(--muted)">libarchive · 断点续传</text>
+
+            <rect x="752" y="276" width="192" height="84" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="848" y="300" text-anchor="middle" font-size="12" fill="currentColor">Kali arm64</text>
+            <text x="848" y="320" text-anchor="middle" font-size="10.5" fill="var(--muted)">rootfs · 只读</text>
+            <text x="848" y="338" text-anchor="middle" font-size="10.5" fill="var(--muted)">kex / X11 组件</text>
+
+            <line x1="848" y1="152" x2="848" y2="173" stroke="currentColor" stroke-width="1" marker-end="url(#arr)"></line>
+            <line x1="848" y1="252" x2="848" y2="273" stroke="currentColor" stroke-width="1" marker-end="url(#arr)"></line>
+
+            <path d="M752 330 H712 V486 H195 V466" fill="none" stroke="var(--accent)" stroke-width="1.2" marker-end="url(#arr-accent)"></path>
+            <line x1="521" y1="486" x2="521" y2="466" stroke="var(--accent)" stroke-width="1.2" marker-end="url(#arr-accent)"></line>
+            <text x="600" y="502" text-anchor="middle" font-family="'JetBrains Mono', Consolas, monospace" font-size="9.5" fill="var(--accent)">根文件系统：-r / chroot 根目录</text>
+
+            <rect x="752" y="392" width="192" height="72" rx="2" fill="var(--surface)" stroke="var(--line)"></rect>
+            <text x="848" y="416" text-anchor="middle" font-size="12" fill="currentColor">SSH Engine</text>
+            <text x="848" y="437" text-anchor="middle" font-size="10.5" fill="var(--muted)">远程主机 · 密钥</text>
+
+            <line x1="692" y1="152" x2="728" y2="152" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3"></line>
+            <line x1="728" y1="152" x2="728" y2="428" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3"></line>
+            <line x1="728" y1="428" x2="749" y2="428" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 3" marker-end="url(#arr)"></line>
+            <text x="712" y="146" text-anchor="end" font-family="'JetBrains Mono', Consolas, monospace" font-size="9.5" fill="var(--muted)">SSH 会话</text>
+
+            <line x1="80" y1="464" x2="80" y2="519" stroke="currentColor" stroke-width="1" marker-end="url(#arr)"></line>
+            <text x="92" y="494" font-family="'JetBrains Mono', Consolas, monospace" font-size="9.5" fill="var(--muted)">syscalls</text>
+
+            <rect x="16" y="522" width="928" height="34" rx="2" fill="var(--surface-2)" stroke="var(--line-strong)"></rect>
+            <text x="480" y="539" text-anchor="middle" dominant-baseline="middle" font-size="11" fill="currentColor">Android Linux 内核 · SELinux · 无特权 user namespace · 进程限制</text>
+          </svg>
+        </div>
+        <figcaption>图 1：应用内各层与两种本地运行时。PRoot 与 Chroot 共用同一份 rootfs；SSH 走网络，不经过本地根文件系统。rootfs 仓库与运行时分离，便于签名校验、增量更新和多发行版共存。</figcaption>
+      </figure>
+
+      <h3>4.1 层职责</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>层</th><th>职责</th><th>关键实现</th></tr></thead>
+          <tbody>
+            <tr><td>UI</td><td>终端标签、文件、设置、首次启动向导</td><td>Kotlin + Jetpack Compose；终端表面用 Canvas 或 Termux TerminalView</td></tr>
+            <tr><td>Session</td><td>会话生命周期、后台保活、通知、恢复</td><td>前台服务；每会话一个 PTY 读线程；元数据落 DataStore</td></tr>
+            <tr><td>Terminal Core</td><td>VT 状态机、字符宽度、回滚、选择与搜索</td><td>复用 Apache-2.0 模块，或 libvterm + 自写渲染</td></tr>
+            <tr><td>PTY Bridge</td><td>创建伪终端、fork/exec、窗口大小、信号</td><td>JNI + <code>posix_openpt</code>/<code>fork</code>；或 Termux 的 TermExec</td></tr>
+            <tr><td>Runtime Engine</td><td>把命令翻译成 PRoot / chroot / SSH 启动参数</td><td><code>RuntimeEngine</code> 接口，三个实现，统一清理语义</td></tr>
+            <tr><td>Rootfs</td><td>下载、校验、解压、版本与镜像管理</td><td>OkHttp + libarchive；manifest 签名；断点续传</td></tr>
+            <tr><td>GUI Bridge</td><td>VNC / X11 会话</td><td>MVP 用外部 VNC 客户端 intent；P2 内置客户端或 Termux:X11</td></tr>
+            <tr><td>Android 集成</td><td>存储、剪贴板、分享、通知、键盘、电量</td><td>SAF、FileProvider、ForegroundService、WakeLock</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>4.2 进程与线程模型</h3>
+      <ul>
+        <li>主进程承载 UI、前台服务与原生 PTY 桥接；不要把 <code>proot</code> 或 shell 跑在应用主进程里。</li>
+        <li>每个会话：一个 PTY 读线程、一个有界写队列、一个渲染器。输出洪峰时丢帧不丢字节，背压传递到 PTY 读端。</li>
+        <li>下载与解压各自使用独立工作线程/前台任务，支持取消与断点。解压期间不做终端渲染的重活。</li>
+        <li>会话状态：<code>CREATED → PREPARING → READY → RUNNING → STOPPING → STOPPED</code>，异常进入 <code>FAILED</code>。chroot 模式在 <code>STOPPING</code> 必须执行卸载清理。</li>
+        <li>应用被系统杀死后，PTY 不能恢复；用 tmux 或重新拉起会话作为恢复策略，不要假装能无缝恢复进程。</li>
+      </ul>
+
+      <p class="code-cap">运行时接口</p>
+      <pre><code>interface RuntimeEngine {
+    val id: EngineId
+    suspend fun prepare(ref: RootfsRef): PreparedRootfs
+    fun start(spec: SessionSpec): PtyHandle
+    fun stop(handle: PtyHandle, reason: StopReason)
+}</code></pre>
+
+      <p class="code-cap">PTY 创建（JNI / C，简化）</p>
+      <pre><code>int master = posix_openpt(O_RDWR | O_NOCTTY);
+grantpt(master);
+unlockpt(master);
+const char *slave = ptsname(master);
+
+pid_t pid = fork();
+if (pid == 0) {
+    setsid();
+    int fd = open(slave, O_RDWR);
+    ioctl(fd, TIOCSCTTY, 0);
+    dup2(fd, STDIN_FILENO);
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    close(master);
+    close(fd);
+    execvp(argv[0], argv);
+    _exit(127);
+}
+/* 父进程：read/write master；窗口变化时 ioctl(master, TIOCSWINSZ, &ws) */</code></pre>
+
+      <p class="code-cap">PRoot 启动参数（示例，路径按实际替换）</p>
+      <pre><code>proot \
+  --link2symlink \
+  --kill-on-exit \
+  --sysvipc \
+  --shared-tmp \
+  -0 \
+  -r "$ROOTFS" \
+  -b /dev -b /proc -b /sys \
+  -b "$HOME/storage:/mnt/sdcard" \
+  /usr/bin/env -i \
+    HOME=/root \
+    TERM=xterm-256color \
+    LANG=C.UTF-8 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  /bin/bash -l</code></pre>
+      <p><code>--link2symlink</code> 处理 Android 文件系统对硬链接的限制；<code>-0</code> 伪造 uid 0；<code>--kill-on-exit</code> 防止残留进程；<code>--shared-tmp</code> 与 <code>--sysvipc</code> 解决部分工具对 tmp 与 SysV IPC 的依赖。绑定共享存储会扩大数据暴露面，默认关闭，由用户显式开启。</p>
+
+      <p class="code-cap">root chroot（示例；需 su 与清理）</p>
+      <pre><code>su -c '
+  ROOT=/data/data/com.kingkang/files/rootfs/kali-arm64
+  mount -t proc proc "$ROOT/proc"
+  mount --bind /dev "$ROOT/dev"
+  mount --bind /sys "$ROOT/sys"
+  chroot "$ROOT" /usr/bin/env -i \
+    HOME=/root TERM=xterm-256color LANG=C.UTF-8 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    /bin/bash -l
+'</code></pre>
+      <p>生产实现应把挂载放进独立 mount namespace（设备支持时用 <code>unshare -m</code>），并用 trap/退出回调确保卸载。应用崩溃或被强杀时，下次启动先做一次挂载点健康检查。</p>
+
+      <p class="code-cap">rootfs 清单（manifest）</p>
+      <pre><code>{
+  "id": "kali-arm64",
+  "version": "2026.2",
+  "arch": "aarch64",
+  "url": "https://mirror.example/kali-arm64-2026.2.tar.xz",
+  "sha256": "…",
+  "size": 1234567890,
+  "min_free_bytes": 6442450944,
+  "signature": "…",
+  "key_id": "kingkang-rootfs-2026"
+}</code></pre>
+      <p>校验顺序固定为：manifest 签名 → 下载文件的 SHA-256 → 解压前检查剩余空间 → 解压后校验关键路径与文件模式。任何一步失败都不能启动运行时。manifest 与签名公钥随应用更新，不依赖单一 CDN。</p>
+    </section>
+
+    <section class="section" id="s05">
+      <div class="sec-no">05 / Kali</div>
+      <h2>Kali 集成</h2>
+      <p>Kali 不是特殊内核，而是 Debian 衍生发行版加一套工具。真正难的是权限与能力：同一套 rootfs，在无 root 的 PRoot 里和在有 root 的 chroot 里，能跑的工具不是一回事。</p>
+
+      <h3>5.1 三种交付形态</h3>
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>形态</th><th>前提</th><th>能力</th><th>适用</th></tr></thead>
+          <tbody>
+            <tr><td>NetHunter Rootless</td><td>无 root；Termux（官方文档基线）</td><td>绝大多数 CLI 工具、apt、Metasploit、KeX 图形；无 raw socket / mount / 监听模式</td><td>默认形态，覆盖学习与日常测试</td></tr>
+            <tr><td>Root chroot</td><td>已 root；stock 内核</td><td>接近原生；raw socket、iptables、mount；仍无监听模式与 HID</td><td>进阶用户、需要完整网络工具</td></tr>
+            <tr><td>NetHunter Full</td><td>root + NetHunter 内核 + recovery</td><td>监听模式、数据包注入、USB HID、蓝牙 HID 等</td><td>专业场景；刷机风险与设备矩阵限制</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>5.2 Rootless 引导流程</h3>
+      <ol>
+        <li>从 NetHunter 官方目录（<code>kali.download/nethunter-images/current/rootfs</code>）获取 <strong>full</strong> rootfs 与校验值：arm64 约 1.8 GB、amd64 约 2.2 GB。当前版本直接固定官方文件名并内置 SHA-256；更新时比对同目录 <code>SHA256SUMS</code> 中发布的校验值。</li>
+        <li>校验 rootfs 的 SHA-256；检查剩余空间（建议至少 10 GB，完整工具 15–20 GB）。安装记录已写入镜像的校验值，设置页的“检查更新”用它判断 Kali 是否发布了新镜像，有更新时自动下载替换，并保留 <code>/root</code> 与 <code>/opt/kingkang</code>。</li>
+        <li>用 libarchive 解压，保留符号链接与权限位；处理 Android 对硬链接的限制。解压后写入 <code>/etc/resolv.conf</code>、locale、时区与 apt 镜像。</li>
+        <li>首次启动执行 <code>apt update</code> 与 <code>apt full-upgrade</code>，再按用户选择安装 <code>kali-linux-headless</code> 或工具子集。提供“最小安装 / 完整工具”两个档位，避免默认下载十几 GB。</li>
+        <li>可选图形：启动 KeX/VNC，应用通过 intent 拉起 VNC 客户端；或在 P2 接入 Termux:X11。</li>
+        <li>提供 rootfs 备份与恢复（tar + 排除缓存），并在升级失败时回滚到上一版本。</li>
+      </ol>
+
+      <p class="code-cap">Kali rootfs 首次配置（示例）</p>
+      <pre><code># 在 PRoot 会话内
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+export LANG=C.UTF-8
+apt update
+apt -y full-upgrade
+apt -y install kali-linux-headless
+apt clean</code></pre>
+
+      <h3>5.2.1 DeepSeek Harness 与 Kali 的集成方式</h3>
+      <p>dsh 不是 Android 侧的独立进程，而是 Kali rootfs 内的一套 Node.js 工具链。应用负责准备运行环境、安装与升级 dsh，并拉起同在该 rootfs 内的 <code>bridge.mjs</code>；桥接作为应用前台服务的子进程持有 dsh 的 web profile，向应用暴露 KK-Agent v1。rootfs 备份或删除时，dsh 与会话随之迁移或移除，不会留下系统级残留。</p>
+      <ul>
+        <li>Node.js 与 dsh 固定安装在 <code>/opt/kingkang</code>，入口软链到 <code>/usr/local/bin</code>，不覆盖 Kali 自带工具。</li>
+        <li>安装脚本写入 rootfs 的 <code>/tmp</code>，通过 PRoot 执行，避免在 UI 或 ViewModel 中拼接 shell。</li>
+        <li>脚本以 <code>KK_*</code> 行输出状态与版本，错误码由应用翻译成可读提示；命令超时可取消，失败不伪造成功。</li>
+        <li>只使用 nodejs.org 官方二进制与 DeepSeek 官方 npm 包；下载的 Node.js tarball 必须通过 <code>SHASUMS256.txt</code> 校验。</li>
+        <li>Node.js 由应用通过 HTTPS 下载、校验后用系统 <code>tar</code> 解压进 rootfs，不经过 guest 的 <code>apt</code> / <code>curl</code>；npm 使用 Node 自带的 CA 证书访问官方 registry。</li>
+      </ul>
+
+      <h3>5.3 能力矩阵：无 root 到底能做什么</h3>
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>能力 / 工具</th><th>Rootless PRoot</th><th>Root chroot</th><th>NetHunter Full</th></tr></thead>
+          <tbody>
+            <tr><td>apt / pip / git / 编译</td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用，更快</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>DeepSeek Harness（dsh）</td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用，更快</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>导入 pcap / 离线 hash 审计</td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>Metasploit / sqlmap / hydra</td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>nmap TCP connect（<code>-sT</code>）</td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>nmap SYN 扫描（<code>-sS</code>）</td><td><span class="badge no">受限</span></td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>ping / 原始套接字</td><td><span class="badge no">通常不可用</span></td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>tcpdump / 抓包</td><td><span class="badge no">受限</span></td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>iptables / 网络配置</td><td><span class="badge no">不可用</span></td><td><span class="badge rec">可用</span></td><td><span class="badge rec">可用</span></td></tr>
+            <tr><td>mount / 内核模块</td><td><span class="badge no">不可用</span></td><td><span class="badge check">mount 可用；模块不可用</span></td><td><span class="badge rec">可用（受内核限制）</span></td></tr>
+            <tr><td>Wi-Fi 监听 / 注入</td><td><span class="badge no">不可用</span></td><td><span class="badge no">不可用</span></td><td><span class="badge rec">需兼容内核与网卡</span></td></tr>
+            <tr><td>USB HID / BadUSB</td><td><span class="badge no">不可用</span></td><td><span class="badge no">不可用</span></td><td><span class="badge rec">需内核支持</span></td></tr>
+            <tr><td>systemd 作为 PID 1</td><td><span class="badge no">不可用</span></td><td><span class="badge no">不可用</span></td><td><span class="badge no">不可用</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>这张表必须直接反映到产品文案里。用户在 PRoot 模式下执行 <code>nmap -sS</code> 失败时，应用应解释原因并给出“切换 root 模式”或“改用 <code>-sT</code>”的选项，而不是让用户以为装坏了。</p>
+
+      <h3>5.4 图形界面</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>方案</th><th>优点</th><th>代价</th><th>阶段</th></tr></thead>
+          <tbody>
+            <tr><td>KeX / VNC</td><td>Kali 官方路径；无 root 可用；外部客户端成熟</td><td>延迟与分辨率一般；需要额外客户端</td><td>MVP</td></tr>
+            <tr><td>内置 VNC 客户端</td><td>一体化体验；可做剪贴板与分辨率适配</td><td>需要 RFB 客户端实现或评估库许可证</td><td>P2</td></tr>
+            <tr><td>Termux:X11</td><td>延迟更好；与 Termux 生态一致</td><td>额外 APK；GPLv3；配置复杂</td><td>P2</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>5.5 存储与性能</h3>
+      <ul>
+        <li>目录型 rootfs 放在应用私有存储，避免镜像挂载（无 root 也无法 mount）。备份用 tar，不使用 sparse image。</li>
+        <li>默认最小安装约 4–6 GB 可用空间；完整 Kali 工具建议 15–20 GB。下载前做空间预检，解压时预留 2 倍峰值。</li>
+        <li>PRoot 下 <code>apt</code> 与编译偏慢，UI 要给出“正在解包/配置”的真实进度，避免用户误判卡死。</li>
+        <li>apt 缓存、旧内核与日志需要清理入口；提供“回收空间”而不是让用户手敲命令。</li>
+        <li>设备发热与电量：长任务提示充电；会话空闲时释放 wake lock。</li>
+      </ul>
+
+      <div class="callout warn">
+        <div class="label">Kali 专项提醒</div>
+        <p><code>proot-distro</code> 的官方发行版列表未收录 Kali；社区有 <code>--override-url</code> 与 fork 方案，但版本与维护不稳定。产品应以 NetHunter Rootless 的 rootfs 与启动流程为基线，并自行维护 manifest、镜像与回滚，而不是依赖某个社区脚本的当前行为。</p>
+      </div>
+    </section>
+
+    <section class="section" id="s06">
+      <div class="sec-no">06 / Terminal</div>
+      <h2>终端体验</h2>
+      <p>终端是用户 90% 时间停留的界面。它不需要花哨，但必须正确：字符宽度、输入法、Ctrl 组合键、滚动性能、复制粘贴，任何一项出错都会让“能跑 Linux”变得不可用。</p>
+
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>能力</th><th>目标</th><th>实现要点</th></tr></thead>
+          <tbody>
+            <tr><td>VT 兼容</td><td>xterm-256color、真彩色、备用屏、滚动区域、DEC 线框</td><td>复用成熟 VT 状态机；用 vttest 与 tmux/vim/htop 做回归</td></tr>
+            <tr><td>Unicode</td><td>CJK 双宽、emoji 回退、组合字符、零宽连接符</td><td>正确的 <code>wcwidth</code>；字体回退链；避免把 emoji 渲染成豆腐块</td></tr>
+            <tr><td>回滚</td><td>默认 10,000 行，可配置；支持搜索</td><td>环形缓冲；按行存样式；避免整屏重绘</td></tr>
+            <tr><td>输入</td><td>IME 组合、粘性 Ctrl/Alt、额外按键行、硬件键盘、鼠标上报</td><td>发送前处理组合态；音量键映射；软键盘不遮挡提示符</td></tr>
+            <tr><td>剪贴板</td><td>显式复制/粘贴；支持 OSC 52 但默认询问</td><td>避免后台程序静默读取剪贴板；敏感内容可一键清空</td></tr>
+            <tr><td>链接</td><td>OSC 8 与 URL 识别；打开前确认</td><td>不自动打开；避免把恶意文本变成可点击链接</td></tr>
+            <tr><td>多会话</td><td>标签、重命名、后台保活、通知</td><td>前台服务；会话列表；tmux 作为进程级恢复</td></tr>
+            <tr><td>性能</td><td>按键回显小于 30 ms；1 MB 输出不卡死 UI</td><td>批量读、增量渲染、丢帧不丢字节；渲染线程与读线程分离</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>6.1 首次启动流程</h3>
+      <ol>
+        <li>选择“快速开始（Debian）”或“Kali（较大）”；说明体积、耗时与所需空间。</li>
+        <li>选择下载镜像与镜像源；显示实时速度、剩余时间与暂停/续传。</li>
+        <li>校验签名与哈希；失败时给出具体失败项与重试入口。</li>
+        <li>解压并展示可读的启动日志，而不是空白转圈；允许取消并清理半成品。</li>
+        <li>进入终端，显示一条可复制的示例命令（如 <code>uname -a</code>），确认环境可用。</li>
+        <li>引导开启通知权限、电池优化白名单与（可选）phantom process 限制说明。</li>
+      </ol>
+
+      <h3>6.2 错误状态要可行动</h3>
+      <ul>
+        <li><strong>空间不足</strong>：显示需要多少、当前多少、可清理什么；提供跳转存储设置。</li>
+        <li><strong>校验失败</strong>：区分 manifest 签名、下载损坏、镜像源不一致；自动换源重试一次。</li>
+        <li><strong>进程被杀</strong>：显示 <code>signal 9</code> 的含义与设备对应的关闭限制步骤，不展示堆栈。</li>
+        <li><strong>挂载残留（root 模式）</strong>：下次启动检测并清理，给出“修复运行时”按钮。</li>
+        <li><strong>apt 锁/网络失败</strong>：保留日志，提供“复制诊断信息”，不自动删用户数据。</li>
+      </ul>
+
+      <h3>6.3 性能预算</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>指标</th><th>目标</th><th>测量方式</th></tr></thead>
+          <tbody>
+            <tr><td>冷启动到提示符（已安装）</td><td class="num">小于 1.5 s</td><td>Pixel 中端机，release 构建</td></tr>
+            <tr><td>按键回显</td><td class="num">小于 30 ms</td><td>高频输入 + 本地 shell</td></tr>
+            <tr><td>连续输出</td><td class="num">1 MB 不 ANR、不丢字节</td><td><code>yes</code> / <code>cat</code> 大文件</td></tr>
+            <tr><td>10k 行回滚内存</td><td class="num">小于 20 MB</td><td>Android Studio Memory Profiler</td></tr>
+            <tr><td>Kali 首装</td><td class="num">100 Mbps 下 10 分钟内可用</td><td>最小安装，不含完整工具</td></tr>
+            <tr><td>后台会话</td><td class="num">30 分钟不被杀</td><td>前台服务 + 通知，亮屏/熄屏各测</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>无障碍与本地化不是后期补丁：字体缩放、TalkBack 标签、高对比主题、横屏与折叠屏、中文输入法都要在 M1 就纳入验收。终端字体建议内置一款等宽字体并允许系统字体回退，CJK 字体不随应用打包，避免 APK 膨胀。</p>
+    </section>
+
+    <section class="section" id="s07">
+      <div class="sec-no">07 / Security</div>
+      <h2>安全、合规与发行</h2>
+      <p>这个应用的设计前提是“执行任意 Linux 程序”。它不可能像普通笔记应用那样收紧权限，因此安全工作的重点不是阻止执行，而是明确边界、保护供应链、控制爆炸半径。</p>
+
+      <h3>7.1 威胁模型</h3>
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>资产 / 边界</th><th>威胁</th><th>缓解</th></tr></thead>
+          <tbody>
+            <tr><td>rootfs 供应链</td><td>镜像被篡改、镜像源被劫持、过期工具链</td><td>manifest 签名 + SHA-256 + 多源；构建可复现；发布 SBOM</td></tr>
+            <tr><td>应用私有数据</td><td>容器内恶意程序读取 token、会话、配置</td><td>明确“PRoot 不是沙箱”；敏感信息放 Keystore；默认不绑定外部存储</td></tr>
+            <tr><td>共享存储</td><td>误删用户文件、泄露文档</td><td>默认不绑定；按需授权；只读挂载优先；删除需确认</td></tr>
+            <tr><td>组件边界</td><td>外部应用拉起会话、读取日志、注入命令</td><td>组件不导出；PendingIntent immutable；FileProvider 最小路径；校验调用方</td></tr>
+            <tr><td>root 模式</td><td>提权后被恶意脚本滥用</td><td>显式开启 + 二次确认；生物识别锁；卸载清理；审计日志</td></tr>
+            <tr><td>法律与政策</td><td>被用于未授权测试；商店下架</td><td>授权使用声明；不内置载荷；主渠道自建；保留合规文档</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>7.2 应用加固清单</h3>
+      <ul>
+        <li><code>allowBackup="false"</code>；会话 token 与 SSH 私钥使用 Android Keystore 包装，不写入明文配置。</li>
+        <li>所有组件默认 <code>exported="false"</code>；必须导出的入口加签名级权限或调用方校验。</li>
+        <li>网络使用 Network Security Config，禁止明文；下载与 manifest 使用固定公钥校验，不只依赖 TLS。</li>
+        <li>release 关闭 debuggable，开启 R8；NDK 开启 PIE、RELRO、stack protector、<code>_FORTIFY_SOURCE</code>。</li>
+        <li>日志不记录命令内容与输出；诊断包由用户主动导出，导出前预览。</li>
+        <li>截图保护可选；切换后台时对终端内容做模糊，避免任务切换泄露。</li>
+        <li>root 模式启动前显示能力与风险说明；退出时强制卸载并检查残留。</li>
+      </ul>
+
+      <h3>7.3 发行渠道与 targetSdk 策略</h3>
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>渠道</th><th>targetSdk</th><th>优点</th><th>风险 / 代价</th></tr></thead>
+          <tbody>
+            <tr><td>F-Droid / 自建仓库</td><td>28</td><td>可直接执行应用目录内二进制；无 Play 政策限制；适合安全工具</td><td>Play Protect 可能提示“为旧版 Android 构建”；未来系统最低 target 提高会中断</td></tr>
+            <tr><td>GitHub Releases</td><td>28</td><td>完全可控；可分发完整版与调试工具</td><td>用户需手动允许安装；更新与签名管理自行负责</td></tr>
+            <tr><td>Google Play flavor</td><td>现代 API</td><td>触达与自动更新</td><td>需 APK 原生库 / linker64 变通；脆弱；安全工具类审查与政策风险</td></tr>
+            <tr><td>企业 MDM</td><td>28 或现代</td><td>可预置离线 rootfs；受管设备</td><td>需要管理平台与私有签名</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>W^X 只有三种现实选择：</p>
+      <ul>
+        <li><strong>A. 保持 <code>targetSdk 28</code></strong>：工程量最小，今天可用；代价是安装提示与未来兼容风险。MVP 选它。</li>
+        <li><strong>B. 现代 targetSdk + APK 原生库 / linker64</strong>：Termux 的 Play 版本已经证明可行，但依赖启动路径与环境变量，任何静态链接或清空环境的程序都可能失效；维护成本高，且仍可能触碰 Play 政策。</li>
+        <li><strong>C. 只支持 root</strong>：技术上最稳，但把绝大多数用户排除在外，不符合产品目标。</li>
+      </ul>
+
+      <div class="callout warn">
+        <div class="label">发布门禁</div>
+        <p>16 KB 页大小必须作为独立门禁：NDK r28+ 构建、<code>-Wl,-z,max-page-size=16384</code>、用官方校验脚本检查所有 <code>.so</code>；Kali rootfs 中的关键二进制也要在 16 KB 设备/模拟器上验证。不要等到 Play 或系统强制时才处理。</p>
+      </div>
+
+      <h3>7.4 合规要点</h3>
+      <ul>
+        <li><strong>授权使用</strong>：首次启动与每次进入 Kali 工具集时提示仅限授权测试；不提供“一键攻击”模板。</li>
+        <li><strong>不自动提权</strong>：不集成一键 root、不下载未知来源的内核或 recovery。</li>
+        <li><strong>出口管制与当地法律</strong>：部分加密与渗透工具受出口管制；按目标市场评估。</li>
+        <li><strong>许可证</strong>：GPLv3 源码义务、Apache NOTICE、PRoot GPLv2、Kali 工具混合许可证，逐项审计。</li>
+        <li><strong>商标与品牌</strong>：不使用 Kali/Termux/NetHunter 的官方 logo，不暗示官方合作。</li>
+        <li><strong>隐私</strong>：默认不上传命令、文件名、网络目标；崩溃上报需明示并可选关闭。</li>
+      </ul>
+    </section>
+
+    <section class="section" id="s08">
+      <div class="sec-no">08 / Delivery</div>
+      <h2>工程计划</h2>
+      <p>技术风险集中在运行时与 rootfs，不在 UI。先用最小原型验证“PRoot 里能跑 Kali 的核心工具”，再投入品牌与交互。</p>
+
+      <h3>8.1 模块划分</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Gradle 模块</th><th>内容</th><th>依赖</th></tr></thead>
+          <tbody>
+            <tr><td><code>app</code></td><td>Compose UI、导航、设置、首次启动、DI 组装</td><td>所有模块</td></tr>
+            <tr><td><code>core-terminal</code></td><td>VT 解析、渲染、回滚、选择、搜索</td><td>Apache-2.0 终端模块或 libvterm</td></tr>
+            <tr><td><code>core-pty</code></td><td>JNI、PTY 生命周期、窗口大小、信号</td><td>NDK</td></tr>
+            <tr><td><code>engine-proot</code></td><td>命令构造、环境变量、退出清理</td><td><code>core-pty</code>、<code>rootfs</code></td></tr>
+            <tr><td><code>engine-chroot</code></td><td>su、挂载、命名空间、清理</td><td><code>core-pty</code>、libsu</td></tr>
+            <tr><td><code>engine-ssh</code></td><td>SSH 连接、密钥、known_hosts</td><td>ConnectBot 传输层或自建</td></tr>
+            <tr><td><code>rootfs</code></td><td>manifest、下载、校验、解压、版本、回滚</td><td>OkHttp、libarchive</td></tr>
+            <tr><td><code>gui-bridge</code></td><td>VNC intent、内置客户端、Termux:X11 适配</td><td>可选</td></tr>
+            <tr><td><code>common</code></td><td>日志、错误模型、设备能力检测、存储</td><td>—</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>8.2 技术栈</h3>
+      <ul>
+        <li>Kotlin + Jetpack Compose；终端表面用 Canvas/SurfaceView，避免 Compose 文本布局扛不住大吞吐。</li>
+        <li>NDK r28+、C++20、CMake；arm64-v8a 为主，x86_64 仅用于模拟器调试。</li>
+        <li>下载用 OkHttp（Range 续传），解压用 libarchive + liblzma；签名用 Ed25519（Tink/BouncyCastle 或 libsodium）。</li>
+        <li>元数据用 DataStore/Room；大文件任务用前台服务，不用 WorkManager 承担解压。</li>
+        <li>依赖注入从简：Hilt 可选；核心模块保持纯 Kotlin，便于单元测试。</li>
+      </ul>
+
+      <h3>8.3 里程碑</h3>
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>阶段</th><th>周期</th><th>交付</th><th>退出标准</th></tr></thead>
+          <tbody>
+            <tr><td>M0 · 技术验证</td><td class="num">2 周</td><td>终端 + 本地 shell + PRoot Debian 的 spike</td><td>Pixel 上稳定执行 <code>apt update</code>；确认 W^X 方案</td></tr>
+            <tr><td>M1 · 发行版管理</td><td class="num">4 周</td><td>下载/签名/解压/启动/回滚；Debian 可用</td><td>断网、空间不足、校验失败均可恢复</td></tr>
+            <tr><td>M2 · Kali Rootless</td><td class="num">4 周</td><td>Kali rootfs、apt、工具子集、KeX VNC、dsh 安装与版本检测</td><td>nmap <code>-sT</code>、msfconsole、图形会话、dsh 安装/更新闭环跑通</td></tr>
+            <tr><td>M3 · 终端与体验</td><td class="num">3 周</td><td>Kali 工作台、能力提示、能力徽章、多标签、额外按键、CJK/emoji、错误态</td><td>性能预算达标；普通用户可在无 root 下完成一次完整的 CLI 工作流</td></tr>
+            <tr><td>M4 · Root 与发布</td><td class="num">3 周</td><td>chroot 引擎、16 KB、签名构建、F-Droid 元数据</td><td>root 设备可用；16 KB 设备通过</td></tr>
+            <tr><td>M5 · 图形与扩展</td><td class="num">4 周</td><td>内置 VNC 或 Termux:X11、自动化/快捷命令、英文本地化</td><td>可选功能不阻塞主流程</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>总计 16–20 周，按 2 名工程师（1 Android、1 native/运行时）+ 0.5 名设计/QA 估算。单人开发通常需要 5–6 个月。M0 失败的唯一合理结论是换执行路径，而不是继续堆 UI。</p>
+
+      <h3>8.4 测试矩阵</h3>
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>维度</th><th>覆盖</th><th>重点</th></tr></thead>
+          <tbody>
+            <tr><td>系统版本</td><td>Android 10 / 12 / 14 / 15 / 16 / 17</td><td>W^X、phantom killer、16 KB、前台服务限制</td></tr>
+            <tr><td>OEM</td><td>Pixel、Samsung One UI、Xiaomi HyperOS、OPPO/ColorOS、Huawei</td><td>后台杀进程、存储权限、安装限制</td></tr>
+            <tr><td>硬件</td><td>4 GB RAM、32 GB 存储、arm64、16 KB 页设备</td><td>内存、解压峰值、启动时间</td></tr>
+            <tr><td>root</td><td>Magisk、KernelSU、APatch；SELinux enforcing</td><td>su 授权、挂载、清理、退出</td></tr>
+            <tr><td>网络</td><td>IPv6、代理、VPN、强制门户、DNS 变更</td><td>apt 下载、manifest 校验、镜像切换</td></tr>
+            <tr><td>终端回归</td><td>tmux、vim、htop、ssh、CJK 输入、粘贴大段文本</td><td>渲染、宽度、组合键、剪贴板</td></tr>
+            <tr><td>故障注入</td><td>下载中断、tar 损坏、空间耗尽、进程被杀、重启</td><td>恢复路径与数据完整性</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" id="s09">
+      <div class="sec-no">09 / Risks</div>
+      <h2>风险登记</h2>
+      <div class="table-wrap wide">
+        <table>
+          <thead><tr><th>风险</th><th>概率</th><th>影响</th><th>缓解</th></tr></thead>
+          <tbody>
+            <tr><td>Android 提高最低 targetSdk，target 28 方案失效</td><td>中</td><td>高</td><td>运行时抽象 + 提前验证 APK 原生库/linker64 方案；准备现代 API flavor</td></tr>
+            <tr><td>Google Play 拒绝或下架</td><td>高</td><td>高</td><td>主渠道自建；Play 只做可选分发；不把更新依赖放在 Play</td></tr>
+            <tr><td>OEM 后台杀进程导致会话中断</td><td>高</td><td>中</td><td>前台服务、通知、电池白名单引导、设备矩阵与 known issues</td></tr>
+            <tr><td>16 KB 页设备上 rootfs 二进制不兼容</td><td>中</td><td>高</td><td>发布门禁；关键二进制重建；设备/模拟器实测</td></tr>
+            <tr><td>PRoot 性能不达预期</td><td>中</td><td>中</td><td>明确能力边界；root chroot 作为增强；避免重编译场景的过度承诺</td></tr>
+            <tr><td>rootfs 供应链被篡改</td><td>低</td><td>高</td><td>manifest 签名、哈希、多源、可复现构建、SBOM</td></tr>
+            <tr><td>GPL 污染闭源商业版</td><td>中</td><td>高</td><td>Apache 模块边界、代码扫描、法务评审、依赖白名单</td></tr>
+            <tr><td>Kali/NetHunter 商标与官方关系误读</td><td>中</td><td>中</td><td>独立品牌；描述性使用；不做官方背书暗示</td></tr>
+            <tr><td>设备存储不足导致升级失败</td><td>中</td><td>中</td><td>预检、峰值空间、回滚、清理工具</td></tr>
+            <tr><td>被用于未授权测试</td><td>中</td><td>高</td><td>授权声明、无内置载荷、日志与合规文档、目标市场法律评估</td></tr>
+            <tr><td>社区脚本/镜像 URL 失效</td><td>高</td><td>中</td><td>自维护 manifest、镜像与签名；不硬编码第三方短期链接</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" id="s10">
+      <div class="sec-no">10 / References</div>
+      <h2>参考资料</h2>
+      <p>以下链接用于核对实现细节与许可证；二开前请以目标 commit 的官方文本为准。</p>
+      <ul class="refs">
+        <li><a href="https://www.kali.org/docs/nethunter/nethunter-rootless/">Kali NetHunter Rootless 官方文档</a><span>Kali Docs</span></li>
+        <li><a href="https://github.com/termux/termux-packages/wiki/Termux-and-Android-10">Termux and Android 10（W^X 说明）</a><span>Termux Wiki</span></li>
+        <li><a href="https://github.com/termux/termux-app">termux/termux-app</a><span>GitHub · GPL-3.0</span></li>
+        <li><a href="https://github.com/termux-play-store">termux/termux-play-store</a><span>GitHub · 现代 targetSdk 变通</span></li>
+        <li><a href="https://github.com/termux/proot-distro">termux/proot-distro</a><span>GitHub · GPL-3.0</span></li>
+        <li><a href="https://github.com/termux/proot">termux/proot</a><span>GitHub · GPL-2.0</span></li>
+        <li><a href="https://github.com/termux/termux-x11">termux/termux-x11</a><span>GitHub · GPL-3.0</span></li>
+        <li><a href="https://github.com/jackpal/Android-Terminal-Emulator">jackpal/Android-Terminal-Emulator</a><span>GitHub · Apache-2.0</span></li>
+        <li><a href="https://github.com/CypherpunkArmory/UserLAnd">CypherpunkArmory/UserLAnd</a><span>GitHub · 许可证需核验</span></li>
+        <li><a href="https://github.com/meefik/linuxdeploy">meefik/linuxdeploy</a><span>GitHub · GPL-3.0</span></li>
+        <li><a href="https://github.com/EXALAB/AnLinux-App">EXALAB/AnLinux-App</a><span>GitHub · Apache-2.0</span></li>
+        <li><a href="https://github.com/connectbot/connectbot">connectbot/connectbot</a><span>GitHub · Apache-2.0</span></li>
+        <li><a href="https://github.com/topjohnwu/libsu">topjohnwu/libsu</a><span>GitHub · Apache-2.0</span></li>
+        <li><a href="https://developer.android.com/guide/practices/page-sizes">Android 16 KB page sizes</a><span>Android Developers</span></li>
+        <li><a href="https://github.com/termux/termux-packages/issues/21688">Termux 16 KB page size tracking</a><span>GitHub Issue</span></li>
+        <li><a href="https://github.com/agnostic-apollo/Android-Docs/blob/master/en/docs/apps/processes/phantom-cached-and-empty-processes.md">Android phantom process killer</a><span>Android Docs / Termux</span></li>
+        <li><a href="https://gitlab.com/kalilinux/nethunter/apps/kali-nethunter-app">Kali NetHunter App</a><span>GitLab</span></li>
+        <li><a href="https://github.com/proot-me/proot">proot-me/proot</a><span>GitHub · GPL-2.0</span></li>
+      </ul>
+    </section>
+
+    <footer>
+      <p>本文为设计草案，不是法律意见。许可证、商标与平台政策以官方文本为准；能力矩阵与性能数字需在目标设备上实测后更新。</p>
+    </footer>
+  </main>
+</div>

@@ -1,0 +1,10 @@
+# Normalize line endings for source; scripts that run inside Kali must stay LF.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.webp binary
+*.so binary
+*.jar binary
+*.woff2 binary
