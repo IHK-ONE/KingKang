@@ -1,0 +1,30 @@
+{
+  "name": "grep",
+  "arguments": {
+    "pattern": "listen",
+    "path": "/etc",
+    "include": "*.conf"
+  },
+  "resultText": "2 matches",
+  "meta": {
+    "shape": "matches",
+    "files": [
+      {
+        "path": "/etc/ssh/sshd_config",
+        "matches": [
+          { "lineNumber": 14, "line": "ListenAddress 127.0.0.1" }
+        ]
+      },
+      {
+        "path": "/etc/nginx/sites-enabled/default",
+        "matches": [
+          { "lineNumber": 3, "line": "listen 127.0.0.1:8080;" }
+        ]
+      }
+    ],
+    "total": 2,
+    "truncated": false
+  },
+  "running": false,
+  "isError": false
+}

@@ -1,0 +1,12 @@
+{
+  "turn": 2,
+  "step": 1,
+  "usage": {
+    "inputTokens": 53000,
+    "outputTokens": 640,
+    "totalTokens": 53640,
+    "cacheReadTokens": 32000,
+    "cacheWriteTokens": 800,
+    "reasoningTokens": 96
+  }
+}

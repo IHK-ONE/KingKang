@@ -1,0 +1,12 @@
+{
+  "goal": {
+    "id": "goal_01J9ZK4T7M2Q",
+    "revision": 3,
+    "objective": "Add projection fixture coverage",
+    "phase": "active",
+    "maxGoalRounds": 12
+  },
+  "roundsStarted": 4,
+  "createdAt": 1730000000000,
+  "updatedAt": 1730000005000
+}

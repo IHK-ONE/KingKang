@@ -1,0 +1,9 @@
+{
+  "name": "custom_tool",
+  "arguments": {
+    "query": "show me the latest scan"
+  },
+  "resultText": "unrecognized view payload",
+  "running": false,
+  "isError": false
+}

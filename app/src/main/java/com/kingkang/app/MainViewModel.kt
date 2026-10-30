@@ -1275,6 +1275,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadGoal() = AgentEngine.loadGoal()
 
+    fun createGoal(objective: String) = AgentEngine.createGoal(objective)
+
     fun pauseGoal() = AgentEngine.pauseGoal()
 
     fun resumeGoal() = AgentEngine.resumeGoal()

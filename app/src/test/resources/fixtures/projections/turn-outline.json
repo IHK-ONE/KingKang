@@ -1,0 +1,4 @@
+[
+  { "turn": 1, "seq": 4, "prompt": "Scan the loopback interface", "response": "The scan found two open ports…" },
+  { "turn": 2, "seq": 27, "prompt": "Write the findings to a file", "response": "Wrote findings.md with the open ports…" }
+]

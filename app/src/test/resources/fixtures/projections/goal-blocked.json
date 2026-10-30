@@ -1,0 +1,16 @@
+{
+  "goal": {
+    "id": "goal_01J9ZK4T7M2Q",
+    "revision": 7,
+    "objective": "Wait for the user to approve the shell command",
+    "phase": "blocked",
+    "blockedReason": {
+      "code": "awaiting-approval",
+      "message": "The command needs user approval before it can run."
+    },
+    "maxGoalRounds": 12
+  },
+  "roundsStarted": 4,
+  "createdAt": 1730000000000,
+  "updatedAt": 1730000009000
+}

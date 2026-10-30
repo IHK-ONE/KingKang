@@ -1,0 +1,10 @@
+{
+  "name": "bash",
+  "arguments": {
+    "command": "cat /root/missing.txt",
+    "description": "Read a missing file"
+  },
+  "resultText": "cat: /root/missing.txt: No such file or directory\n\n[exit code: 1]",
+  "running": false,
+  "isError": true
+}

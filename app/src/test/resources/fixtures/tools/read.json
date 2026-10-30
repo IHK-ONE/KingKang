@@ -1,0 +1,20 @@
+{
+  "name": "read",
+  "arguments": {
+    "file_path": "/root/work/findings.md",
+    "offset": 2
+  },
+  "resultText": "1\t# Findings\n2\t\n3\tOnly loopback is exposed.",
+  "meta": {
+    "path": "/root/work/findings.md",
+    "offset": 2,
+    "lines": [
+      { "number": 2, "text": "" },
+      { "number": 3, "text": "Only loopback is exposed." }
+    ],
+    "totalLines": 3,
+    "lang": "markdown"
+  },
+  "running": false,
+  "isError": false
+}

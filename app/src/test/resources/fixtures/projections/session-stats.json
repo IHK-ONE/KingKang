@@ -1,0 +1,10 @@
+{
+  "turns": 5,
+  "steps": 9,
+  "llmMs": 18400,
+  "toolMs": 2600,
+  "ttftMs": 2100,
+  "ttftSteps": 9,
+  "decodeMs": 12600,
+  "decodeTokens": 3210
+}

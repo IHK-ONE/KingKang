@@ -1,0 +1,10 @@
+{
+  "name": "write",
+  "arguments": {
+    "file_path": "/root/work/findings.md",
+    "content": "# Findings\n\nOnly loopback is exposed.\n"
+  },
+  "resultText": "",
+  "running": true,
+  "isError": false
+}

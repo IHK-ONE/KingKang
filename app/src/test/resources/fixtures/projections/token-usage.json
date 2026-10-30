@@ -1,0 +1,6 @@
+{
+  "uncachedInputTokens": 1200,
+  "outputTokens": 480,
+  "cacheReadTokens": 32000,
+  "cacheWriteTokens": 800
+}

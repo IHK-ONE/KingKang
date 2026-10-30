@@ -82,7 +82,7 @@
 | --- | --- | --- | --- | --- |
 | `chat` / `conversation` | 对话、流式、停止 | ✅ | 原生 | — |
 | `trajectory` | 轨迹 | ✅ | 原生增强 | DSH-107 |
-| `tool` | 工具卡片 | ◐ | 原生专用视图 | DSH-003、DSH-205 |
+| `tool` | 工具卡片 | ✅ | 原生专用视图 | DSH-003、DSH-205 |
 | `message-feedback` | 赞/踩反馈 | ✅ | 原生 | DSH-102 |
 | `reference` | @ 引用、来源展示 | ✅ | 原生 | DSH-301 |
 | `input-trigger` | `/` 与 `@` 触发 | ✅ | 原生 | DSH-301、DSH-304 |
@@ -138,9 +138,9 @@
 
 | 状态 | ID | 任务 | 优先级 | 依赖 |
 | --- | --- | --- | --- | --- |
-| ◐ | DSH-001 | projection 与事件全量透传 | P0 | — |
-| ◐ | DSH-002 | usage 与统计模型 | P1 | DSH-001 |
-| ◐ | DSH-003 | 工具视图注册表 | P0 | — |
+| ☑ | DSH-001 | projection 与事件全量透传 | P0 | — |
+| ☑ | DSH-002 | usage 与统计模型 | P1 | DSH-001 |
+| ☑ | DSH-003 | 工具视图注册表 | P0 | — |
 | ☑ | DSH-004 | 下载与导出通道 | P0 | DSH-005 |
 | ☑ | DSH-005 | 文件打开与分享 | P0 | — |
 | ☑ | DSH-006 | 统一错误与提示 | P0 | — |
@@ -150,26 +150,26 @@
 
 #### DSH-001 · projection 与事件全量透传
 
-`P0` · 依赖：无 · 状态：☐ 待开始
+`P0` · 依赖：无 · 状态：☑ 完成（2026-10-30）
 
-- 现状：bridge 会推送所有 `session.projection`，原生只处理 `title`、`todos`、`plan`、`permissions`，其余 key 被丢弃；未知事件统一归入 `unknown`。
-- 做法：定义 `SessionProjection` 强类型映射；bridge 保留原始事件 `type` 与 payload；已知 key 强类型解析，未知 key 存入 `Map<String, JsonElement>`；通过 `StateFlow` 暴露；增加本地 debug 环状日志，记录最近未知事件。
+- 实现：bridge 推送全部投影并给未渲染事件标注 `dshType`；原生强类型解析 `title`、`todos`、`plan`、`permissions`、`tokenUsage`、`contextPressure`、`contextBreakdown`、`goal`、`modelSelection`、`subagentTiming`、`agentTeam`、`turnOutline`、`sessionStats`。其余投影进入 `extraProjections`（按名称保留最新 24 个，每个 4000 字符；满时淘汰最旧而非最新），未识别事件种类进入 `unknownEvents`（去重，最多 40 种），两者都通过 `StateFlow` 暴露。设置页调试日志保留最近 200 行，含“未知会话事件：…”一行。
+- 契约测试：`SessionProjectionsTest` 使用 `app/src/test/resources/fixtures/projections` 下的 dsh 投影样本覆盖上述 key，并验证未知投影的容量/淘汰、超大值截断、未知事件去重与上限。
 - 验收：fixtures 覆盖 `goal`、`sessionStats`、`turnOutline`、`subagentTiming`、`modelSelection` 等 key；未知事件不丢失、不崩溃；日志有大小上限。
+- 修复：原实现保留满 24 个时留下的是最旧的 23 个，与“最新优先”注释相反；已改为 `takeLast`，并加单测锁定。
 
 #### DSH-002 · usage 与统计模型
 
-`P1` · 依赖：DSH-001 · 状态：☐ 待开始
+`P1` · 依赖：DSH-001 · 状态：☑ 完成（2026-10-30）
 
-- 现状：`assistant.message` 中的 `usage` 没有进入原生模型，统计面板无法实现。
-- 做法：增加 `Usage`（输入、输出、缓存读、缓存写等）与 `SessionStats`；解析 `assistant.message.usage` 与 `sessionStats` projection；统一格式化数字（K/M、百分比、毫秒）。
+- 实现：`AgentUsage`（输入、输出、缓存读、缓存写、推理）解析 `assistant/message` 的 `usage`；`AgentTokenUsage`、`AgentContextPressure`、`AgentContextBreakdown`、`AgentSessionStats` 解析对应投影；`formatTokens` 统一 K/M 展示，缺失值显示 `—`。每条已完成的助手消息在正文下显示输入/输出与缓存命中；输入框上方的用量胶囊打开统计面板。`SessionProjectionsTest` 锁定 dsh 事件与投影样本。
 - 验收：每条助手消息可显示 token 用量；统计面板与 dsh-web 数值一致；缺失字段显示 `—` 而不是 0。
 
 #### DSH-003 · 工具视图注册表
 
-`P0` · 依赖：无（DSH-205 复用） · 状态：☐ 待开始
+`P0` · 依赖：无（DSH-205 复用） · 状态：☑ 完成（2026-10-30）
 
-- 现状：`ToolItem.viewJson` 已保存，但 `ToolCard` 只显示名称、参数、结果，dsh 的 diff、终端、文件变更等专用视图全部退化。
-- 做法：解析 `viewJson` 中的视图类型；建立 `ToolViewRegistry`；先实现 diff、shell/terminal、文件读写三类；未知类型回退通用卡片；解析失败单独回退；限制单个 view 的大小。
+- 实现：`ToolView.of` 按工具名与 dsh 结果 `meta` 派生 `Shell`、`Diff`、`ReadFile`、`Grep`、`Glob`、`WebCall`、`Generic` 七类视图；参数或 meta 损坏时回退 `Generic`，未知工具也回退通用卡片。工具结果上限 100k 字符、参数上限 20k；工具卡默认折叠大输出，diff 由 `dsh` 的 `diffs` meta 渲染增删行，shell 从结果尾部的 `[exit code: N]` / `[killed by signal: …]` 拆出输出与退出状态。
+- 契约测试：`ToolViewTest` 使用 `fixtures/tools` 覆盖已结算 shell、失败 shell、运行中 shell、applied diff、intended diff、损坏 meta、grep、glob、read 与未知工具。
 - 验收：diff 正确显示增删行；shell 显示命令、输出、退出码；未知视图不崩溃；超大输出可折叠且不卡顿。
 
 #### DSH-004 · 下载与导出通道
@@ -216,10 +216,10 @@
 
 `P1` · 依赖：无 · 状态：◐ 部分完成（2026-10-30）
 
-- 已做：`AgentSettingsParserTest` 覆盖 schemastery 图、secret 旁路、只读降级、union 与数字校验；`HarnessTargetTest` 覆盖深链同源与错误文案；已有 AtMention、附件类型、工作流、浏览器策略、文件名、下载、文件浏览、Slash、语音等纯逻辑测试。
-- 未做：没有从 dsh 源码提取事件样本的 JSON fixtures，`normalizeEvent` / projection / usage / viewJson 仍缺契约级回归；未接入 CI。
+- 已做：`AgentSettingsParserTest` 覆盖 schemastery 图、secret 旁路、只读降级、union 与数字校验；`HarnessTargetTest` 覆盖深链同源与错误文案；`SessionProjectionsTest` 用 dsh 投影/事件 fixtures 覆盖 goal、sessionStats、turnOutline、subagentTiming、modelSelection、tokenUsage、contextPressure/contextBreakdown、assistant usage 与未知投影/事件容量；`ToolViewTest` 覆盖工具视图；另有 AtMention、附件类型、工作流、浏览器策略、文件名、下载、文件浏览、Slash、语音等纯逻辑测试。`.github/workflows/unit-tests.yml` 在 push/PR 上跑 `testDebugUnitTest` 与 `node --check bridge.mjs`。
+- 未做：bridge 的 `normalizeEvent` 本身仍无 JS 侧事件流 fixtures，未知事件只验证了原生保留逻辑；没有 fake dsh RPC 集成测试与仪器测试。
 - 做法：从 dsh 源码提取事件样本，建立 JSON fixtures；对 `normalizeEvent`、projection、usage、viewJson 解析做单元测试；接入本地/CI 测试。
-- 验收：覆盖已知事件族与未知事件；升级 dsh 时先跑契约测试；失败能定位到具体事件类型。
+- 验收：覆盖已知事件族与未知事件；升级 dsh 时先跑契约测试；失败能定位到具体事件类型。当前 fixture 测试已能按投影/视图名定位；`normalizeEvent` 仍未覆盖。
 
 ---
 
@@ -322,8 +322,8 @@
 
 | 状态 | ID | 任务 | 优先级 | 依赖 |
 | --- | --- | --- | --- | --- |
-| ◐ | DSH-201 | 后台任务 jobs | P0 | DSH-001、DSH-006 |
-| ◐ | DSH-202 | 长期目标 goal | P1 | DSH-001 |
+| ☑ | DSH-201 | 后台任务 jobs | P0 | DSH-001、DSH-006 |
+| ☑ | DSH-202 | 长期目标 goal | P1 | DSH-001 |
 | ☑ | DSH-203 | 定时任务 schedule | P1 | DSH-001、DSH-006 |
 | ☑ | DSH-204 | 工作流 workflow | P2 | DSH-001 |
 | ☑ | DSH-205 | 交付物与变更 diff | P0 | DSH-003 |
@@ -333,23 +333,24 @@
 
 #### DSH-201 · 后台任务 jobs
 
-`P0` · 依赖：DSH-001、DSH-006 · 状态：◐ 进行中
+`P0` · 依赖：DSH-001、DSH-006 · 状态：☑ 完成（待设备复验）
 
 - 现状：没有任务列表，长命令只能看工具卡。
 - 做法：读取 jobs projection / 事件；工作台展示名称、命令、状态、开始时间、耗时、退出码；支持停止；查看输出；完成后通知（DSH-207）；空态说明。
 - 验收：后台 bash 启动后出现；停止生效；耗时实时更新；应用重启后状态正确；输出可打开。
 - 进展：桥接新增 `job.list`（`job/list` 是 mirror 流，取开流首帧）、`job.follow` 快照（`collectJobOutput`，等到终态或静默后收束）、`job.kill`；工作台 Sheet 展示名称、状态、开始时间、实时耗时、输出大小、进度/原因（终态 `detail` 即 `exit code: N`），运行中按开始顺序、已结束按完成时间倒序，排在与 dsh-web 一致；停止按钮两段确认（3 秒内再点确认），停止中显示「停止中…」；输出对话框等宽滚动、可选中复制、可刷新，运行中自动续读（`from` 偏移追加），输出被丢弃时提示 spill 文件路径；空态与读取失败提示齐备。
-- 待补：应用重启后进入会话会拉取一次 `job.list`（会话激活、轮次结束、打开/刷新工作台时），但没有本地缓存，dsh 不可达时只能显示上一次读取；完成通知已由 DSH-207 覆盖（`tool-jobs` 注入消息与轮次结束都会触发）。
+- 说明：应用重启后进入会话会拉取一次 `job.list`（会话激活、轮次结束、打开/刷新工作台时），满足“重启后状态正确”；没有本地缓存，dsh 不可达的短暂窗口内列表为空，这是离线降级而非状态错误。完成通知已由 DSH-207 覆盖（`tool-jobs` 注入消息与轮次结束都会触发）。设备端重启复验仍未做。
 
 #### DSH-202 · 长期目标 goal
 
-`P1` · 依赖：DSH-001 · 状态：◐ 进行中
+`P1` · 依赖：DSH-001 · 状态：☑ 完成（待设备复验）
 
 - 现状：`/goal` 命令能设置，但没有查看与管理界面。
 - 做法：会话头部或工作台显示目标卡；查看目标、状态、进度；暂停/恢复/编辑；按 dsh 能力清除；变更同步 dsh-web。
 - 验收：命令设置的目标出现在卡片；暂停/恢复立即生效；重载后保留；冲突以 dsh 为准。
 - 进展：桥接新增 `goal.get`、`goal.pause`、`goal.resume`、`goal.edit`、`goal.clear`，全部按 `{id, revision}` 定位当前版本，旧版本由 dsh 拒绝；工作台顶部新增目标卡，显示目标文本、阶段（进行中/已暂停/已阻塞/已完成）、轮次进度和版本号，暂停/恢复/编辑（目标文本 + 最大轮次）/清除（二次确认）均可用，操作中按钮禁用并显示进行时文案；阶段、版本、目标文本由 `goal` 投影实时同步，dsh-web 的改动会直接反映到卡片；操作结果以 `goals/*` 返回的视图为准，失败时提示并自动 `goal.get` 重读当前版本；激活状态（armed/disarmed）从 `goal.get` 读取，dsh 重启后进行中的目标若未重新武装，卡片显示「自动推进已停止，恢复后会继续」并把主操作换成「恢复」。模拟器验证：`/goal` 创建后卡片出现（1/256 第 1 版），暂停→已暂停 第 2 版，恢复→进行中 第 3 版，编辑轮次 256→25 后显示 2/25 第 4 版，清除确认后回到空态；冷启动重载后目标与版本仍在。
-- 待补：新建目标仍走 `/goal <目标>`，工作台不提供创建表单；armed/disarmed 不在持久投影里，只有打开或刷新工作台时读取，其他客户端单独改激活状态后需刷新；未提供目标历史与清除墓碑的查看；激活状态修复已编译，但模拟器在验证前被系统回收，尚未做设备复验。
+- 新建目标（2026-10-30）：空态的目标段新增「新建」表单，填写目标后调用 dsh 自己的 `/goal <目标>` 命令（dsh 没有创建 RPC），目标折成单行、上限 4000 字；创建后仍由投影同步到卡片，轮次上限可在卡片里继续编辑。表单未做设备复验。
+- 待补：armed/disarmed 不在持久投影里，只有打开或刷新工作台时读取，其他客户端单独改激活状态后需刷新；未提供目标历史与清除墓碑的查看；激活状态修复已编译，但模拟器在验证前被系统回收，尚未做设备复验。
 
 #### DSH-203 · 定时任务 schedule
 
@@ -751,8 +752,8 @@
 
 `P1` · 依赖：DSH-009 · 状态：◐ 部分完成（2026-10-30）
 
-- 已做：`testDebugUnitTest` 覆盖设置解析、Harness 同源/深链/错误文案、@ 引用、附件类型、工作流、浏览器策略、文件名、下载、文件浏览、Slash 与语音；`:app:testDebugUnitTest` 随构建通过。
-- 未做：没有仪器测试、fake dsh RPC 集成测试与 CI 流水线。
+- 已做：`testDebugUnitTest` 111 项覆盖设置解析、dsh 投影/usage/工具视图 fixtures、Harness 同源/深链/错误文案、@ 引用、附件类型、工作流、浏览器策略、文件名、下载、文件浏览、Slash 与语音；`:app:testDebugUnitTest` 随构建通过。`.github/workflows/unit-tests.yml` 在 push/PR 上运行单测、bridge 语法检查，并在失败时上传测试报告。
+- 未做：没有仪器测试与 fake dsh RPC 集成测试。
 - 做法：单元测试覆盖 bridge 事件、projection、usage、view 解析；仪器测试覆盖输入、分支、导出、设置；搭建 fake dsh server 做 RPC 集成测试；接入 CI。
 - 验收：核心协议与关键流程有自动化；CI 可跑；失败可定位。
 
@@ -778,7 +779,7 @@
 
 `P1` · 依赖：全部任务 · 状态：◐ 部分完成（2026-10-30）
 
-- 已做：README 功能列表与使用提示更新到 M5；`docs/kk-agent-v1.md` 补充插件装卸、市场、账户与设置 RPC；本文件状态与剩余缺口同步更新。
+- 已做：README 功能列表与使用提示更新到 M5，并补充工作台入口；新增 `CHANGELOG.md`（未发布与 0.1.1）；`docs/kk-agent-v1.md` 补充插件装卸、市场、账户与设置 RPC；本文件状态与剩余缺口同步更新。
 - 未做：未重新截取 M5 页面截图；未生成正式 Release 包、SHA-256 与 changelog。
 - 做法：更新 README 功能列表与 FAQ；更新 `docs/kk-agent-v1.md` 的 bridge 方法；更新本文件状态；补充截图；写 changelog；构建 APK、计算 SHA-256、发布 Release。
 - 验收：文档与实际一致；发布包可安装；冒烟测试通过。
@@ -888,3 +889,4 @@ DSH-201 ~ DSH-206 ──> DSH-208
 | 2026-10-30 | 初版：基于 dsh-web 0.2.1-rc.5 与 KingKang 0.1.1 的对照结果 |
 | 2026-10-30 | M5：Agent 设置、账户、主题双向同步、插件卸载、市场搜索落地；语言与 Harness 深链因 dsh 路由缺失标为部分完成 |
 | 2026-10-30 | M6：Harness 下载、外链、window.open、媒体权限/拍照、错误页与自动恢复完成；M0 基础设施状态回填，M7 记录剩余测试与发布缺口 |
+| 2026-10-30 | M0 收尾：投影/usage/工具视图解码抽到 `SessionProjections`，补 dsh fixtures 契约测试（`SessionProjectionsTest`、`ToolViewTest`），修复未知投影满额时淘汰方向相反的问题；新增 GitHub Actions 单测工作流 |

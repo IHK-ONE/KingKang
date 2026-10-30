@@ -1,0 +1,20 @@
+{
+  "name": "edit",
+  "arguments": {
+    "file_path": "/root/work/notes.md",
+    "old_string": "port 22",
+    "new_string": "port 2222"
+  },
+  "resultText": "Edited /root/work/notes.md",
+  "meta": {
+    "diffs": [
+      {
+        "path": "/root/work/notes.md",
+        "oldText": "sshd listens on port 22\n",
+        "newText": "sshd listens on port 2222\n"
+      }
+    ]
+  },
+  "running": false,
+  "isError": false
+}

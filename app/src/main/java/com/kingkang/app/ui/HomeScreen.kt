@@ -787,6 +787,7 @@ fun HomeScreen(
                 showWorkbench = false
                 onOpenHarness()
             },
+            onCreateGoal = vm::createGoal,
             onPauseGoal = vm::pauseGoal,
             onResumeGoal = vm::resumeGoal,
             onClearGoal = vm::clearGoal,
@@ -1286,6 +1287,7 @@ private fun WorkbenchSheet(
     onOpenWorkflow: (String) -> Unit,
     onShowStats: () -> Unit,
     onOpenHarness: () -> Unit,
+    onCreateGoal: (String) -> Unit,
     onPauseGoal: () -> Unit,
     onResumeGoal: () -> Unit,
     onClearGoal: () -> Unit,
@@ -1305,6 +1307,7 @@ private fun WorkbenchSheet(
 ) {
     // Elapsed time only moves on screen if something ticks; a running job earns that tick.
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    var creatingGoal by rememberSaveable { mutableStateOf(false) }
     var editingGoal by rememberSaveable { mutableStateOf(false) }
     var clearingGoal by rememberSaveable { mutableStateOf(false) }
     var creatingSchedule by rememberSaveable { mutableStateOf(false) }
@@ -1394,17 +1397,28 @@ private fun WorkbenchSheet(
                 state = listState,
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                item(key = "goal-header") {
-                    WorkbenchSection(
-                        title = "长期目标",
-                        meta = goal?.let { goalPhaseLabel(it.phase) }
-                    )
-                }
                 if (goal == null) {
+                    item(key = "goal-header") {
+                        WorkbenchSectionAction(
+                            title = "长期目标",
+                            meta = null,
+                            actionLabel = "新建",
+                            onAction = { creatingGoal = true }
+                        )
+                    }
                     item(key = "goal-empty") {
-                        SectionHint("还没有长期目标。用 /goal 设置后，这里会显示进度，并可暂停或调整。")
+                        SectionHint(
+                            "还没有长期目标。点「新建」或发送 /goal 设置后，" +
+                                "这里会显示进度，并可暂停或调整。"
+                        )
                     }
                 } else {
+                    item(key = "goal-header") {
+                        WorkbenchSection(
+                            title = "长期目标",
+                            meta = goalPhaseLabel(goal.phase)
+                        )
+                    }
                     item(key = "goal-card") {
                         GoalCard(
                             goal = goal,
@@ -1625,6 +1639,15 @@ private fun WorkbenchSheet(
                     }
                 }
             }
+            if (creatingGoal) {
+                GoalCreateDialog(
+                    onDismiss = { creatingGoal = false },
+                    onCreate = { objective ->
+                        creatingGoal = false
+                        onCreateGoal(objective)
+                    }
+                )
+            }
             if (editingGoal && goal != null) {
                 GoalEditDialog(
                     goal = goal,
@@ -1831,6 +1854,82 @@ private fun GoalAction(
         color = if (enabled) color else TextMuted,
         fontSize = 11.sp,
         fontWeight = FontWeight.Medium
+    )
+}
+
+/**
+ * Creates a goal through dsh's `/goal` command, since the goal domain has no create
+ * RPC. The objective is collapsed to one line: the command receives the rest of the
+ * composer line verbatim, so a pasted multi-line objective would otherwise be parsed
+ * as several commands.
+ */
+@Composable
+private fun GoalCreateDialog(
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit
+) {
+    var objective by rememberSaveable { mutableStateOf("") }
+    val canCreate = objective.isNotBlank()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Surface,
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Text(
+                "新建长期目标",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary
+            )
+        },
+        text = {
+            Column {
+                BasicTextField(
+                    value = objective,
+                    onValueChange = { if (it.length <= 4000) objective = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SurfaceRaised)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = TextPrimary,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp
+                    ),
+                    cursorBrush = SolidColor(Accent),
+                    maxLines = 6,
+                    decorationBox = { inner ->
+                        if (objective.isEmpty()) {
+                            Text(
+                                "例如：完成本地服务的漏洞排查并给出修复建议",
+                                color = TextMuted,
+                                fontSize = 13.sp
+                            )
+                        }
+                        inner()
+                    }
+                )
+                Text(
+                    "创建后可在目标卡片里调整轮次上限或暂停。",
+                    modifier = Modifier.padding(top = 8.dp, start = 2.dp),
+                    color = TextMuted,
+                    fontSize = 10.5.sp
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onCreate(objective.trim()) },
+                enabled = canCreate
+            ) {
+                Text("创建", color = if (canCreate) Accent else TextMuted)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextSecondary)
+            }
+        }
     )
 }
 

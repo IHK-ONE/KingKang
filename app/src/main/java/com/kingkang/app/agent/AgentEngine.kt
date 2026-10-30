@@ -53,11 +53,6 @@ object AgentEngine {
     private const val HISTORY_LIMIT = 80
     private const val MAX_TOOL_RESULT = 100_000
     private const val MAX_TOOL_ARGS = 20_000
-    /** Unknown projections retained for inspection: newest entries, each capped. */
-    private const val MAX_EXTRA_PROJECTIONS = 24
-    private const val MAX_EXTRA_PROJECTION = 4_000
-    /** Distinct unrendered event kinds kept for diagnostics. */
-    private const val MAX_UNKNOWN_EVENTS = 40
     /** Divider text dsh-web shows once history has been compacted. */
     private const val COMPACTION_NOTICE = "上下文已压缩，较早的内容已由摘要替代。"
     /** Feedback write refused because another client changed the record first. */
@@ -109,7 +104,6 @@ object AgentEngine {
     private var historyLoadFailedFor: String? = null
     /** Recovery notice held back while the transcript reload wipes the transcript. */
     private var pendingRecoveryNotice = false
-    private var lastUnknownType: String? = null
     private val bufferedLiveEvents = mutableListOf<JSONObject>()
     private var loadToken = 0L
     private val localIds = AtomicLong(1)
@@ -1478,6 +1472,21 @@ object AgentEngine {
         }
     }
 
+    /**
+     * Creates a goal through dsh's own `/goal <objective>` command. dsh exposes no
+     * create RPC — the command owns the first revision and its default round cap —
+     * so the workbench form submits the same line a typed command would.
+     */
+    fun createGoal(objective: String) {
+        val clean = objective.trim().replace(Regex("\\s+"), " ")
+        if (clean.isEmpty()) return
+        if (clean.length > 4_000) {
+            addNotice("目标过长，请控制在 4000 字以内", isError = true)
+            return
+        }
+        runCommand("/goal $clean")
+    }
+
     fun pauseGoal() = mutateGoal("goal.pause")
 
     fun resumeGoal() = mutateGoal("goal.resume")
@@ -2427,11 +2436,9 @@ object AgentEngine {
                 // kind keeps the in-app log readable without hiding what is unhandled.
                 val dshType = data.optString("dshType")
                 if (dshType.isNotBlank()) {
+                    val firstSeen = dshType !in _state.value.unknownEvents
                     recordUnknownEvent(dshType)
-                    if (dshType != lastUnknownType) {
-                        lastUnknownType = dshType
-                        appendLog("未知会话事件：$dshType")
-                    }
+                    if (firstSeen) appendLog("未知会话事件：$dshType")
                 }
                 return
             }
@@ -6603,31 +6610,13 @@ object AgentEngine {
             }
             // Projections this build has no typed home for stay inspectable. A newer dsh
             // adding one must not mean the app silently drops half the session state.
-            else -> if (active) retainProjection(state, key, value) else state
+            else -> if (active) {
+                val kept = SessionProjections.retainProjection(state.extraProjections, key, value)
+                if (kept == null) state else state.copy(extraProjections = kept)
+            } else {
+                state
+            }
         }
-    }
-
-    /** Keeps unknown projections in a bounded, newest-24 map keyed by projection name. */
-    private fun retainProjection(
-        state: AgentState,
-        key: String,
-        value: Any?
-    ): AgentState {
-        if (key.isBlank() || value == null) return state
-        val encoded = when (value) {
-            is String -> value
-            else -> value.toString()
-        }.take(MAX_EXTRA_PROJECTION)
-        if (encoded.isBlank()) return state
-        if (state.extraProjections[key] == encoded) return state
-        val kept = LinkedHashMap<String, String>()
-        for ((name, json) in state.extraProjections) {
-            if (name == key) continue
-            kept[name] = json
-            if (kept.size >= MAX_EXTRA_PROJECTIONS - 1) break
-        }
-        kept[key] = encoded
-        return state.copy(extraProjections = kept)
     }
 
     /** Whether the most recent slash-command record was `/export`. */
@@ -6642,201 +6631,43 @@ object AgentEngine {
     /** Remembers an event kind the app does not render, so support can see the gap. */
     private fun recordUnknownEvent(type: String) {
         _state.update { state ->
-            if (type in state.unknownEvents) {
-                state
-            } else {
-                state.copy(
-                    unknownEvents = (state.unknownEvents + type)
-                        .takeLast(MAX_UNKNOWN_EVENTS)
-                )
-            }
+            val updated = SessionProjections.recordUnknownEvent(state.unknownEvents, type)
+                ?: return@update state
+            state.copy(unknownEvents = updated)
         }
-    }
-
-    private fun parseUsage(value: JSONObject?): AgentUsage? {
-        if (value == null) return null
-        val usage = AgentUsage(
-            inputTokens = value.optLong("inputTokens"),
-            outputTokens = value.optLong("outputTokens"),
-            cacheReadTokens = value.optLong("cacheReadTokens"),
-            cacheWriteTokens = value.optLong("cacheWriteTokens"),
-            reasoningTokens = value.optLong("reasoningTokens")
-        )
-        return if (usage.hasData) usage else null
-    }
-
-    private fun parseTokenUsage(value: Any?): AgentTokenUsage {
-        val json = value as? JSONObject ?: return AgentTokenUsage()
-        return AgentTokenUsage(
-            uncachedInputTokens = json.optLong("uncachedInputTokens")
-                .orIfZero { json.optLong("inputTokens") },
-            outputTokens = json.optLong("outputTokens"),
-            cacheReadTokens = json.optLong("cacheReadTokens"),
-            cacheWriteTokens = json.optLong("cacheWriteTokens")
-        )
-    }
-
-    private fun Long.orIfZero(alternative: () -> Long): Long =
-        if (this != 0L) this else alternative()
-
-    private fun parseContextPressure(value: Any?): AgentContextPressure {
-        val json = value as? JSONObject ?: return AgentContextPressure()
-        return AgentContextPressure(
-            pressureTokens = json.longOrNull("pressureTokens"),
-            projectedTokens = json.longOrNull("projectedTokens"),
-            contextWindow = json.longOrNull("contextWindow")
-        )
-    }
-
-    private fun parseContextBreakdown(value: Any?): AgentContextBreakdown {
-        val json = value as? JSONObject ?: return AgentContextBreakdown()
-        return AgentContextBreakdown(
-            systemTokens = json.optLong("systemTokens"),
-            toolsTokens = json.optLong("toolsTokens"),
-            messageTokens = json.optLong("messageTokens")
-        )
-    }
-
-    private fun parseGoal(value: Any?): AgentGoal? {
-        val json = value as? JSONObject ?: return null
-        val goal = json.optJSONObject("goal") ?: return null
-        val blocked = goal.optJSONObject("blockedReason")
-        val parsed = AgentGoal(
-            id = goal.optString("id"),
-            revision = goal.optLong("revision"),
-            objective = goal.optString("objective"),
-            phase = goal.optString("phase"),
-            maxGoalRounds = goal.optInt("maxGoalRounds"),
-            roundsStarted = json.optInt("roundsStarted", goal.optInt("roundsStarted")),
-            blockedCode = blocked?.optString("code")?.takeIf { it.isNotBlank() },
-            blockedMessage = blocked?.optString("message")?.takeIf { it.isNotBlank() }
-        )
-        return if (parsed.hasData) parsed else null
-    }
-
-    /**
-     * Reads the flat GoalView the goal service returns (`id/revision/objective/...`),
-     * as opposed to the projection's `{goal:{…}, roundsStarted}` wrapper.
-     */
-    private fun parseGoalView(value: JSONObject?): AgentGoal? {
-        if (value == null) return null
-        val blocked = value.optJSONObject("blockedReason")
-        val parsed = AgentGoal(
-            id = value.optString("id"),
-            revision = value.optLong("revision"),
-            objective = value.optString("objective"),
-            phase = value.optString("phase"),
-            maxGoalRounds = value.optInt("maxGoalRounds"),
-            roundsStarted = value.optInt("roundsStarted"),
-            blockedCode = blocked?.optString("code")?.takeIf { it.isNotBlank() },
-            blockedMessage = blocked?.optString("message")?.takeIf { it.isNotBlank() },
-            activation = value.optString("activation").takeIf { it.isNotBlank() }
-        )
-        return if (parsed.hasData) parsed else null
-    }
-
-    private fun parseModelSelection(value: Any?): AgentModelSelection {
-        val json = value as? JSONObject ?: return AgentModelSelection()
-        val selected = json.optJSONObject("next") ?: json.optJSONObject("lastUsed") ?: return AgentModelSelection()
-        return AgentModelSelection(
-            provider = selected.optString("provider"),
-            model = selected.optString("model"),
-            reasoningEffort = selected.optString("reasoningEffort").takeIf { it.isNotBlank() }
-        )
-    }
-
-    private fun parseSubagentTiming(value: Any?): AgentSubagentTiming? {
-        val json = value as? JSONObject ?: return null
-        val active = json.optJSONObject("active")
-        return AgentSubagentTiming(
-            settledMs = json.optLong("settledMs"),
-            activeSince = active?.longOrNull("since"),
-            activeThrough = active?.longOrNull("through"),
-            lastTurnCompleted = if (json.has("lastTurnCompleted")) {
-                json.optBoolean("lastTurnCompleted")
-            } else {
-                null
-            }
-        )
-    }
-
-    private fun parseAgentTeam(value: Any?): AgentTeam? {
-        val json = value as? JSONObject ?: return null
-        val members = mutableListOf<AgentTeamMember>()
-        val memberArray = json.optJSONArray("members")
-        if (memberArray != null) {
-            for (index in 0 until memberArray.length()) {
-                val item = memberArray.optJSONObject(index) ?: continue
-                val id = item.optString("id")
-                if (id.isBlank()) continue
-                members += AgentTeamMember(
-                    id = id,
-                    name = item.optString("name").ifBlank { id },
-                    role = item.optString("role").ifBlank { "teammate" },
-                    phase = item.optString("phase").ifBlank { "active" },
-                    error = item.optString("error").takeIf { it.isNotBlank() }
-                )
-            }
-        }
-        val tasks = mutableListOf<AgentTeamTask>()
-        val taskArray = json.optJSONArray("tasks")
-        if (taskArray != null) {
-            for (index in 0 until taskArray.length()) {
-                val item = taskArray.optJSONObject(index) ?: continue
-                val id = item.optString("id")
-                if (id.isBlank()) continue
-                tasks += AgentTeamTask(
-                    id = id,
-                    revision = item.optLong("revision"),
-                    subject = item.optString("subject"),
-                    description = item.optString("description"),
-                    status = item.optString("status").ifBlank { "pending" },
-                    ownerId = item.optString("ownerId").takeIf { it.isNotBlank() }
-                )
-            }
-        }
-        val team = AgentTeam(
-            members = members,
-            tasks = tasks,
-            failure = json.optString("failure").takeIf { it.isNotBlank() }
-        )
-        return if (team.hasData) team else null
     }
 
     private fun JSONObject.longOrNull(key: String): Long? =
         if (has(key) && !isNull(key)) optLong(key) else null
 
-    /** `turnOutline` is an array of `{turn, seq, prompt, response}` entries. */
-    private fun parseTurnOutline(value: Any?): List<AgentTurnOutlineEntry> {
-        val array = value as? JSONArray ?: return emptyList()
-        val entries = mutableListOf<AgentTurnOutlineEntry>()
-        for (index in 0 until array.length()) {
-            val item = array.optJSONObject(index) ?: continue
-            val turn = item.optInt("turn", -1)
-            if (turn <= 0) continue
-            entries += AgentTurnOutlineEntry(
-                turn = turn,
-                seq = item.longOrNull("seq"),
-                prompt = item.optString("prompt"),
-                response = item.optString("response")
-            )
-        }
-        return entries
-    }
+    // Wire decoders live in SessionProjections so fixture tests can pin their shapes.
+    private fun parseUsage(value: JSONObject?): AgentUsage? = SessionProjections.usage(value)
 
-    private fun parseSessionStats(value: Any?): AgentSessionStats {
-        val json = value as? JSONObject ?: return AgentSessionStats()
-        return AgentSessionStats(
-            turns = json.optInt("turns"),
-            steps = json.optInt("steps"),
-            llmMs = json.longOrNull("llmMs"),
-            toolMs = json.longOrNull("toolMs"),
-            ttftMs = json.longOrNull("ttftMs"),
-            ttftSteps = json.optInt("ttftSteps"),
-            decodeMs = json.longOrNull("decodeMs"),
-            decodeTokens = json.longOrNull("decodeTokens")
-        )
-    }
+    private fun parseTokenUsage(value: Any?): AgentTokenUsage = SessionProjections.tokenUsage(value)
+
+    private fun parseContextPressure(value: Any?): AgentContextPressure =
+        SessionProjections.contextPressure(value)
+
+    private fun parseContextBreakdown(value: Any?): AgentContextBreakdown =
+        SessionProjections.contextBreakdown(value)
+
+    private fun parseGoal(value: Any?): AgentGoal? = SessionProjections.goal(value)
+
+    private fun parseGoalView(value: JSONObject?): AgentGoal? = SessionProjections.goalView(value)
+
+    private fun parseModelSelection(value: Any?): AgentModelSelection =
+        SessionProjections.modelSelection(value)
+
+    private fun parseSubagentTiming(value: Any?): AgentSubagentTiming? =
+        SessionProjections.subagentTiming(value)
+
+    private fun parseAgentTeam(value: Any?): AgentTeam? = SessionProjections.agentTeam(value)
+
+    private fun parseTurnOutline(value: Any?): List<AgentTurnOutlineEntry> =
+        SessionProjections.turnOutline(value)
+
+    private fun parseSessionStats(value: Any?): AgentSessionStats =
+        SessionProjections.sessionStats(value)
 
     /** Keeps only the catalog rows bound to [sessionId]; other sessions stay out of view. */
     private fun parseSchedules(value: Any?, sessionId: String): List<AgentSchedule> {

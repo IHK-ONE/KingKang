@@ -1,0 +1,16 @@
+{
+  "name": "glob",
+  "arguments": {
+    "pattern": "**/*.md",
+    "path": "/root/work"
+  },
+  "resultText": "2 files",
+  "meta": {
+    "shape": "paths",
+    "paths": ["/root/work/README.md", "/root/work/findings.md"],
+    "total": 2,
+    "truncated": false
+  },
+  "running": false,
+  "isError": false
+}

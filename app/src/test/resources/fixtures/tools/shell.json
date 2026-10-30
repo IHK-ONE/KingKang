@@ -1,0 +1,11 @@
+{
+  "name": "bash",
+  "arguments": {
+    "command": "nmap -sV 127.0.0.1",
+    "description": "Scan loopback services",
+    "workdir": "/root"
+  },
+  "resultText": "PORT     STATE SERVICE VERSION\n8080/tcp open  http    dsh harness\n\n[exit code: 0]",
+  "running": false,
+  "isError": false
+}

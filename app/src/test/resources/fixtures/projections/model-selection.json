@@ -1,0 +1,11 @@
+{
+  "lastUsed": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "reasoningEffort": "medium"
+  },
+  "next": {
+    "provider": "deepseek",
+    "model": "deepseek-reasoner"
+  }
+}
