@@ -26,9 +26,10 @@ internal object BrowserPolicy {
 
     /**
      * Turns what the user typed into a URL, or null when it cannot name a web page.
-     * A bare host such as `127.0.0.1:3000` or `localhost` gets `http://`, which is what a
-     * local tool expects. Strings with their own scheme are returned untouched, so
-     * [decide] can refuse `file:`/`javascript:` and friends.
+     * A bare loopback host such as `127.0.0.1:3000` or `localhost` gets `http://`, which
+     * is what a local tool expects; a bare remote host gets `https://`, since cleartext
+     * to the internet is refused anyway. Strings with their own scheme are returned
+     * untouched, so [decide] can refuse `file:`/`javascript:` and friends.
      */
     fun normalize(input: String): String? {
         val trimmed = input.trim()
@@ -40,8 +41,12 @@ internal object BrowserPolicy {
             if (scheme != "http" && scheme != "https") return trimmed
             return if (uri.host.isNullOrBlank()) null else trimmed
         }
-        val candidate = if (trimmed.startsWith("//")) "http:$trimmed" else "http://$trimmed"
-        return if (parse(candidate)?.host.isNullOrBlank()) null else candidate
+        val candidate = if (trimmed.startsWith("//")) trimmed else "//$trimmed"
+        val host = parse("https:$candidate")?.host ?: return null
+        if (host.isBlank()) return null
+        // Loopback tools conventionally speak HTTP; remote pages must be HTTPS.
+        val scheme = if (isLoopbackHost(host)) "http" else "https"
+        return "$scheme:$candidate"
     }
 
     fun decide(url: String): UrlDecision {

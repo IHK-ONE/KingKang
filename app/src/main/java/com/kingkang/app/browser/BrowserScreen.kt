@@ -159,6 +159,9 @@ fun BrowserScreen(
 
                 override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                     loading = true
+                    // An earlier refusal (blocked / unreachable) refers to the previous
+                    // navigation; leaving it up would contradict the page now loading.
+                    message = null
                     sync(view)
                 }
 

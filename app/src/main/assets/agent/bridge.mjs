@@ -406,6 +406,14 @@ const SILENT_EVENT_TYPES = new Set([
   // Composition metadata for a child session; identity already arrives through the
   // `subagent` projection, so the durable event itself renders nothing.
   "subagent/descriptor",
+  // The goal card reads the `goal` projection, which arrives on the control stream;
+  // the durable change record only documents the same fact in the log.
+  "goal/change",
+  // Feedback is read through `feedback.list` and written by the app itself; the
+  // durable records of those same writes have no transcript surface.
+  "feedback/record",
+  "feedback/message-put",
+  "feedback/message-delete",
 ]);
 
 /** Prefixes of host-internal event families that never reach the app surface. */
@@ -1674,11 +1682,7 @@ function applyProjectionValues(sessionId, values) {
   cacheProjectionValues(sessionId, values);
   if (!values || typeof values !== "object") return;
   for (const [key, value] of Object.entries(values)) {
-    if (key === "inbox") emitQueue(sessionId, value);
-    else if (key === "permissions") emitPermissions(sessionId, value);
-    else if (key === "title" || key === "todos" || key === "plan") {
-      emit("session.projection", { sessionId, key, value });
-    }
+    forwardProjection(sessionId, key, value);
   }
 }
 
@@ -1690,11 +1694,27 @@ function applyProjection(sessionId, key, value) {
     projectionCache.set(sessionId, cache);
   }
   cache.set(key, value);
-  if (key === "inbox") emitQueue(sessionId, value);
-  else if (key === "permissions") emitPermissions(sessionId, value);
-  else if (key === "title" || key === "todos" || key === "plan") {
-    emit("session.projection", { sessionId, key, value });
+  forwardProjection(sessionId, key, value);
+}
+
+/**
+ * dsh broadcasts every projection change over `session/control`; forwarding all of
+ * them (not only the ones the transcript folds) is what keeps the goal card, the
+ * context meter, the model selection and the turn outline live. The app decodes the
+ * keys it types and keeps unknown ones inspectable, so new dsh projections degrade
+ * to "stored, not rendered" instead of silently vanishing.
+ */
+function forwardProjection(sessionId, key, value) {
+  if (key === "inbox") {
+    emitQueue(sessionId, value);
+    return;
   }
+  if (key === "permissions") {
+    emitPermissions(sessionId, value);
+    return;
+  }
+  if (!sessionId || !key) return;
+  emit("session.projection", { sessionId, key, value });
 }
 
 function emitQueue(sessionId, inbox) {

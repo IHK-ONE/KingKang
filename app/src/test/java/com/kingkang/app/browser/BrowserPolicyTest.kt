@@ -17,6 +17,17 @@ class BrowserPolicyTest {
     }
 
     @Test
+    fun bareRemoteHostDefaultsToHttps() {
+        // Typing a site name should not produce a cleartext URL that decide() then refuses.
+        assertEquals("https://example.com", BrowserPolicy.normalize("example.com"))
+        assertEquals("https://example.com/docs", BrowserPolicy.normalize("example.com/docs"))
+        assertEquals("https://example.com:8443", BrowserPolicy.normalize("example.com:8443"))
+        assertEquals(UrlDecision.Confirm, BrowserPolicy.decide("example.com".let {
+            BrowserPolicy.normalize(it)!!
+        }))
+    }
+
+    @Test
     fun invalidInputIsRejected() {
         assertNull(BrowserPolicy.normalize(""))
         assertNull(BrowserPolicy.normalize("   "))

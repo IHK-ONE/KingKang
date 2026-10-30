@@ -5853,7 +5853,15 @@ private fun FeedbackEditorDialog(
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     decorationBox = { inner ->
                         if (note.isBlank()) {
-                            Text("写下具体哪里不好，或希望怎么改", color = TextMuted, fontSize = 12.sp)
+                            Text(
+                                if (rating == "negative") {
+                                    "写下具体哪里不好，或希望怎么改"
+                                } else {
+                                    "这次哪里做得好，可以补充说明"
+                                },
+                                color = TextMuted,
+                                fontSize = 12.sp
+                            )
                         }
                         inner()
                     }

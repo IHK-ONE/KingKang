@@ -3342,8 +3342,26 @@ object AgentEngine {
      */
     suspend fun speechCatalog(): AgentSpeechCatalog {
         val client = bridge ?: throw IllegalStateException("Agent 尚未连接")
-        val value = client.call("speech.catalog", JSONObject(), 20_000)
-        return parseSpeechCatalog(value)
+        try {
+            return parseSpeechCatalog(client.call("speech.catalog", JSONObject(), 20_000))
+        } catch (t: AgentBridgeException) {
+            // The speech Remote mounts with the voice-input bundle. Its absence reaches
+            // us two ways: the gateway answering 404 (a transport error carrying the
+            // status) or a dsh error naming the withdrawn route. Both mean the switch
+            // is off, not that the agent is broken.
+            val missingRoute = when (t.code) {
+                "dsh-error" -> t.message.contains("speech/catalog")
+                "transport" -> t.details?.optInt("status") == 404 &&
+                    t.message.contains("speech/catalog")
+                else -> false
+            }
+            if (missingRoute) {
+                throw IllegalStateException(
+                    "语音服务未就绪，请到「插件」页确认已开启「语音输入」后重试"
+                )
+            }
+            throw t
+        }
     }
 
     /** Starts or joins the Host-owned model preparation task for [providerId]. */
@@ -5278,7 +5296,10 @@ object AgentEngine {
                     }
                 } else {
                     eventMutex.withLock {
-                        addNotice("发送失败：${readableError(t)}", isError = true)
+                        addNotice(
+                            "发送失败：${attachmentFailure(t) ?: readableError(t)}",
+                            isError = true
+                        )
                     }
                 }
             }
@@ -5396,7 +5417,10 @@ object AgentEngine {
                             running = false
                         )
                     }
-                    addNotice("发送给子 Agent 失败：${subagentPromptError(t)}", isError = true)
+                    addNotice(
+                        "发送给子 Agent 失败：${attachmentFailure(t) ?: subagentPromptError(t)}",
+                        isError = true
+                    )
                 }
             }
         }
@@ -7081,6 +7105,22 @@ object AgentEngine {
             "subagent/not-resumable" -> "这个子 Agent 无法恢复：会话记录缺失或已归档（$code）。"
             "subagent/delivery-unavailable" -> "子 Agent 并发已满，稍后再试（$code）。"
             else -> readableError(error)
+        }
+    }
+
+    /**
+     * A prompt dsh refused because of its attachments. The wire sentence names the model
+     * but not the fix, and the common case — an image sent to a model that only reads
+     * text — is entirely actionable by switching models. Other attachment reasons keep
+     * dsh's own text, with the code so it can be looked up.
+     */
+    private fun attachmentFailure(error: Throwable): String? {
+        val details = (error as? AgentBridgeException)?.details ?: return null
+        if (details.optString("dshCode") != "session/attachment-invalid") return null
+        return when (details.optString("reason")) {
+            "MODEL_DOES_NOT_SUPPORT_IMAGES" ->
+                "当前模型不支持图片输入，换一个支持视觉的模型后重新发送（session/attachment-invalid）。"
+            else -> "附件未通过 dsh 检查：${error.message}（session/attachment-invalid）。"
         }
     }
 
