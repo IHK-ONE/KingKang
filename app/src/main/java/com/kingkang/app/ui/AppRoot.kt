@@ -1,5 +1,6 @@
 package com.kingkang.app.ui
 
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -27,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
@@ -67,8 +69,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -81,6 +85,7 @@ import com.kingkang.app.MainViewModel
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentSession
 import com.kingkang.app.agent.AgentWorkspace
+import com.kingkang.app.browser.BrowserActivity
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
@@ -100,15 +105,19 @@ import kotlinx.coroutines.launch
 private enum class AppScreen {
     Home,
     Terminal,
+    Files,
     Harness,
     Plugins,
-    Settings
+    Settings,
+    AgentSettings,
+    Providers
 }
 
 @Composable
 fun KingKangApp(vm: MainViewModel = viewModel()) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var screenName by rememberSaveable { mutableStateOf(AppScreen.Home.name) }
     val screen = AppScreen.valueOf(screenName)
     // Sub-screens opened from Settings/Plugins/Terminal return to their origin rather than
@@ -136,6 +145,8 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
     var showGuide by rememberSaveable { mutableStateOf(vm.shouldShowOnboarding()) }
     // "credentials" jumps Settings to the API Key card instead of the top of the page.
     var settingsFocus by rememberSaveable { mutableStateOf<String?>(null) }
+    // A namespace passed from Settings search lands the native form on that group.
+    var agentSettingsGroup by rememberSaveable { mutableStateOf<String?>(null) }
     // The session sheet lives at the window root, not inside the drawer: a sheet composed
     // in the drawer inherits its 300 dp width and stops looking like a system sheet.
     var pendingSession by remember { mutableStateOf<AgentSession?>(null) }
@@ -144,6 +155,12 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
     var pendingPinned by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var renameText by remember { mutableStateOf("") }
+    // Workspace actions live at the window root for the same reason: a sheet composed in
+    // the drawer would inherit its width and stop reading as a system sheet.
+    var pendingWorkspace by remember { mutableStateOf<AgentWorkspace?>(null) }
+    var workspaceRenaming by remember { mutableStateOf(false) }
+    var workspaceRenameText by remember { mutableStateOf("") }
+    var workspaceDeleting by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -174,6 +191,14 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                             navigate(AppScreen.Terminal)
                             scope.launch { drawerState.close() }
                         },
+                        onOpenFiles = {
+                            navigate(AppScreen.Files)
+                            scope.launch { drawerState.close() }
+                        },
+                        onOpenBrowser = {
+                            scope.launch { drawerState.close() }
+                            context.startActivity(Intent(context, BrowserActivity::class.java))
+                        },
                         onOpenHarness = {
                             navigate(AppScreen.Harness)
                             scope.launch { drawerState.close() }
@@ -192,6 +217,13 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                             pendingPinned = pinned
                             renaming = false
                             renameText = session.displayTitle
+                        },
+                        onWorkspaceLongPress = { workspace ->
+                            pendingWorkspace = workspace
+                            workspaceRenaming = false
+                            workspaceRenameText = workspace.displayTitle
+                            workspaceDeleting = false
+                            scope.launch { drawerState.close() }
                         }
                     )
                 }
@@ -204,6 +236,7 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                         settingsFocus = null
                         navigate(AppScreen.Settings)
                     },
+                    onOpenHarness = { navigate(AppScreen.Harness) },
                     onConfigureKey = {
                         settingsFocus = "credentials"
                         navigate(AppScreen.Settings)
@@ -220,6 +253,15 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                 }
             )
 
+            AppScreen.Files -> FilesScreen(
+                vm = vm,
+                onBack = { goBack() },
+                onOpenTerminal = { path ->
+                    vm.openTerminalAt(path)
+                    navigate(AppScreen.Terminal)
+                }
+            )
+
             AppScreen.Harness -> HarnessScreen(
                 vm = vm,
                 onBack = {
@@ -227,6 +269,8 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                     // Plugins and workspaces may have changed inside dsh-web.
                     vm.refreshPlugins()
                     vm.refreshWorkspaces()
+                    // A theme picked in the Harness is the latest writer; adopt it.
+                    vm.syncThemeFromDsh()
                 }
             )
 
@@ -245,7 +289,26 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                 },
                 onOpenTerminal = { navigate(AppScreen.Terminal) },
                 onOpenHarness = { navigate(AppScreen.Harness) },
+                onOpenProviders = { navigate(AppScreen.Providers) },
+                onOpenPlugins = { navigate(AppScreen.Plugins) },
+                onOpenAgentSettings = { group ->
+                    agentSettingsGroup = group
+                    navigate(AppScreen.AgentSettings)
+                },
                 onAbout = { showAbout = true }
+            )
+
+            AppScreen.AgentSettings -> AgentSettingsScreen(
+                vm = vm,
+                initialGroup = agentSettingsGroup,
+                onBack = { goBack() },
+                onOpenHarness = { navigate(AppScreen.Harness) }
+            )
+
+            AppScreen.Providers -> ProviderSettingsScreen(
+                vm = vm,
+                onBack = { goBack() },
+                onOpenHarness = { navigate(AppScreen.Harness) }
             )
         }
 
@@ -278,6 +341,10 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                 vm.forkChat(session.id)
                 pendingSession = null
             },
+            onExport = {
+                vm.exportSession(session.id)
+                pendingSession = null
+            },
             onArchive = {
                 vm.archiveChat(session.id)
                 pendingSession = null
@@ -290,6 +357,55 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
             onDismiss = {
                 pendingSession = null
                 renaming = false
+            }
+        )
+    }
+
+    pendingWorkspace?.let { workspace ->
+        // Read once per open: moving a workspace closes the sheet, so a stale list cannot
+        // produce a second move against the old order.
+        val all = vm.agentState.value.workspaces
+        val index = all.indexOfFirst { it.id == workspace.id }
+        WorkspaceActionsSheet(
+            workspace = workspace,
+            sessionCount = workspace.sessionIds.size,
+            canMoveUp = index > 0,
+            canMoveDown = index >= 0 && index < all.lastIndex,
+            renaming = workspaceRenaming,
+            renameText = workspaceRenameText,
+            deleting = workspaceDeleting,
+            onRenameTextChange = { workspaceRenameText = it.take(80) },
+            onStartRename = { workspaceRenaming = true },
+            onCancelRename = { workspaceRenaming = false },
+            onSaveRename = {
+                val title = workspaceRenameText.trim()
+                if (title.isNotBlank() && title != workspace.displayTitle) {
+                    vm.renameWorkspace(workspace.id, title)
+                }
+                pendingWorkspace = null
+                workspaceRenaming = false
+            },
+            onMoveUp = {
+                vm.moveWorkspace(workspace.id, all.getOrNull(index - 1)?.id)
+                pendingWorkspace = null
+            },
+            onMoveDown = {
+                vm.moveWorkspace(workspace.id, all.getOrNull(index + 2)?.id)
+                pendingWorkspace = null
+            },
+            onDelete = {
+                if (!workspaceDeleting) {
+                    workspaceDeleting = true
+                } else {
+                    vm.deleteWorkspace(workspace.id)
+                    pendingWorkspace = null
+                    workspaceDeleting = false
+                }
+            },
+            onDismiss = {
+                pendingWorkspace = null
+                workspaceRenaming = false
+                workspaceDeleting = false
             }
         )
     }
@@ -320,16 +436,22 @@ private fun KingKangDrawer(
     vm: MainViewModel,
     onDismiss: () -> Unit,
     onOpenTerminal: () -> Unit,
+    onOpenFiles: () -> Unit,
+    onOpenBrowser: () -> Unit,
     onOpenHarness: () -> Unit,
     onOpenPlugins: () -> Unit,
     onOpenSettings: () -> Unit,
-    onSessionLongPress: (AgentSession, Boolean) -> Unit
+    onSessionLongPress: (AgentSession, Boolean) -> Unit,
+    onWorkspaceLongPress: (AgentWorkspace) -> Unit
 ) {
     val agent by vm.agentState.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
     var showWorkspaceDialog by rememberSaveable { mutableStateOf(false) }
+    var showDirectoryPicker by rememberSaveable { mutableStateOf(false) }
     var workspacePath by rememberSaveable { mutableStateOf("/root") }
-    val collapsedWorkspaces = remember { mutableStateOf(setOf<String>()) }
+    // Folded headers survive both drawer closes and process restarts.
+    val collapsedWorkspaces = remember { mutableStateOf(vm.collapsedWorkspaceIds()) }
+    val recentDirectories = remember { vm.recentDirectories() }
     // A child owning the transcript is kept in `sessions` so its title and status stay
     // addressable, but it is not a conversation the drawer can switch to: reopening it
     // needs its parent's address. The trail bar is the way back into that chain.
@@ -529,18 +651,24 @@ private fun KingKangDrawer(
                                 WorkspaceHeader(
                                     workspace = workspace,
                                     sessionCount = workspaceSessions.size,
+                                    running = workspace.sessionIds.any { id ->
+                                        agent.sessions.firstOrNull { it.id == id }?.running == true
+                                    },
                                     collapsed = collapsed,
                                     onToggle = {
-                                        collapsedWorkspaces.value = if (collapsed) {
+                                        val next = if (collapsed) {
                                             collapsedWorkspaces.value - workspace.id
                                         } else {
                                             collapsedWorkspaces.value + workspace.id
                                         }
+                                        collapsedWorkspaces.value = next
+                                        vm.setWorkspaceCollapsed(workspace.id, !collapsed)
                                     },
                                     onNewChat = {
                                         vm.newChatInWorkspace(workspace.id)
                                         onDismiss()
-                                    }
+                                    },
+                                    onLongPress = { onWorkspaceLongPress(workspace) }
                                 )
                             }
                             if (!collapsed) {
@@ -640,6 +768,31 @@ private fun KingKangDrawer(
                 onClick = onOpenTerminal
             )
             DrawerAction(
+                title = "工作区文件",
+                icon = { tint ->
+                    Icon(
+                        Icons.AutoMirrored.Filled.List,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(19.dp)
+                    )
+                },
+                enabled = harnessAvailable,
+                onClick = onOpenFiles
+            )
+            DrawerAction(
+                title = "本地浏览器",
+                icon = { tint ->
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(19.dp)
+                    )
+                },
+                onClick = onOpenBrowser
+            )
+            DrawerAction(
                 title = "DeepSeek Harness",
                 icon = { tint ->
                     Icon(
@@ -713,6 +866,19 @@ private fun KingKangDrawer(
                         cursorBrush = SolidColor(Accent),
                         singleLine = true
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "浏览 Kali 目录",
+                        color = Accent,
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(7.dp))
+                            .clickable {
+                                vm.browseDirectory(workspacePath.trim().ifBlank { "/root" })
+                                showDirectoryPicker = true
+                            }
+                            .padding(vertical = 6.dp, horizontal = 2.dp)
+                    )
                 }
             },
             confirmButton = {
@@ -730,6 +896,25 @@ private fun KingKangDrawer(
                 TextButton(onClick = { showWorkspaceDialog = false }) {
                     Text("取消", color = TextSecondary)
                 }
+            }
+        )
+    }
+
+    if (showDirectoryPicker) {
+        DirectoryPickerDialog(
+            listing = agent.directory,
+            onBrowse = vm::browseDirectory,
+            onPick = { path ->
+                workspacePath = path
+                vm.rememberDirectory(path)
+                showDirectoryPicker = false
+                vm.closeDirectoryBrowser()
+            },
+            onCreate = vm::createDirectory,
+            recentDirectories = recentDirectories,
+            onDismiss = {
+                showDirectoryPicker = false
+                vm.closeDirectoryBrowser()
             }
         )
     }
@@ -813,19 +998,22 @@ private fun DrawerSectionLabel(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun WorkspaceHeader(
     workspace: AgentWorkspace,
     sessionCount: Int,
+    running: Boolean,
     collapsed: Boolean,
     onToggle: () -> Unit,
-    onNewChat: () -> Unit
+    onNewChat: () -> Unit,
+    onLongPress: () -> Unit
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onToggle)
+            .combinedClickable(onClick = onToggle, onLongClick = onLongPress)
             .padding(start = 8.dp, end = 4.dp, top = 8.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -848,13 +1036,26 @@ private fun WorkspaceHeader(
                     }
                     append("  ")
                     withStyle(SpanStyle(color = TextMuted)) {
-                        append(workspace.path.ifBlank { "$sessionCount 个对话" })
+                        val meta = buildList {
+                            add(workspace.path.ifBlank { "未命名目录" })
+                            if (sessionCount > 0) add("$sessionCount 个对话")
+                        }.joinToString(" · ")
+                        append(meta)
                     }
                 },
                 fontSize = 12.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (running) {
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Accent)
+            )
+            Spacer(Modifier.width(6.dp))
         }
         Icon(
             Icons.Filled.Add,
@@ -871,6 +1072,120 @@ private fun WorkspaceHeader(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun WorkspaceActionsSheet(
+    workspace: AgentWorkspace,
+    sessionCount: Int,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    renaming: Boolean,
+    renameText: String,
+    deleting: Boolean,
+    onRenameTextChange: (String) -> Unit,
+    onStartRename: () -> Unit,
+    onCancelRename: () -> Unit,
+    onSaveRename: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Surface,
+        contentColor = TextPrimary,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 18.dp, end = 18.dp, bottom = 18.dp)
+        ) {
+            Text(
+                workspace.displayTitle,
+                color = TextPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                "${workspace.path} · $sessionCount 个对话",
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (renaming) {
+                Spacer(Modifier.height(12.dp))
+                BasicTextField(
+                    value = renameText,
+                    onValueChange = onRenameTextChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SurfaceVariant)
+                        .padding(horizontal = 12.dp, vertical = 11.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = TextPrimary,
+                        fontSize = 14.sp
+                    ),
+                    cursorBrush = SolidColor(Accent),
+                    singleLine = true
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onCancelRename) {
+                        Text("取消", color = TextSecondary, fontSize = 12.sp)
+                    }
+                    TextButton(
+                        onClick = onSaveRename,
+                        enabled = renameText.isNotBlank() && renameText.trim() != workspace.displayTitle
+                    ) {
+                        Text("保存", color = Accent, fontWeight = FontWeight.Medium, fontSize = 12.sp)
+                    }
+                }
+            } else {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (deleting) {
+                        "再次点按「确认移除」：只取消分组，Kali 目录和其中的对话都会保留。"
+                    } else {
+                        "移除工作区只取消分组，Kali 目录和其中的对话都会保留。"
+                    },
+                    color = if (deleting) Red else TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+                Spacer(Modifier.height(8.dp))
+                SessionSheetAction("重命名", onClick = onStartRename)
+                SessionSheetAction(
+                    "上移",
+                    color = if (canMoveUp) TextPrimary else TextMuted,
+                    onClick = { if (canMoveUp) onMoveUp() }
+                )
+                SessionSheetAction(
+                    "下移",
+                    color = if (canMoveDown) TextPrimary else TextMuted,
+                    onClick = { if (canMoveDown) onMoveDown() }
+                )
+                SessionSheetAction(
+                    if (deleting) "确认移除" else "移除工作区",
+                    color = Red,
+                    onClick = onDelete
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 private fun SessionActionsSheet(
     session: AgentSession,
     renaming: Boolean,
@@ -880,6 +1195,7 @@ private fun SessionActionsSheet(
     onCancelRename: () -> Unit,
     onSaveRename: () -> Unit,
     onFork: () -> Unit,
+    onExport: () -> Unit,
     onArchive: () -> Unit,
     pinned: Boolean,
     onTogglePin: (Boolean) -> Unit,
@@ -949,6 +1265,7 @@ private fun SessionActionsSheet(
                 Spacer(Modifier.height(8.dp))
                 SessionSheetAction("重命名", onClick = onStartRename)
                 SessionSheetAction("分叉对话", onClick = onFork)
+                SessionSheetAction("导出会话", onClick = onExport)
                 SessionSheetAction(
                     if (pinned) "取消置顶" else "置顶对话",
                     onClick = { onTogglePin(!pinned) }
@@ -1191,7 +1508,7 @@ private fun OnboardingDialog(
             OnboardingStep(
                 index = 3,
                 title = "配置 DeepSeek API Key",
-                detail = "设置 → Agent 连接 → 模型与凭据，填写 API Key。"
+                detail = "设置 → 模型与供应商（或 DeepSeek 官方凭据），填写 API Key。"
             )
 
             Spacer(Modifier.height(14.dp))

@@ -158,6 +158,15 @@ All methods are optional by capability. Unknown methods fail with
 | `workspace.create` | `{path}` | `{workspace,created}` |
 | `plugin.list` | `{}` | `{plugins:[Plugin]}` |
 | `plugin.setEnabled` | `{name,enabled}` | `{changed,application,restartRequired,restartReason?,stage?,target?,enabled,error?}` |
+| `plugin.inspect` | `{spec}` | `{accepted,name?,version?,description?,problem?,reason?}` |
+| `plugin.install` | `{spec}` | `{changed,restartRequired,bundle?,version?,error?}` |
+| `plugin.update` | `{name,version}` | `{changed,restartRequired,bundle?,version?,error?}` |
+| `plugin.uninstall` | `{name}` | `{changed,restartRequired,restartReason?,bundle?,error?}` |
+| `plugin.search` | `{text,size?,registry?}` | `{query,registry,total,results:[MarketResult]}` |
+| `account.state` | `{}` | `AccountView` |
+| `account.profile` | `{client}` | `null` or `{status:"ready",profile}` / `{status:"failed",...}` |
+| `account.balance` | `{client}` | `null` or `{status:"ready",wallets,bonusWallets}` / `{status:"failed",...}` |
+| `account.signOut` | `{client}` | `AccountView` |
 | `permission.catalog` | `{}` | `{options,defaultOptions,defaultPreset}` |
 | `settings.describe` | `{}` | `{writable,namespaces:[SettingsNamespace]}` |
 | `settings.mutate` | `{ns,ops,expectedRevision?}` | `{revision,...}` |

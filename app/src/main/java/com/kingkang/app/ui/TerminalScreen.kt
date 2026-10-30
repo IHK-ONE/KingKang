@@ -139,6 +139,17 @@ fun TerminalScreen(
         }
     }
 
+    // "在终端中打开" hands over one `cd` line; it runs only once the shell is attached,
+    // and the flow clears immediately so a restart cannot replay it.
+    val pendingCommand by vm.terminalCommand.collectAsState()
+    LaunchedEffect(pendingCommand, activeSession, state) {
+        val command = pendingCommand ?: return@LaunchedEffect
+        val active = activeSession ?: return@LaunchedEffect
+        if (state !is TerminalUiState.Running) return@LaunchedEffect
+        active.write(command.toByteArray(Charsets.UTF_8))
+        vm.consumeTerminalCommand()
+    }
+
     Column(
         Modifier
             .fillMaxSize()

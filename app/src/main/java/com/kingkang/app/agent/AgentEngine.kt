@@ -1,11 +1,19 @@
 package com.kingkang.app.agent
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.util.Base64
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.kingkang.app.BuildConfig
+import com.kingkang.app.MainActivity
+import com.kingkang.app.R
 import com.kingkang.app.data.SettingsStore
+import com.kingkang.app.files.FileActions
 import com.kingkang.app.runtime.RootfsManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,11 +29,15 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -35,9 +47,31 @@ import java.util.concurrent.atomic.AtomicLong
 object AgentEngine {
 
     private const val TAG = "AgentEngine"
+    /** Intent extra naming the conversation a completion notification opens. */
+    const val EXTRA_SESSION_ID = "com.kingkang.app.extra.SESSION_ID"
+    private const val TASK_CHANNEL_ID = "kingkang_tasks"
     private const val HISTORY_LIMIT = 80
     private const val MAX_TOOL_RESULT = 100_000
     private const val MAX_TOOL_ARGS = 20_000
+    /** Unknown projections retained for inspection: newest entries, each capped. */
+    private const val MAX_EXTRA_PROJECTIONS = 24
+    private const val MAX_EXTRA_PROJECTION = 4_000
+    /** Distinct unrendered event kinds kept for diagnostics. */
+    private const val MAX_UNKNOWN_EVENTS = 40
+    /** Divider text dsh-web shows once history has been compacted. */
+    private const val COMPACTION_NOTICE = "上下文已压缩，较早的内容已由摘要替代。"
+    /** Feedback write refused because another client changed the record first. */
+    private const val STALE_FEEDBACK = "反馈已被修改，正在同步最新状态"
+    /** Categories dsh's `messageFeedback/put` accepts; anything else is dropped. */
+    private val FEEDBACK_CATEGORIES = setOf(
+        "task-result",
+        "instruction-following",
+        "product-interaction",
+        "service-stability",
+        "resource-cost",
+        "security-privacy-permission",
+        "other"
+    )
     /** A child transcript is a snapshot; refetch it while the child reports running. */
     private const val SUBTAGENT_POLL_MS = 2_500L
     private const val SUBTAGENT_POLLS = 72
@@ -79,6 +113,8 @@ object AgentEngine {
     private val bufferedLiveEvents = mutableListOf<JSONObject>()
     private var loadToken = 0L
     private val localIds = AtomicLong(1)
+    /** Identifies the newest provider discovery so a stale reply never replaces it. */
+    private val discoveryStamp = AtomicLong(1)
     private val loadingImages: MutableSet<String> =
         java.util.concurrent.ConcurrentHashMap.newKeySet()
     private var stopping = false
@@ -126,6 +162,22 @@ object AgentEngine {
      */
     private var pendingInterruptionNotice = false
 
+    /**
+     * Whether an activity is on screen. Completion notifications exist for the case where
+     * the user is elsewhere; while the app is visible the transcript and workbench already
+     * show the same outcome, so posting would only repeat it.
+     */
+    private val appVisible = AtomicBoolean(false)
+    /** Posted task notification ids, so opening the app can clear them. */
+    private val taskNotificationIds = ConcurrentHashMap.newKeySet<Int>()
+    @Volatile
+    private var taskChannelCreated = false
+    /** A notification tap that arrived before the session list was loaded. */
+    @Volatile
+    private var pendingSessionOpen: String? = null
+    /** What started the current turn, when it was not the user typing (e.g. a reminder). */
+    private val sessionTrigger = ConcurrentHashMap<String, String>()
+
     private data class LiveBlock(val type: String, var text: String)
 
     fun init(context: Context) {
@@ -141,8 +193,9 @@ object AgentEngine {
 
     /**
      * Mirrors the app's appearance choice into dsh's own `ui-theme` setting, which is what
-     * the Harness WebView renders with. Stored first so a bridge that is still starting
-     * writes it as soon as it reports ready.
+     * the Harness WebView renders with. The choice is stored with a pending flag first:
+     * a stopped bridge keeps it, and the next ready connection writes it instead of
+     * adopting whatever the Harness last wrote (last writer wins).
      */
     fun setThemePreference(preference: String) {
         val value = when (preference) {
@@ -150,9 +203,41 @@ object AgentEngine {
             else -> "system"
         }
         themePreference = value
+        if (::appContext.isInitialized) {
+            SettingsStore(appContext).themeSyncPending = true
+        }
         val client = bridge ?: return
         if (_state.value.connection != AgentConnection.Ready) return
         scope.launch { writeThemePreference(client, value) }
+    }
+
+    /**
+     * Reconciles the app palette with dsh's `ui-theme`. A pending local choice is pushed;
+     * otherwise dsh's stored choice is adopted, so a theme changed in the Harness reaches
+     * the native UI. Called on connecting, on app foreground and after leaving the
+     * Harness. Returns the preference the app should now render with.
+     */
+    suspend fun reconcileThemePreference(): String? {
+        val client = bridge ?: return null
+        if (_state.value.connection != AgentConnection.Ready) return null
+        val store = if (::appContext.isInitialized) SettingsStore(appContext) else null
+        val described = try {
+            client.callObject("settings.describe", timeoutMs = 20_000)
+        } catch (t: Throwable) {
+            appendLog("同步 Harness 主题失败：${readableError(t)}")
+            return null
+        }
+        val dshTheme = AgentSettingsParser.parseTheme(described)
+        if (store?.themeSyncPending == true) {
+            writeThemePreference(client, themePreference)
+            return themePreference
+        }
+        if (dshTheme != null && dshTheme != themePreference) {
+            themePreference = dshTheme
+            store?.themeMode = dshTheme
+            return dshTheme
+        }
+        return themePreference
     }
 
     private suspend fun writeThemePreference(client: BridgeClient, preference: String) {
@@ -172,9 +257,12 @@ object AgentEngine {
                     ),
                 20_000
             )
+            if (::appContext.isInitialized) {
+                SettingsStore(appContext).themeSyncPending = false
+            }
         } catch (t: Throwable) {
-            // A profile that does not accept writes still runs; only the Harness colour
-            // stays on dsh's own default.
+            // The pending flag stays set, so the next connection retries this write
+            // rather than silently adopting the Harness theme.
             appendLog("同步 Harness 主题失败：${readableError(t)}")
         }
     }
@@ -384,6 +472,8 @@ object AgentEngine {
      */
     fun onAppForegrounded(context: Context) {
         init(context)
+        appVisible.set(true)
+        clearTaskNotifications()
         if (!resumeRecoveryPending || userStopped) return
         if (_state.value.connection != AgentConnection.Stopped) {
             resumeRecoveryPending = false
@@ -391,6 +481,28 @@ object AgentEngine {
         }
         resumeRecoveryPending = false
         ensureStarted(context)
+    }
+
+    /** The last activity left the screen; completion notices become worth posting. */
+    fun onAppBackgrounded() {
+        appVisible.set(false)
+    }
+
+    /**
+     * Opens the session named by a notification tap. A cold start can beat the session
+     * list, so the id is held until the list arrives (see [tryOpenPendingSession]).
+     */
+    fun openSessionFromNotification(sessionId: String) {
+        if (sessionId.isBlank()) return
+        pendingSessionOpen = sessionId
+        tryOpenPendingSession()
+    }
+
+    private fun tryOpenPendingSession() {
+        val id = pendingSessionOpen ?: return
+        if (_state.value.sessions.none { it.id == id }) return
+        pendingSessionOpen = null
+        openSession(id)
     }
 
     private fun stopServiceQuietly() {
@@ -556,6 +668,9 @@ object AgentEngine {
 
             "models.changed" -> {
                 _state.value.activeSessionId?.let { loadModels(it) }
+                // A provider route added, changed, or removed through the web Models
+                // page (or our own save) re-registers adapters; keep the form in sync.
+                refreshModelProviders()
             }
 
             "stream.reconnecting" -> {
@@ -676,10 +791,11 @@ object AgentEngine {
             describeCredentials()
             describePermissions()
             describeAgentPresets()
+            refreshModelProviders()
             loadPlugins()
             syncNpmRegistry()
             refreshPluginRegistry()
-            bridge?.let { writeThemePreference(it, themePreference) }
+            reconcileThemePreference()
         }
     }
 
@@ -825,6 +941,7 @@ object AgentEngine {
         }
         val merged = (remote + synthetic).sortedByDescending { it.updatedAt }
         _state.update { it.copy(sessions = merged) }
+        tryOpenPendingSession()
 
         // dsh's row is the authority on whether a turn is live. Keep the transcript's own
         // flag in step so a missed turn.end (for example after a background outage) cannot
@@ -927,6 +1044,39 @@ object AgentEngine {
                 todos = emptyList(),
                 plan = AgentPlan(),
                 permissionMode = null,
+                tokenUsage = AgentTokenUsage(),
+                contextPressure = AgentContextPressure(),
+                contextBreakdown = AgentContextBreakdown(),
+                goal = null,
+                goalBusy = false,
+                goalError = null,
+                schedules = emptyList(),
+                schedulesLoaded = false,
+                schedulesError = null,
+                scheduleBusy = false,
+                scheduleHistory = emptyMap(),
+                modelSelection = AgentModelSelection(),
+                subagentTiming = null,
+                agentTeam = null,
+                turnOutline = emptyList(),
+                sessionStats = AgentSessionStats(),
+                messageFeedback = emptyMap(),
+                extraProjections = emptyMap(),
+                unknownEvents = emptyList(),
+                export = AgentExport(),
+                jobs = emptyList(),
+                jobsLoaded = false,
+                jobsError = null,
+                jobOutput = emptyMap(),
+                changes = null,
+                changesLoaded = false,
+                changesLoading = false,
+                changesError = null,
+                changesReleased = false,
+                changeDiffs = emptyMap(),
+                deliverables = emptyList(),
+                fileListing = AgentFileListing(),
+                filePreview = AgentFilePreview(),
                 queue = emptyList(),
                 models = null,
                 commands = emptyList(),
@@ -937,11 +1087,15 @@ object AgentEngine {
         }
         scope.launch {
             loadHistory(id, beforeSeq = null, token = token)
+            loadMessageFeedback(id)
             if (view == null) {
                 loadModels(id)
                 loadCommands(id)
                 loadSkills(id)
                 loadSubagents(id)
+                // The workbench badge reads this list without the sheet being open, so a
+                // background job left over from an earlier session is visible on arrival.
+                loadJobs(id)
             } else {
                 // Skills and commands need an attached ordinary session; a child view
                 // lists its own children (drill-down) while its activity is read from
@@ -1008,6 +1162,939 @@ object AgentEngine {
             return
         }
         activateSession(rootId, forceLoad = false)
+    }
+
+    /**
+     * Exports the open session (and its subagent descendants) as dsh's log archive.
+     *
+     * The bridge streams the ZIP into Kali; this method copies it into the app cache so
+     * the FileProvider can expose it. The copy is the only reason the archive leaves the
+     * rootfs, and the guest file is removed as soon as the copy exists.
+     */
+    fun exportSession(
+        sessionId: String? = _state.value.activeSessionId,
+        includeDescendants: Boolean = true
+    ) {
+        val id = sessionId?.takeIf { it.isNotBlank() } ?: return
+        if (_state.value.export.running) return
+        val client = bridge
+        if (client == null) {
+            addNotice("Agent 尚未连接，无法导出", isError = true)
+            return
+        }
+        _state.update { it.copy(export = AgentExport(sessionId = id, running = true)) }
+        scope.launch {
+            try {
+                val result = client.callObject(
+                    "session.export",
+                    JSONObject()
+                        .put("sessionId", id)
+                        .put("includeDescendants", includeDescendants),
+                    240_000
+                ) ?: throw IllegalStateException("导出未返回结果")
+                val guestPath = result.optString("path")
+                val source = guestToHost(guestPath)
+                    ?: throw IllegalStateException("导出路径无效")
+                if (!source.isFile) throw IllegalStateException("导出文件不存在")
+                val directory = File(appContext.cacheDir, "exports").apply { mkdirs() }
+                val name = FileActions.sanitizeFileName(
+                    result.optString("name").ifBlank { source.name },
+                    fallback = "session.zip"
+                )
+                val target = File(directory, name)
+                withContext(Dispatchers.IO) {
+                    source.inputStream().use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+                // The cache copy is the shareable artifact; the Kali original is redundant.
+                runCatching { source.delete() }
+                pruneExportCache(directory, target)
+                _state.update {
+                    it.copy(
+                        export = AgentExport(
+                            sessionId = id,
+                            name = target.name,
+                            bytes = target.length(),
+                            hostPath = target.absolutePath
+                        )
+                    )
+                }
+                addNotice("会话已导出：${target.name}", isError = false)
+            } catch (error: Exception) {
+                val message = error.message?.takeIf { it.isNotBlank() } ?: "导出失败"
+                _state.update { it.copy(export = AgentExport(sessionId = id, error = message)) }
+                addNotice("导出失败：$message", isError = true)
+            }
+        }
+    }
+
+    /** Hides the export result strip; an in-flight export keeps running. */
+    fun dismissExport() {
+        if (_state.value.export.running) return
+        _state.update { it.copy(export = AgentExport()) }
+    }
+
+    /**
+     * Reads the open conversation's background jobs. dsh keeps them per session, so this
+     * is also how the workbench recovers the list after the app was restarted.
+     */
+    fun loadJobs(sessionId: String? = null) {
+        val client = bridge ?: return
+        val id = sessionId ?: _state.value.activeSessionId ?: return
+        if (id.isBlank()) return
+        scope.launch {
+            val result = try {
+                client.callObject("job.list", JSONObject().put("sessionId", id), 20_000)
+            } catch (t: Throwable) {
+                _state.update { state ->
+                    if (state.activeSessionId == id) {
+                        state.copy(jobsLoaded = true, jobsError = readableError(t))
+                    } else {
+                        state
+                    }
+                }
+                return@launch
+            }
+            val jobs = parseJobs(result)
+            _state.update { state ->
+                if (state.activeSessionId != id) state
+                else state.copy(jobs = jobs, jobsLoaded = true, jobsError = null)
+            }
+        }
+    }
+
+    /** Asks dsh to stop one job; the row shows "停止中" until the next list refresh. */
+    fun killJob(jobId: String) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        val target = state.jobs.firstOrNull { it.id == jobId } ?: return
+        if (!target.running) return
+        _state.update { current ->
+            current.copy(jobs = current.jobs.map {
+                if (it.id == jobId) it.copy(status = "stopping") else it
+            })
+        }
+        scope.launch {
+            val failure = try {
+                client.callObject(
+                    "job.kill",
+                    JSONObject().put("sessionId", sessionId).put("jobId", jobId),
+                    20_000
+                )
+                null
+            } catch (t: Throwable) {
+                readableError(t)
+            }
+            if (failure != null) {
+                _state.update { current ->
+                    current.copy(jobs = current.jobs.map {
+                        if (it.id == jobId) it.copy(status = target.status) else it
+                    })
+                }
+                eventMutex.withLock { addNotice("停止任务失败：$failure", isError = true) }
+                return@launch
+            }
+            loadJobs(sessionId)
+        }
+    }
+
+    /**
+     * Loads a job's scrollback with `job/follow`. [append] continues from the offset the
+     * previous read stopped at, so a refresh only adds what the job printed since.
+     */
+    fun loadJobOutput(jobId: String, append: Boolean = false) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        val previous = state.jobOutput[jobId]
+        if (previous?.loading == true) return
+        val from = if (append) previous?.next ?: 0L else 0L
+        _state.update { current ->
+            current.copy(
+                jobOutput = current.jobOutput + (jobId to
+                    (previous ?: AgentJobOutput(jobId)).copy(loading = true, error = null))
+            )
+        }
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "job.output",
+                    JSONObject()
+                        .put("sessionId", sessionId)
+                        .put("jobId", jobId)
+                        .put("from", from),
+                    30_000
+                )
+            } catch (t: Throwable) {
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(
+                        jobOutput = current.jobOutput + (jobId to
+                            (current.jobOutput[jobId] ?: AgentJobOutput(jobId)).copy(
+                                loading = false,
+                                error = readableError(t)
+                            ))
+                    )
+                }
+                return@launch
+            }
+            val parsed = parseJobOutput(jobId, result)
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) return@update current
+                val prior = current.jobOutput[jobId]
+                val merged = if (append) {
+                    parsed.copy(chunks = (prior?.chunks ?: emptyList()) + parsed.chunks)
+                } else {
+                    parsed
+                }
+                val refreshed = parsed.job
+                current.copy(
+                    jobOutput = current.jobOutput + (jobId to merged),
+                    jobs = if (refreshed == null) current.jobs
+                    else current.jobs.map { if (it.id == refreshed.id) refreshed else it }
+                )
+            }
+        }
+    }
+
+    /**
+     * Reads the newest `workspace/changes` summary of the open conversation. The bridge
+     * resolves the announcement's seq itself; a session with no announcement yet answers
+     * with no summary, which is shown as an empty state rather than an error.
+     */
+    fun loadChanges() {
+        val client = bridge ?: return
+        val sessionId = _state.value.activeSessionId ?: return
+        if (_state.value.changesLoading) return
+        _state.update { it.copy(changesLoading = true, changesError = null) }
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "changes.summary",
+                    JSONObject().put("sessionId", sessionId),
+                    30_000
+                )
+            } catch (t: Throwable) {
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(changesLoading = false, changesError = readableError(t))
+                }
+                return@launch
+            }
+            val summary = result.optJSONObject("summary")
+            val seq = result.longOrNull("seq") ?: 0L
+            val released = result.optBoolean("released")
+            val changes = summary?.let { parseChanges(it, seq) }
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else current.copy(
+                    changes = changes,
+                    changesLoaded = true,
+                    changesLoading = false,
+                    changesError = null,
+                    changesReleased = released,
+                    // A new announcement replaces the previous turn's comparisons.
+                    changeDiffs = emptyMap()
+                )
+            }
+        }
+    }
+
+    /** Loads one changed file's comparison; [index] is its place in [AgentChanges.files]. */
+    fun loadChangesDiff(index: Int) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        val changes = state.changes ?: return
+        if (changes.seq <= 0L || index !in changes.files.indices) return
+        if (state.changeDiffs[index]?.loading == true) return
+        _state.update { current ->
+            current.copy(
+                changeDiffs = current.changeDiffs + (index to
+                    (current.changeDiffs[index] ?: AgentChangesDiff()).copy(
+                        loading = true,
+                        error = null
+                    ))
+            )
+        }
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "changes.diff",
+                    JSONObject()
+                        .put("sessionId", sessionId)
+                        .put("seq", changes.seq)
+                        .put("index", index),
+                    45_000
+                )
+            } catch (t: Throwable) {
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(
+                        changeDiffs = current.changeDiffs + (index to
+                            (current.changeDiffs[index] ?: AgentChangesDiff()).copy(
+                                loading = false,
+                                error = readableError(t)
+                            ))
+                    )
+                }
+                return@launch
+            }
+            val parsed = parseChangesDiff(result)
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else current.copy(changeDiffs = current.changeDiffs + (index to parsed))
+            }
+        }
+    }
+
+    /**
+     * Reads the open conversation's current goal through the goal service. The `goal`
+     * projection already keeps [AgentState.goal] live; this read refreshes the exact
+     * revision the next mutation must address, including after dsh restarted or another
+     * client changed the goal.
+     */
+    fun loadGoal() {
+        val client = bridge ?: return
+        val sessionId = _state.value.activeSessionId ?: return
+        scope.launch {
+            val result = try {
+                client.callObject("goal.get", JSONObject().put("sessionId", sessionId), 20_000)
+            } catch (t: Throwable) {
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(goalError = readableError(t))
+                }
+                return@launch
+            }
+            val parsed = parseGoalView(result.optJSONObject("goal"))
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                // A null answer is dsh's "no current goal"; a cleared goal must not linger.
+                else current.copy(goal = parsed, goalError = null)
+            }
+        }
+    }
+
+    fun pauseGoal() = mutateGoal("goal.pause")
+
+    fun resumeGoal() = mutateGoal("goal.resume")
+
+    fun clearGoal() = mutateGoal("goal.clear")
+
+    /**
+     * Replaces the objective and/or the round cap. A blank objective means "keep the old
+     * one", matching dsh's optional fields; the round cap is always sent when provided.
+     */
+    fun editGoal(objective: String, maxGoalRounds: Int?) {
+        val edit = JSONObject()
+        if (objective.isNotBlank()) edit.put("objective", objective.trim())
+        if (maxGoalRounds != null && maxGoalRounds >= 1) {
+            edit.put("maxGoalRounds", maxGoalRounds)
+        }
+        if (edit.length() == 0) return
+        mutateGoal("goal.edit", edit)
+    }
+
+    /**
+     * Runs one goal mutation against the revision on screen. dsh rejects a stale revision
+     * rather than overwriting a newer change, so a failure refetches the card instead of
+     * pretending the action landed.
+     */
+    private fun mutateGoal(method: String, edit: JSONObject? = null) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        val goal = state.goal ?: return
+        if (state.goalBusy) return
+        val request = JSONObject()
+            .put("sessionId", sessionId)
+            .put("id", goal.id)
+            .put("revision", goal.revision)
+        edit?.let { extra ->
+            extra.keys().forEach { key -> request.put(key, extra.get(key)) }
+        }
+        _state.update { it.copy(goalBusy = true, goalError = null) }
+        scope.launch {
+            val result = try {
+                client.callObject(method, request, 30_000)
+            } catch (t: Throwable) {
+                val failure = readableError(t)
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(goalBusy = false, goalError = failure)
+                }
+                eventMutex.withLock { addNotice("目标操作失败：$failure", isError = true) }
+                loadGoal()
+                return@launch
+            }
+            val parsed = parseGoalView(result.optJSONObject("goal"))
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else current.copy(goal = parsed, goalBusy = false, goalError = null)
+            }
+        }
+    }
+
+    /**
+     * Reads dsh's Host-wide reminder catalog and keeps the rows bound to the open
+     * conversation. The catalog carries ended reminders too, so the workbench can show
+     * what already fired instead of silently dropping it.
+     */
+    fun loadSchedules(sessionId: String? = null) {
+        val client = bridge ?: return
+        val id = sessionId ?: _state.value.activeSessionId ?: return
+        if (id.isBlank()) return
+        scope.launch {
+            val result = try {
+                client.callObject("schedule.catalog", JSONObject(), 20_000)
+            } catch (t: Throwable) {
+                _state.update { state ->
+                    if (state.activeSessionId != id) state
+                    else state.copy(schedulesLoaded = true, schedulesError = readableError(t))
+                }
+                return@launch
+            }
+            val schedules = parseSchedules(result, id)
+            _state.update { state ->
+                if (state.activeSessionId != id) state
+                else state.copy(
+                    schedules = schedules,
+                    schedulesLoaded = true,
+                    schedulesError = null
+                )
+            }
+        }
+    }
+
+    /**
+     * Edits a reminder's title, prompt and/or timing. dsh compares [AgentSchedule.raw]
+     * with the stored record and refuses a stale write, so a concurrent edit from
+     * dsh-web cannot be overwritten by a tap here.
+     */
+    fun updateSchedule(
+        id: String,
+        title: String? = null,
+        prompt: String? = null,
+        change: JSONObject? = null
+    ) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        val schedule = state.schedules.firstOrNull { it.id == id } ?: return
+        if (state.scheduleBusy) return
+        val expected = runCatching { JSONObject(schedule.raw) }.getOrNull()
+        if (expected == null) {
+            scope.launch { eventMutex.withLock { addNotice("提醒记录不完整，请刷新后重试", isError = true) } }
+            return
+        }
+        val request = JSONObject()
+            .put("sessionId", sessionId)
+            .put("id", id)
+            .put("expected", expected)
+        title?.let { request.put("title", it.trim()) }
+        prompt?.let { request.put("prompt", it.trim()) }
+        change?.let { request.put("change", it) }
+        _state.update { it.copy(scheduleBusy = true) }
+        scope.launch {
+            val result = try {
+                client.callObject("schedule.update", request, 30_000)
+            } catch (t: Throwable) {
+                val failure = readableError(t)
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(scheduleBusy = false)
+                }
+                eventMutex.withLock { addNotice("修改定时任务失败：$failure", isError = true) }
+                loadSchedules(sessionId)
+                return@launch
+            }
+            if (!result.optBoolean("updated", false)) {
+                val code = result.optString("code")
+                val failure = when (code) {
+                    "schedule_not_found" -> "任务已不存在"
+                    "schedule_ended" -> "任务已结束，无法再修改"
+                    "schedule_conflict" -> "任务刚被其他客户端修改，请重试"
+                    else -> code.ifBlank { "dsh 未更新任务" }
+                }
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(scheduleBusy = false)
+                }
+                eventMutex.withLock { addNotice("修改定时任务失败：$failure", isError = true) }
+                loadSchedules(sessionId)
+                return@launch
+            }
+            val record = parseSchedule(result.optJSONObject("record"), sessionId, "active")
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else current.copy(
+                    schedules = if (record == null) current.schedules
+                    else current.schedules.map { if (it.id == id) record else it },
+                    scheduleBusy = false,
+                    schedulesError = null
+                )
+            }
+            eventMutex.withLock { addNotice("定时任务已更新", isError = false) }
+            loadSchedules(sessionId)
+        }
+    }
+
+    /** Deletes one reminder, ended or not. A queued delivery is not retracted. */
+    fun deleteSchedule(id: String) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        if (state.scheduleBusy) return
+        _state.update { it.copy(scheduleBusy = true) }
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "schedule.delete",
+                    JSONObject().put("sessionId", sessionId).put("id", id),
+                    30_000
+                )
+            } catch (t: Throwable) {
+                val failure = readableError(t)
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(scheduleBusy = false)
+                }
+                eventMutex.withLock { addNotice("删除定时任务失败：$failure", isError = true) }
+                loadSchedules(sessionId)
+                return@launch
+            }
+            val deleted = result.optBoolean("deleted", false)
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else current.copy(
+                    schedules = if (deleted) current.schedules.filterNot { it.id == id }
+                    else current.schedules,
+                    scheduleHistory = current.scheduleHistory - id,
+                    scheduleBusy = false
+                )
+            }
+            if (deleted) {
+                eventMutex.withLock { addNotice("定时任务已删除", isError = false) }
+            } else {
+                eventMutex.withLock { addNotice("任务已不存在，已刷新列表", isError = false) }
+                loadSchedules(sessionId)
+            }
+        }
+    }
+
+    /**
+     * Reads a reminder's saved deliveries. [before] pages older records; dsh answers
+     * newest-first and names the next cursor.
+     */
+    fun loadScheduleHistory(id: String, before: String? = null) {
+        val client = bridge ?: return
+        val sessionId = _state.value.activeSessionId ?: return
+        val previous = _state.value.scheduleHistory[id]
+        if (previous?.loading == true) return
+        _state.update { current ->
+            current.copy(
+                scheduleHistory = current.scheduleHistory + (id to
+                    (previous ?: AgentScheduleHistory(id)).copy(
+                        id = id,
+                        loading = true,
+                        error = null
+                    ))
+            )
+        }
+        val request = JSONObject()
+            .put("sessionId", sessionId)
+            .put("id", id)
+            .put("limit", 20)
+        if (!before.isNullOrBlank()) request.put("before", before)
+        scope.launch {
+            val result = try {
+                client.callObject("schedule.history", request, 20_000)
+            } catch (t: Throwable) {
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(
+                        scheduleHistory = current.scheduleHistory + (id to
+                            (current.scheduleHistory[id] ?: AgentScheduleHistory(id)).copy(
+                                loading = false,
+                                error = readableError(t)
+                            ))
+                    )
+                }
+                return@launch
+            }
+            val code = result.optString("code")
+            if (code.isNotBlank()) {
+                val failure = when (code) {
+                    "schedule_not_found" -> "任务已不存在"
+                    "delivery_cursor_not_found" -> "更早的记录已不可用"
+                    else -> code
+                }
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(
+                        scheduleHistory = current.scheduleHistory + (id to
+                            (current.scheduleHistory[id] ?: AgentScheduleHistory(id)).copy(
+                                loading = false,
+                                error = failure
+                            ))
+                    )
+                }
+                return@launch
+            }
+            val parsed = parseScheduleHistory(result, id)
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else {
+                    val older = if (before.isNullOrBlank()) emptyList()
+                    else current.scheduleHistory[id]?.records.orEmpty()
+                    current.copy(
+                        scheduleHistory = current.scheduleHistory + (id to
+                            parsed.copy(records = older + parsed.records))
+                    )
+                }
+            }
+        }
+    }
+
+    /** Drops one reminder's delivery history, closing its detail surface. */
+    fun dismissScheduleHistory(id: String) {
+        _state.update { it.copy(scheduleHistory = it.scheduleHistory - id) }
+    }
+
+    /**
+     * Lists direct subdirectories of one Kali path for the workspace picker. The bridge
+     * owns the read: it sees Kali only, so the picker can never wander into Android
+     * storage even if a bound mount exists.
+     */
+    fun browseDirectory(path: String? = null) {        if (_state.value.directory.loading) return
+        val client = bridge
+        if (client == null) {
+            _state.update {
+                it.copy(
+                    directory = it.directory.copy(
+                        loading = false,
+                        loaded = true,
+                        error = "Agent 尚未连接"
+                    )
+                )
+            }
+            return
+        }
+        val target = path ?: _state.value.directory.path
+        _state.update {
+            it.copy(directory = it.directory.copy(loading = true, error = null))
+        }
+        scope.launch {
+            try {
+                val result = client.callObject(
+                    "workspace.browse",
+                    JSONObject().put("path", target),
+                    15_000
+                ) ?: throw IllegalStateException("目录列表为空")
+                val entries = mutableListOf<AgentDirectoryEntry>()
+                val array = result.optJSONArray("entries")
+                if (array != null) {
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        val name = item.optString("name")
+                        val child = item.optString("path")
+                        if (name.isBlank() || child.isBlank()) continue
+                        entries += AgentDirectoryEntry(name, child)
+                    }
+                }
+                _state.update {
+                    it.copy(
+                        directory = AgentDirectoryListing(
+                            path = result.optString("path"),
+                            parent = if (result.isNull("parent")) {
+                                null
+                            } else {
+                                result.optString("parent").takeIf { value -> value.isNotBlank() }
+                            },
+                            entries = entries,
+                            truncated = result.optBoolean("truncated"),
+                            loaded = true
+                        )
+                    )
+                }
+            } catch (error: Exception) {
+                val message = error.message?.takeIf { it.isNotBlank() } ?: "无法读取目录"
+                _state.update {
+                    it.copy(
+                        directory = it.directory.copy(
+                            loading = false,
+                            loaded = true,
+                            error = message
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeDirectoryBrowser() {
+        _state.update { it.copy(directory = AgentDirectoryListing()) }
+    }
+
+    /** Creates a folder below the directory the picker is showing, then opens it. */
+    fun createDirectory(name: String) {
+        val client = bridge
+        if (client == null) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        val listing = _state.value.directory
+        if (listing.loading) return
+        val parent = listing.path.ifBlank { "/root" }
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "workspace.mkdir",
+                    JSONObject().put("parent", parent).put("name", name),
+                    15_000
+                )
+            } catch (t: Throwable) {
+                notifyState("无法创建文件夹：${readableError(t)}")
+                return@launch
+            }
+            browseDirectory(result.optString("path").takeIf { it.isNotBlank() } ?: parent)
+        }
+    }
+
+    /**
+     * Hands a Kali file to another app. The bridge copies it into `/root/shared/outbox`
+     * first — the one Kali location the phone can read — and the app opens or shares the
+     * host file. Files already under the shared directory skip the copy.
+     */
+    fun openGuestFile(guestPath: String, share: Boolean = false) {
+        val normalized = guestPath.trim()
+        if (normalized.isBlank()) return
+        if (normalized.startsWith("/root/shared/")) {
+            val host = sharedGuestToHost(normalized)
+            if (host == null) {
+                notifyState("文件已不在共享目录中")
+                return
+            }
+            val failure = if (share) {
+                FileActions.share(appContext, host)
+            } else {
+                FileActions.open(appContext, host)
+            }
+            failure?.let(::notifyState)
+            return
+        }
+        val client = bridge
+        if (client == null) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        scope.launch {
+            val result = try {
+                client.callObject("file.share", JSONObject().put("path", normalized), 30_000)
+            } catch (t: Throwable) {
+                notifyState("无法打开文件：${readableError(t)}")
+                return@launch
+            }
+            val host = sharedGuestToHost(result.optString("guestPath"))
+            if (host == null) {
+                notifyState("文件未能交给系统打开")
+                return@launch
+            }
+            val failure = if (share) {
+                FileActions.share(appContext, host)
+            } else {
+                FileActions.open(appContext, host)
+            }
+            failure?.let(::notifyState)
+        }
+    }
+
+    /**
+     * The host file behind an attachment, or null once it has been removed. A composer
+     * draft knows its exact host path; a transcript attachment only carries the guest
+     * path, which maps back into the shared directory.
+     */
+    fun attachmentHostFile(file: AgentFile): File? =
+        file.hostPath
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let(::File)
+            ?.takeIf { it.isFile }
+            ?: sharedGuestToHost(file.guestPath)
+
+    /** Opens a file the user attached earlier; its bytes live under the shared directory. */
+    fun openAttachment(file: AgentFile) {
+        val host = attachmentHostFile(file) ?: run {
+            notifyState("文件已不在共享目录中")
+            return
+        }
+        FileActions.open(appContext, host)?.let(::notifyState)
+    }
+
+    /** Hands an attachment to the system share sheet. */
+    fun shareAttachment(file: AgentFile) {
+        val host = attachmentHostFile(file) ?: run {
+            notifyState("文件已不在共享目录中")
+            return
+        }
+        FileActions.share(appContext, host)?.let(::notifyState)
+    }
+
+    /**
+     * Lists one directory inside the open Session's workspace for the native sidebar.
+     * A null [path] keeps the directory already on screen, or starts at the root.
+     */
+    fun browseFiles(path: String? = null) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: run {
+            notifyState("先打开一个对话")
+            return
+        }
+        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() } ?: run {
+            notifyState("这个对话没有工作目录")
+            return
+        }
+        val target = path?.takeIf { it.isNotBlank() }
+            ?: state.fileListing.path.takeIf { it.isNotBlank() }
+            ?: root
+        _state.update { it.copy(fileListing = it.fileListing.copy(loading = true, error = null)) }
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "workspace.files",
+                    JSONObject().put("root", root).put("path", target),
+                    25_000
+                )
+            } catch (t: Throwable) {
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update {
+                        it.copy(fileListing = it.fileListing.copy(loading = false, error = readableError(t)))
+                    }
+                }
+                return@launch
+            }
+            if (_state.value.activeSessionId != sessionId) return@launch
+            val entries = result.optJSONArray("entries")?.let { array ->
+                (0 until array.length()).mapNotNull { index ->
+                    val item = array.optJSONObject(index) ?: return@mapNotNull null
+                    val name = item.optString("name")
+                    val filePath = item.optString("path")
+                    if (name.isBlank() || filePath.isBlank()) return@mapNotNull null
+                    AgentFileEntry(
+                        name = name,
+                        path = filePath,
+                        type = item.optString("type").ifBlank { "file" },
+                        size = item.optLong("size"),
+                        modified = item.optLong("mtime")
+                    )
+                }
+            } ?: emptyList()
+            _state.update {
+                it.copy(
+                    fileListing = AgentFileListing(
+                        root = result.optString("root").ifBlank { root },
+                        path = result.optString("path").ifBlank { target },
+                        parent = result.optString("parent").takeIf { parent -> parent.isNotBlank() },
+                        entries = entries,
+                        truncated = result.optBoolean("truncated")
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Reads one workspace file for the native preview. Bytes come back base64 so the
+     * viewer can pick a charset or decode an image; the bridge caps the prefix.
+     */
+    fun openFilePreview(path: String) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() } ?: run {
+            notifyState("这个对话没有工作目录")
+            return
+        }
+        _state.update { it.copy(filePreview = AgentFilePreview(path = path, loading = true)) }
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "workspace.readFile",
+                    JSONObject().put("root", root).put("path", path),
+                    40_000
+                )
+            } catch (t: Throwable) {
+                if (_state.value.activeSessionId == sessionId) {
+                    _state.update {
+                        it.copy(filePreview = AgentFilePreview(path = path, error = readableError(t)))
+                    }
+                }
+                return@launch
+            }
+            if (_state.value.activeSessionId != sessionId) return@launch
+            _state.update {
+                it.copy(
+                    filePreview = AgentFilePreview(
+                        path = result.optString("path").ifBlank { path },
+                        name = result.optString("name").ifBlank { path.substringAfterLast('/') },
+                        size = result.optLong("size"),
+                        base64 = result.optString("base64"),
+                        truncated = result.optBoolean("truncated")
+                    )
+                )
+            }
+        }
+    }
+
+    /** Drops the loaded preview so its bytes do not linger for the next file. */
+    fun closeFilePreview() {
+        if (_state.value.filePreview == AgentFilePreview()) return
+        _state.update { it.copy(filePreview = AgentFilePreview()) }
+    }
+
+    /** Maps `/root/shared/...` to the app's bind-mounted host directory. */
+    private fun sharedGuestToHost(guestPath: String): File? {
+        val prefix = "/root/shared/"
+        if (!guestPath.startsWith(prefix)) return null
+        val root = RootfsManager(appContext).sharedDir
+        return try {
+            val rootPath = root.canonicalFile.path + File.separator
+            val candidate = File(root, guestPath.removePrefix(prefix)).canonicalFile
+            if (candidate.path.startsWith(rootPath) && candidate.isFile) candidate else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Maps a guest path under Kali's export directory to its app-private host file. */
+    private fun guestToHost(guestPath: String): File? {
+        val normalized = guestPath.trim()
+        if (!normalized.startsWith("/root/.dsh/exports/")) return null
+        val root = RootfsManager(appContext).rootfsDir
+        return try {
+            val rootPath = root.canonicalFile.path + File.separator
+            val candidate = File(root, normalized.removePrefix("/")).canonicalFile
+            if (!candidate.path.startsWith(rootPath)) null else candidate
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Keeps the five newest archives in the cache; older exports are temporary by design. */
+    private fun pruneExportCache(directory: File, keep: File) {
+        runCatching {
+            val entries = directory
+                .listFiles { file -> file.isFile && file.name.endsWith(".zip", ignoreCase = true) }
+                ?.sortedByDescending { it.lastModified() }
+                ?: return
+            for (old in entries.drop(5)) {
+                if (old != keep) old.delete()
+            }
+        }
     }
 
     fun newSession(workspaceId: String? = null) {
@@ -1128,8 +2215,19 @@ object AgentEngine {
                 // so they cannot overwrite the live tail's blocks.
             }
             val newItems = mutableListOf<AgentItem>()
+            val replayedDeliverables = mutableListOf<AgentDeliverable>()
             for (entry in entries) {
                 foldEvent(newItems, foldBlocks, entry)
+                if (entry.optString("kind") == "deliverables") {
+                    replayedDeliverables += parseDeliverableFiles(entry.optJSONArray("files"))
+                }
+            }
+            // Deliverables live beside the transcript rather than in it; a full reload
+            // rebuilds them from history, and an older page prepends its announcements.
+            val mergedDeliverables = if (beforeSeq == null) {
+                mergeDeliverables(emptyList(), replayedDeliverables)
+            } else {
+                mergeDeliverables(replayedDeliverables, _state.value.deliverables)
             }
             val merged = if (beforeSeq == null) {
                 newItems
@@ -1148,6 +2246,7 @@ object AgentEngine {
             _state.update {
                 it.copy(
                     items = merged,
+                    deliverables = mergedDeliverables,
                     hasMoreHistory = result.optBoolean("hasMore"),
                     oldestSeq = oldest
                 )
@@ -1196,6 +2295,11 @@ object AgentEngine {
         }
 
         val isActive = sessionId == _state.value.activeSessionId
+        // Files usually change during a turn. The sidebar watches this counter and
+        // reloads its directory, so an agent edit appears without a manual refresh.
+        if (isActive && kind == "changes") {
+            _state.update { it.copy(fileRevision = it.fileRevision + 1) }
+        }
         when (kind) {
             "session.title" -> {
                 updateSessionTitle(sessionId, data.optString("title"))
@@ -1208,17 +2312,19 @@ object AgentEngine {
             }
             "turn.end" -> {
                 updateSessionRunning(sessionId, false)
+                val reason = data.optJSONObject("reason")
+                val reasonKind = reason?.optString("kind").orEmpty()
+                val message = reason?.optString("message").orEmpty()
+                val cancelled = reasonKind == "user" || reasonKind == "cancel" ||
+                    reasonKind == "cancelled"
+                val scheduled = sessionTrigger.remove(sessionId) == "schedule"
                 if (isActive) {
-                    val reason = data.optJSONObject("reason")
-                    val reasonKind = reason?.optString("kind").orEmpty()
-                    val message = reason?.optString("message").orEmpty()
-                    val cancelled = reasonKind == "user" || reasonKind == "cancel" ||
-                        reasonKind == "cancelled"
                     cancelVerifyJob?.cancel()
                     _state.update { state ->
                         state.copy(
                             running = false,
                             turnStopping = false,
+                            fileRevision = state.fileRevision + 1,
                             items = state.items.map {
                                 when {
                                     it is AssistantItem && it.streaming ->
@@ -1229,6 +2335,8 @@ object AgentEngine {
                                             if (cancelled) "（已停止）" else "（没有返回结果）"
                                         }
                                     )
+                                    it is WorkflowItem && it.stopReason == null ->
+                                        it.copy(interrupted = true)
                                     else -> it
                                 }
                             },
@@ -1246,13 +2354,49 @@ object AgentEngine {
                 if (isActive && _state.value.subagentView == null) {
                     scope.launch { loadSubagents(sessionId) }
                 }
+                if (!cancelled) {
+                    // A notification only leaves the app when no activity is visible; the
+                    // timeboxed session title keeps unrelated conversations identifiable.
+                    val failed = reasonKind == "error" || reasonKind == "failed"
+                    notifyTask(
+                        key = "turn:$sessionId",
+                        title = when {
+                            failed -> "对话失败"
+                            scheduled -> "定时任务已完成"
+                            else -> "对话已完成"
+                        },
+                        text = (if (failed) message else "").ifBlank { sessionTitle(sessionId) },
+                        sessionId = sessionId,
+                        isError = failed
+                    )
+                }
+                // Background jobs often settle around the turn boundary; one read keeps
+                // the workbench badge honest without waiting for the sheet to open.
+                if (isActive) scope.launch { loadJobs(sessionId) }
                 return
+            }
+            "context.message" -> {
+                // Schedule reminders and job notices are usually for a session that is not
+                // on screen; note the trigger and post the completion notice here. The
+                // active transcript gets its compact line in foldEvent below.
+                onContextMessage(sessionId, data)
             }
             "subagent.catalog" -> {
                 // A child was established (or announced) while the turn is still running;
                 // refresh the summary bar without waiting for the turn to end.
                 if (isActive && _state.value.subagentView == null) {
                     scope.launch { loadSubagents(sessionId) }
+                }
+                return
+            }
+            "deliverables" -> {
+                // The present tool appends one durable record per call; merging by path
+                // keeps repeated presentations from growing the list.
+                val files = parseDeliverableFiles(data.optJSONArray("files"))
+                if (isActive && files.isNotEmpty()) {
+                    _state.update {
+                        it.copy(deliverables = mergeDeliverables(it.deliverables, files))
+                    }
                 }
                 return
             }
@@ -1268,15 +2412,26 @@ object AgentEngine {
                 val items = _state.value.items.toMutableList()
                 foldEvent(items, liveBlocks, data)
                 _state.update { it.copy(items = items, lastEventAt = now()) }
+                // `/export` is dsh's own command; in the native client it should produce
+                // a real archive, not only the handler's "download requested" line.
+                if (data.optString("phase") == "done" &&
+                    !data.optBoolean("isError") &&
+                    (data.optString("name") == "export" || lastCommandWasExport())
+                ) {
+                    exportSession(sessionId)
+                }
                 return
             }
             "unknown" -> {
                 // A dsh update can add event kinds at any time; one log line per distinct
                 // kind keeps the in-app log readable without hiding what is unhandled.
                 val dshType = data.optString("dshType")
-                if (dshType.isNotBlank() && dshType != lastUnknownType) {
-                    lastUnknownType = dshType
-                    appendLog("未知会话事件：$dshType")
+                if (dshType.isNotBlank()) {
+                    recordUnknownEvent(dshType)
+                    if (dshType != lastUnknownType) {
+                        lastUnknownType = dshType
+                        appendLog("未知会话事件：$dshType")
+                    }
                 }
                 return
             }
@@ -1316,7 +2471,8 @@ object AgentEngine {
                         pending = false,
                         seq = seq ?: item.seq,
                         images = mergeImages(images, item.images),
-                        files = item.files
+                        files = item.files,
+                        time = timeOf(event) ?: item.time
                     )
                     return
                 }
@@ -1329,7 +2485,31 @@ object AgentEngine {
                     seq = seq,
                     source = event.optString("source").takeIf { it.isNotBlank() },
                     images = images,
-                    files = files
+                    files = files,
+                    time = timeOf(event)
+                )
+            }
+
+            "context.message" -> {
+                // dsh injects schedule reminders and background-job completion notices as
+                // user messages with a non-user source. They explain why a turn started or
+                // what finished, so they become a compact line instead of a user bubble.
+                val source = event.optString("source")
+                val text = event.optString("text")
+                val summary = event.optString("summary")
+                val messageId = event.optString("messageId").takeIf { it.isNotBlank() }
+                val key = "ctx:${messageId ?: seq ?: localIds.incrementAndGet()}"
+                if (items.any { it.key == key }) return
+                val (label, detail) = when (source) {
+                    "schedule" -> "定时任务已触发" to text
+                    "tool-jobs" -> "后台任务已结束" to summary.ifBlank { text }
+                    else -> "已注入上下文" to text
+                }
+                items += NoticeItem(
+                    key = key,
+                    text = label,
+                    seq = seq,
+                    detail = detail.trim().takeIf { it.isNotBlank() }
                 )
             }
 
@@ -1384,7 +2564,26 @@ object AgentEngine {
                     val item = items[index] as AssistantItem
                     items[index] = item.copy(streaming = false, seq = seq ?: item.seq)
                 } else if (text.isNotBlank() || reasoning.isNotBlank() || images.isNotEmpty()) {
-                    upsertAssistant(items, key, text, reasoning, false, seq, turn, step, images)
+                    upsertAssistant(
+                        items, key, text, reasoning, false, seq, turn, step, images,
+                        usage = parseUsage(event.optJSONObject("usage")),
+                        messageId = event.optString("messageId").takeIf { it.isNotBlank() }
+                    )
+                }
+                // Usage and the message id can arrive on a completion whose blocks were
+                // already streamed and that therefore took the no-op branch above.
+                val usage = parseUsage(event.optJSONObject("usage"))
+                val messageId = event.optString("messageId").takeIf { it.isNotBlank() }
+                if (usage != null || messageId != null) {
+                    val at = items.indexOfFirst { it.key == key }
+                    if (at >= 0) {
+                        val item = items[at] as AssistantItem
+                        val updated = item.copy(
+                            usage = usage ?: item.usage,
+                            messageId = messageId ?: item.messageId
+                        )
+                        if (updated != item) items[at] = updated
+                    }
                 }
                 blocks.remove(key)
             }
@@ -1399,7 +2598,8 @@ object AgentEngine {
                     items[index] = item.copy(
                         name = event.optString("name").ifBlank { item.name },
                         arguments = arguments.ifBlank { item.arguments },
-                        seq = seq ?: item.seq
+                        seq = seq ?: item.seq,
+                        startedAt = timeOf(event) ?: item.startedAt
                     )
                 } else {
                     items += ToolItem(
@@ -1409,7 +2609,8 @@ object AgentEngine {
                         arguments = arguments,
                         running = true,
                         seq = seq,
-                        viewJson = event.optJSONObject("view")?.toString()
+                        viewJson = event.optJSONObject("view")?.toString(),
+                        startedAt = timeOf(event)
                     )
                 }
             }
@@ -1427,7 +2628,9 @@ object AgentEngine {
                         isError = isError,
                         running = false,
                         seq = seq ?: item.seq,
-                        viewJson = event.optJSONObject("view")?.toString() ?: item.viewJson
+                        viewJson = event.optJSONObject("view")?.toString() ?: item.viewJson,
+                        metaJson = event.optJSONObject("meta")?.toString() ?: item.metaJson,
+                        finishedAt = timeOf(event) ?: item.finishedAt
                     )
                 } else {
                     items += ToolItem(
@@ -1438,8 +2641,167 @@ object AgentEngine {
                         isError = isError,
                         running = false,
                         seq = seq,
-                        viewJson = event.optJSONObject("view")?.toString()
+                        viewJson = event.optJSONObject("view")?.toString(),
+                        metaJson = event.optJSONObject("meta")?.toString(),
+                        finishedAt = timeOf(event)
                     )
+                }
+            }
+            "workflow" -> {
+                // Four log-only records fold into one card keyed by the run id. Members
+                // are addressed by dsh's per-run seq, so a late `agent-end` settles the
+                // right row even when events interleave.
+                val runId = event.optString("runId").takeIf { it.isNotBlank() } ?: return
+                val key = "wf:$runId"
+                fun current(): WorkflowItem {
+                    val at = items.indexOfFirst { it.key == key }
+                    if (at >= 0) return items[at] as WorkflowItem
+                    val created = WorkflowItem(key = key, runId = runId, seq = seq)
+                    items += created
+                    return created
+                }
+                fun replace(updated: WorkflowItem) {
+                    val at = items.indexOfFirst { it.key == key }
+                    if (at >= 0) items[at] = updated else items += updated
+                }
+                when (event.optString("phase")) {
+                    "run-start" -> {
+                        val item = current()
+                        val name = event.optString("name")
+                        replace(
+                            item.copy(
+                                name = name.ifBlank { item.name },
+                                seq = seq ?: item.seq
+                            )
+                        )
+                    }
+                    "agent-start" -> {
+                        val memberSeq = event.optInt("memberSeq", -1)
+                        if (memberSeq < 0) return
+                        val item = current()
+                        val member = AgentWorkflowMember(
+                            seq = memberSeq,
+                            label = event.optString("label"),
+                            phase = if (event.isNull("memberPhase")) null else event.optString("memberPhase"),
+                            childId = event.optString("childId").takeIf { it.isNotBlank() }
+                        )
+                        replace(
+                            item.copy(
+                                members = item.members.filterNot { it.seq == memberSeq } + member,
+                                seq = seq ?: item.seq
+                            )
+                        )
+                    }
+                    "agent-end" -> {
+                        val memberSeq = event.optInt("memberSeq", -1)
+                        val outcome = event.optString("outcome").takeIf { it.isNotBlank() }
+                        if (memberSeq < 0 || outcome == null) return
+                        val item = current()
+                        replace(
+                            item.copy(
+                                members = item.members.map { member ->
+                                    if (member.seq == memberSeq) member.copy(outcome = outcome) else member
+                                },
+                                seq = seq ?: item.seq
+                            )
+                        )
+                    }
+                    "run-end" -> {
+                        val item = current()
+                        replace(
+                            item.copy(
+                                stopReason = event.optString("stopReason").takeIf { it.isNotBlank() }
+                                    ?: item.stopReason,
+                                interrupted = false,
+                                seq = seq ?: item.seq
+                            )
+                        )
+                    }
+                }
+            }
+            "compaction" -> {
+                // A lifecycle bracket: `start` opens the divider, `summary` fills it with
+                // what dsh folded away, `end` settles success or failure. Events with the
+                // same compactionId replace each other, so live and replayed history agree.
+                val phase = event.optString("phase")
+                val compactionId = event.optString("compactionId").takeIf { it.isNotBlank() }
+                val fallbackKey = "cmp:${seq ?: localIds.incrementAndGet()}"
+                val key = compactionId?.let { "cmp:$it" } ?: fallbackKey
+                val existing = items.indexOfLast {
+                    if (compactionId != null) {
+                        it.key == key
+                    } else {
+                        it is NoticeItem && it.compacting
+                    }
+                }
+                val targetKey = if (existing >= 0) items[existing].key else key
+                val foldedTokens = if (event.has("shadowedTokens") && !event.isNull("shadowedTokens")) {
+                    event.optLong("shadowedTokens", -1L).takeIf { it >= 0 }
+                } else {
+                    null
+                }
+                val foldedItems = if (event.has("shadowedItems") && !event.isNull("shadowedItems")) {
+                    event.optInt("shadowedItems", -1).takeIf { it >= 0 }
+                } else {
+                    null
+                }
+                when (phase) {
+                    "start" -> if (existing < 0 && items.none { it.key == key }) {
+                        items += NoticeItem(
+                            key = targetKey,
+                            text = "正在压缩上下文…",
+                            seq = seq,
+                            compacting = true
+                        )
+                    }
+                    "summary" -> {
+                        val notice = NoticeItem(
+                            key = targetKey,
+                            text = COMPACTION_NOTICE,
+                            seq = seq,
+                            detail = event.optString("summary").takeIf { it.isNotBlank() },
+                            foldedTokens = foldedTokens,
+                            foldedItems = foldedItems
+                        )
+                        if (existing >= 0) {
+                            items[existing] = notice
+                        } else {
+                            val last = items.lastOrNull()
+                            if (last !is NoticeItem || last.text != COMPACTION_NOTICE) items += notice
+                        }
+                    }
+                    "end" -> {
+                        val error = event.optString("error").takeIf { it.isNotBlank() }
+                        if (error != null) {
+                            val notice = NoticeItem(
+                                key = targetKey,
+                                text = "压缩未完成：$error",
+                                isError = true,
+                                seq = seq
+                            )
+                            if (existing >= 0) items[existing] = notice else items += notice
+                        } else if (existing >= 0) {
+                            val current = items[existing]
+                            // A host that never sends a summary still gets a divider;
+                            // one that did already replaced the running marker.
+                            if (current is NoticeItem && current.compacting) {
+                                items[existing] = NoticeItem(
+                                    key = targetKey,
+                                    text = COMPACTION_NOTICE,
+                                    seq = seq
+                                )
+                            }
+                        } else {
+                            val last = items.lastOrNull()
+                            if (last !is NoticeItem || last.text != COMPACTION_NOTICE) {
+                                items += NoticeItem(
+                                    key = targetKey,
+                                    text = COMPACTION_NOTICE,
+                                    seq = seq
+                                )
+                            }
+                        }
+                    }
                 }
             }
             "command" -> {
@@ -1471,6 +2833,18 @@ object AgentEngine {
                     }
                 }
             }
+            "turn.end" -> {
+                // Live turn ends settle the transcript before this fold runs, so this
+                // branch exists for history replay: a run whose turn closed without a
+                // run-end is interrupted, not still running. A later run-end (background
+                // runs outlive their turn) clears the flag.
+                for (index in items.indices) {
+                    val item = items[index]
+                    if (item is WorkflowItem && item.stopReason == null && !item.interrupted) {
+                        items[index] = item.copy(interrupted = true)
+                    }
+                }
+            }
         }
     }
 
@@ -1483,7 +2857,9 @@ object AgentEngine {
         seq: Long?,
         turn: Int,
         step: Int,
-        images: List<AgentImage> = emptyList()
+        images: List<AgentImage> = emptyList(),
+        usage: AgentUsage? = null,
+        messageId: String? = null
     ) {
         val index = items.indexOfFirst { it.key == key }
         if (index >= 0) {
@@ -1493,7 +2869,9 @@ object AgentEngine {
                 reasoning = reasoning,
                 streaming = streaming,
                 seq = seq ?: item.seq,
-                images = mergeImages(images, item.images)
+                images = mergeImages(images, item.images),
+                usage = usage ?: item.usage,
+                messageId = messageId ?: item.messageId
             )
             return
         }
@@ -1502,6 +2880,8 @@ object AgentEngine {
             text = text,
             reasoning = reasoning,
             streaming = streaming,
+            usage = usage,
+            messageId = messageId,
             seq = seq,
             turn = turn.takeIf { it >= 0 },
             step = step.takeIf { it >= 0 },
@@ -1586,6 +2966,101 @@ object AgentEngine {
 
     private fun notifyState(text: String) {
         addNotice(text, isError = true)
+    }
+
+    private fun sessionTitle(sessionId: String): String =
+        _state.value.sessions.firstOrNull { it.id == sessionId }?.displayTitle ?: "对话"
+
+    /** Non-user context injected by dsh: a reminder trigger or a settled background job. */
+    private fun onContextMessage(sessionId: String, data: JSONObject) {
+        when (data.optString("source")) {
+            "schedule" -> sessionTrigger[sessionId] = "schedule"
+            "tool-jobs" -> {
+                val summary = data.optString("summary").ifBlank {
+                    data.optString("text").trim().take(160)
+                }
+                val failed = summary.contains("failed", ignoreCase = true)
+                val messageId = data.optString("messageId").ifBlank { data.optString("seq") }
+                notifyTask(
+                    key = "job:$sessionId:$messageId",
+                    title = if (failed) "后台任务失败" else "后台任务完成",
+                    text = summary.ifBlank { sessionTitle(sessionId) },
+                    sessionId = sessionId,
+                    isError = failed
+                )
+            }
+        }
+    }
+
+    /**
+     * Posts one completion notice. Notifications are deliberately quiet (low importance,
+     * silent) and only leave the app while it is not on screen; tapping opens the session.
+     * A user who disabled notifications keeps the in-app surface and gets no error here.
+     */
+    private fun notifyTask(
+        key: String,
+        title: String,
+        text: String,
+        sessionId: String?,
+        isError: Boolean
+    ) {
+        if (appVisible.get() || !::appContext.isInitialized) return
+        val manager = appContext.getSystemService(NotificationManager::class.java) ?: return
+        if (!manager.areNotificationsEnabled()) {
+            appendLog("通知已关闭，完成提醒仅在应用内显示")
+            return
+        }
+        ensureTaskChannel(manager)
+        val open = Intent(appContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            sessionId?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_SESSION_ID, it) }
+        }
+        val id = key.hashCode()
+        val pending = PendingIntent.getActivity(
+            appContext,
+            id,
+            open,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(appContext, TASK_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_agent_notification)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setPriority(
+                if (isError) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_LOW
+            )
+            .setSilent(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        runCatching {
+            manager.notify(id, notification)
+            taskNotificationIds += id
+        }
+    }
+
+    private fun ensureTaskChannel(manager: NotificationManager) {
+        if (taskChannelCreated) return
+        val channel = NotificationChannel(
+            TASK_CHANNEL_ID,
+            "后台任务",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "对话、定时任务与后台任务的完成提醒"
+            setShowBadge(true)
+        }
+        manager.createNotificationChannel(channel)
+        taskChannelCreated = true
+    }
+
+    private fun clearTaskNotifications() {
+        if (taskNotificationIds.isEmpty() || !::appContext.isInitialized) return
+        val manager = appContext.getSystemService(NotificationManager::class.java) ?: return
+        taskNotificationIds.forEach { runCatching { manager.cancel(it) } }
+        taskNotificationIds.clear()
     }
 
     private fun handleSessionStatus(data: JSONObject) {
@@ -1822,6 +3297,178 @@ object AgentEngine {
         }
     }
 
+    /**
+     * `@` path completions for the open session's working directory. dsh reads no file
+     * contents here, so a large workspace only costs a bounded index query. Failures
+     * propagate so the picker can distinguish "no match" from "could not ask dsh".
+     */
+    suspend fun fileReferences(query: String): List<AgentFileReference> {
+        val client = bridge ?: return emptyList()
+        val sessionId = _state.value.activeSessionId ?: return emptyList()
+        val result = client.call(
+            "reference.files",
+            JSONObject().put("sessionId", sessionId).put("query", query),
+            20_000
+        )
+        return parseFileReferences(result)
+    }
+
+    /**
+     * `@` conversation completions. The canonical mention dsh returns is the only part
+     * that reaches the prompt; everything else labels the picker. The open conversation
+     * is never offered as a reference to itself.
+     */
+    suspend fun sessionReferences(query: String): List<AgentSessionReference> {
+        val client = bridge ?: return emptyList()
+        val sessionId = _state.value.activeSessionId ?: return emptyList()
+        val result = client.call(
+            "reference.sessions",
+            JSONObject().put("sessionId", sessionId).put("query", query),
+            20_000
+        )
+        return parseSessionReferences(result).filterNot { it.sessionId == sessionId }
+    }
+
+    /**
+     * dsh's speech Remote: provider roster, readiness and audio limits. Missing when the
+     * experimental speech plugin is not installed; callers show that as "unavailable".
+     */
+    suspend fun speechCatalog(): AgentSpeechCatalog {
+        val client = bridge ?: throw IllegalStateException("Agent 尚未连接")
+        val value = client.call("speech.catalog", JSONObject(), 20_000)
+        return parseSpeechCatalog(value)
+    }
+
+    /** Starts or joins the Host-owned model preparation task for [providerId]. */
+    suspend fun prepareSpeech(providerId: String) {
+        val client = bridge ?: throw IllegalStateException("Agent 尚未连接")
+        client.call(
+            "speech.prepare",
+            JSONObject().put("providerId", providerId),
+            30_000
+        )
+    }
+
+    suspend fun cancelSpeechPreparation(providerId: String) {
+        val client = bridge ?: throw IllegalStateException("Agent 尚未连接")
+        client.call(
+            "speech.cancelPreparation",
+            JSONObject().put("providerId", providerId),
+            60_000
+        )
+    }
+
+    /**
+     * Sends one 16 kHz mono PCM16 WAV recording for transcription. The bytes are held only
+     * for this call: dsh keeps audio transient and records just the returned text when the
+     * user later submits it as an ordinary message.
+     */
+    suspend fun transcribeSpeech(
+        wav: ByteArray,
+        providerId: String?,
+        language: String?
+    ): String {
+        val client = bridge ?: throw IllegalStateException("Agent 尚未连接")
+        val payload = JSONObject()
+            .put("audioBase64", Base64.encodeToString(wav, Base64.NO_WRAP))
+        providerId?.takeIf { it.isNotBlank() }?.let { payload.put("providerId", it) }
+        language?.takeIf { it.isNotBlank() }?.let { payload.put("language", it) }
+        val value = client.call("speech.transcribe", payload, 200_000)
+        return (value as? JSONObject)?.optString("text").orEmpty()
+    }
+
+    private fun parseSpeechCatalog(value: Any?): AgentSpeechCatalog {
+        val root = value as? JSONObject ?: return AgentSpeechCatalog()
+        val providers = mutableListOf<AgentSpeechProvider>()
+        val array = root.optJSONArray("providers")
+        if (array != null) {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val id = item.optString("id")
+                if (id.isBlank()) continue
+                val preparation = item.optJSONObject("preparation")
+                val estimate = item.optJSONObject("setupEstimate")
+                val languages = mutableListOf<String>()
+                item.optJSONArray("languages")?.let { list ->
+                    for (position in 0 until list.length()) {
+                        list.optString(position).takeIf { it.isNotBlank() }?.let(languages::add)
+                    }
+                }
+                providers += AgentSpeechProvider(
+                    id = id,
+                    name = item.optString("name").ifBlank { id },
+                    location = item.optString("location"),
+                    languages = languages,
+                    phase = preparation?.optString("phase").orEmpty(),
+                    completedBytes = preparation?.optLong("completedBytes") ?: 0L,
+                    totalBytes = preparation
+                        ?.takeIf { it.has("totalBytes") }
+                        ?.optLong("totalBytes"),
+                    message = preparation
+                        ?.optString("message")
+                        ?.takeIf { it.isNotBlank() },
+                    diskBytes = estimate
+                        ?.takeIf { it.has("recommendedDiskBytes") }
+                        ?.optLong("recommendedDiskBytes"),
+                    memoryBytes = estimate
+                        ?.takeIf { it.has("expectedMemoryBytes") }
+                        ?.optLong("expectedMemoryBytes"),
+                    minMinutes = estimate
+                        ?.takeIf { it.has("minimumMinutes") }
+                        ?.optInt("minimumMinutes"),
+                    maxMinutes = estimate
+                        ?.takeIf { it.has("maximumMinutes") }
+                        ?.optInt("maximumMinutes")
+                )
+            }
+        }
+        val selection = root.optJSONObject("selection")
+        return AgentSpeechCatalog(
+            providers = providers,
+            selectedProviderId = selection?.optString("providerId").orEmpty(),
+            language = selection?.optString("language").orEmpty(),
+            maxAudioBytes = root.optLong("maxAudioBytes").takeIf { it > 0 }
+                ?: 10L * 1024L * 1024L,
+            maxDurationSeconds = root.optInt("maxDurationSeconds").takeIf { it > 0 } ?: 60
+        )
+    }
+
+    private fun parseFileReferences(value: Any?): List<AgentFileReference> {        val array = value as? JSONArray ?: return emptyList()
+        val files = mutableListOf<AgentFileReference>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val path = item.optString("path")
+            if (path.isBlank()) continue
+            files += AgentFileReference(
+                path = path,
+                directory = item.optString("kind") == "directory"
+            )
+        }
+        return files
+    }
+
+    private fun parseSessionReferences(value: Any?): List<AgentSessionReference> {
+        val array = value as? JSONArray ?: return emptyList()
+        val sessions = mutableListOf<AgentSessionReference>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val sessionId = item.optString("sessionId")
+            val mention = item.optString("mention")
+            if (sessionId.isBlank() || mention.isBlank()) continue
+            sessions += AgentSessionReference(
+                sessionId = sessionId,
+                label = item.optString("label").ifBlank { sessionId },
+                displayTitle = item.optString("displayTitle").takeIf { it.isNotBlank() },
+                cwd = item.optString("cwd").takeIf { it.isNotBlank() },
+                sameWorkspace = item.optBoolean("sameWorkspace", false),
+                createdAt = item.optLong("createdAt", 0L),
+                mention = mention
+            )
+        }
+        return sessions
+    }
+
+
     /** Which conversation's children the subagent panel currently shows. */
     private fun catalogParent(state: AgentState): String? =
         state.subagentView?.id ?: state.activeSessionId
@@ -1871,9 +3518,13 @@ object AgentEngine {
                 parentId = parentId,
                 id = id,
                 label = item.optString("label").takeIf { it.isNotBlank() },
+                title = item.optString("title").takeIf { it.isNotBlank() },
                 mode = item.optString("mode").ifBlank { "one-shot" },
                 running = item.optString("activity") == "running",
-                hasChildren = item.optBoolean("hasChildren")
+                hasChildren = item.optBoolean("hasChildren"),
+                tokens = item.longOrNull("tokens"),
+                durationMs = item.longOrNull("durationMs"),
+                completed = item.optBoolean("completed")
             )
         }
         return subagents to result.optBoolean("parentAvailable", true)
@@ -2042,6 +3693,396 @@ object AgentEngine {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Model providers (DSH-501)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Reads the `llm-pi-ai` provider directory: routes the installed catalog ships plus
+     * the profiles the user wrote, each with an editable (secret-free) profile and the
+     * settings revision a write must carry. A dsh without that namespace reports
+     * `supported = false` and the UI points at the Harness instead.
+     */
+    fun refreshModelProviders() {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) return
+        scope.launch {
+            val result = try {
+                client.callObject("model.providers", JSONObject(), 30_000)
+            } catch (t: Throwable) {
+                appendLog("读取模型供应商失败：${readableError(t)}")
+                _state.update {
+                    it.copy(
+                        modelProviders = it.modelProviders.copy(
+                            loaded = true,
+                            error = readableError(t)
+                        )
+                    )
+                }
+                return@launch
+            }
+            applyModelProviders(result)
+        }
+    }
+
+    private fun applyModelProviders(result: JSONObject) {
+        val array = result.optJSONArray("providers")
+        val providers = mutableListOf<AgentProvider>()
+        if (array != null) {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val route = item.optString("provider")
+                if (route.isBlank()) continue
+                val profileJson = item.optJSONObject("profile")
+                val profile = profileJson?.let { value ->
+                    AgentProviderProfile(
+                        displayName = (value.opt("displayName") as? String)
+                            ?.takeIf { it.isNotBlank() },
+                        api = (value.opt("api") as? String)?.takeIf { it.isNotBlank() },
+                        baseURL = (value.opt("baseURL") as? String)?.takeIf { it.isNotBlank() },
+                        apiKeyEnv = (value.opt("apiKeyEnv") as? String)
+                            ?.takeIf { it.isNotBlank() },
+                        models = parseProviderModels(value.optJSONArray("models"))
+                    )
+                }
+                providers += AgentProvider(
+                    provider = route,
+                    displayName = item.optString("displayName").ifBlank { route },
+                    declared = item.optBoolean("declared"),
+                    defaultBaseURL = (item.opt("defaultBaseURL") as? String)
+                        ?.takeIf { it.isNotBlank() },
+                    hasProfile = item.optBoolean("hasProfile"),
+                    profile = profile,
+                    keyRef = (item.opt("keyRef") as? String)
+                        ?.takeIf { it.isNotBlank() } ?: "",
+                    keyConfigured = item.optBoolean("keyConfigured"),
+                    keySource = (item.opt("keySource") as? String)?.takeIf { it.isNotBlank() },
+                    keyWritable = if (item.has("keyWritable")) {
+                        item.optBoolean("keyWritable")
+                    } else {
+                        true
+                    },
+                    error = (item.opt("error") as? String)?.takeIf { it.isNotBlank() }
+                )
+            }
+        }
+        val protocolsArray = result.optJSONArray("protocols")
+        val protocols = if (protocolsArray != null && protocolsArray.length() > 0) {
+            buildList {
+                for (index in 0 until protocolsArray.length()) {
+                    protocolsArray.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+        } else {
+            listOf("openai-completions", "openai-responses", "anthropic-messages")
+        }
+        val default = result.optJSONObject("default")
+        _state.update {
+            it.copy(
+                modelProviders = AgentModelProviders(
+                    loaded = true,
+                    supported = result.optBoolean("supported", true),
+                    writable = result.optBoolean("writable"),
+                    revision = result.optInt("revision"),
+                    protocols = protocols,
+                    providers = providers,
+                    defaultProvider = (default?.opt("provider") as? String)
+                        ?.takeIf { value -> value.isNotBlank() },
+                    defaultModel = (default?.opt("model") as? String)
+                        ?.takeIf { value -> value.isNotBlank() },
+                    error = null
+                )
+            )
+        }
+    }
+
+    private fun parseProviderModels(array: JSONArray?): List<AgentProviderModel> {
+        if (array == null) return emptyList()
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val id = item.optString("id").trim()
+                if (id.isEmpty()) continue
+                add(
+                    AgentProviderModel(
+                        id = id,
+                        name = (item.opt("name") as? String) ?: "",
+                        contextWindow = item.positiveInt("contextWindow"),
+                        maxTokens = item.positiveInt("maxTokens"),
+                        inputModalities = item.optJSONArray("inputModalities")?.let { values ->
+                            buildList {
+                                for (valueIndex in 0 until values.length()) {
+                                    values.optString(valueIndex)
+                                        .takeIf { it == "text" || it == "image" }
+                                        ?.let(::add)
+                                }
+                            }
+                        } ?: emptyList()
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * Saves one provider profile and, when the form supplied one, its API key. The key
+     * goes straight into dsh's credential store and never enters app state or logs; the
+     * settings write happens first so a rejected profile leaves no stray credential.
+     */
+    fun saveModelProvider(draft: AgentProviderDraft, defaultModel: String?) {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        val route = draft.route.trim()
+        if (!route.matches(Regex("^[a-z][a-z0-9-]*$"))) {
+            notifyState("供应商 ID 只能包含小写字母、数字和连字符，并以字母开头")
+            return
+        }
+        val state = _state.value
+        if (!state.modelProviders.writable) {
+            notifyState("当前 dsh 配置不可写")
+            return
+        }
+        _state.update {
+            it.copy(providerSave = AgentProviderSave(route = route, saving = true))
+        }
+        scope.launch {
+            val models = JSONArray()
+            draft.models.forEach { model ->
+                models.put(
+                    JSONObject().put("id", model.id).apply {
+                        if (model.name.isNotBlank()) put("name", model.name)
+                        model.contextWindow?.let { put("contextWindow", it) }
+                        model.maxTokens?.let { put("maxTokens", it) }
+                        if (model.inputModalities.isNotEmpty()) {
+                            put(
+                                "inputModalities",
+                                org.json.JSONArray().apply {
+                                    model.inputModalities.forEach { put(it) }
+                                }
+                            )
+                        }
+                    }
+                )
+            }
+            val params = JSONObject()
+                .put("route", route)
+                .put("displayName", draft.displayName.trim())
+                .put("api", draft.api.trim())
+                .put("baseURL", draft.baseURL.trim())
+                .put("apiKeyRef", draft.apiKeyRef.trim())
+                .put("apiKey", draft.apiKey)
+                .put("models", models)
+            draft.previousRoute?.trim()?.takeIf { it.isNotEmpty() && it != route }?.let {
+                params.put("previousRoute", it)
+            }
+            if (state.modelProviders.revision > 0) {
+                params.put("expectedRevision", state.modelProviders.revision)
+            }
+            val result = try {
+                client.callObject("model.saveProvider", params, 60_000)
+            } catch (t: Throwable) {
+                val message = readableError(t)
+                appendLog("保存供应商失败：$message")
+                notifyState("保存供应商失败：$message")
+                _state.update {
+                    it.copy(
+                        providerSave = AgentProviderSave(
+                            route = route,
+                            error = message
+                        )
+                    )
+                }
+                refreshModelProviders()
+                return@launch
+            }
+            val keyError = (result.opt("keyError") as? String)?.takeIf { it.isNotBlank() }
+            if (keyError != null) {
+                appendLog("供应商 $route 已保存，但密钥写入失败：$keyError")
+                notifyState("供应商已保存，但密钥写入失败：$keyError")
+            } else if (result.optBoolean("keyStored")) {
+                appendLog("已保存供应商 $route，并写入密钥")
+                notifyState("已保存 $route")
+            } else {
+                appendLog("已保存供应商 $route")
+                notifyState("已保存 $route")
+            }
+            _state.update {
+                it.copy(
+                    providerSave = AgentProviderSave(
+                        route = route,
+                        done = keyError == null,
+                        error = keyError
+                    )
+                )
+            }
+            refreshModelProviders()
+            _state.value.activeSessionId?.let { loadModels(it) }
+            // A route whose key failed cannot serve yet; making it the default would
+            // break the next new conversation, so the default is only written on success.
+            if (keyError == null && !defaultModel.isNullOrBlank()) {
+                setDefaultModel(route, defaultModel, null)
+            }
+        }
+    }
+
+    /**
+     * Removes one provider profile. Deleting the route that currently supplies the
+     * session or the default model needs [confirmed], because dsh would otherwise keep a
+     * selection that can no longer be resolved. The credential can be left in place.
+     */
+    fun removeModelProvider(
+        route: String,
+        apiKeyRef: String?,
+        deleteKey: Boolean,
+        confirmed: Boolean
+    ) {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        if (!_state.value.modelProviders.writable) {
+            notifyState("当前 dsh 配置不可写")
+            return
+        }
+        val state = _state.value
+        val inUse = state.models?.provider == route ||
+            state.modelProviders.defaultProvider == route
+        if (inUse && !confirmed) {
+            notifyState("该供应商正在提供当前或默认模型，请先切换模型")
+            return
+        }
+        scope.launch {
+            val params = JSONObject()
+                .put("route", route)
+                .put("deleteKey", deleteKey)
+            if (!apiKeyRef.isNullOrBlank()) params.put("apiKeyRef", apiKeyRef)
+            if (state.modelProviders.revision > 0) {
+                params.put("expectedRevision", state.modelProviders.revision)
+            }
+            val result = try {
+                client.callObject("model.removeProvider", params, 30_000)
+            } catch (t: Throwable) {
+                appendLog("删除供应商失败：${readableError(t)}")
+                notifyState("删除供应商失败：${readableError(t)}")
+                refreshModelProviders()
+                return@launch
+            }
+            val keyError = (result.opt("keyError") as? String)?.takeIf { it.isNotBlank() }
+            if (keyError != null) {
+                notifyState("已删除 $route，但密钥清除失败：$keyError")
+            } else if (result.optBoolean("keyRemoved")) {
+                notifyState("已删除 $route 及其密钥")
+            } else {
+                notifyState("已删除 $route")
+            }
+            appendLog("已删除供应商 $route")
+            refreshModelProviders()
+            _state.value.activeSessionId?.let { loadModels(it) }
+        }
+    }
+
+    /**
+     * Interrogates a draft endpoint for its model list. Nothing is stored, and the key
+     * exists only in this call; the reply (or its failure) lands in [AgentState.modelDiscovery]
+     * for the form to show.
+     */
+    fun discoverProviderModels(
+        provider: String,
+        baseURL: String,
+        api: String,
+        apiKey: String
+    ) {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        val stamp = discoveryStamp.incrementAndGet()
+        _state.update {
+            it.copy(
+                modelDiscovery = AgentModelDiscovery(
+                    stamp = stamp,
+                    provider = provider,
+                    baseURL = baseURL,
+                    api = api,
+                    loading = true
+                )
+            )
+        }
+        scope.launch {
+            val params = JSONObject()
+                .put("provider", provider)
+                .put("baseURL", baseURL)
+                .put("api", api)
+                .put("apiKey", apiKey)
+            try {
+                val result = client.callObject("model.discover", params, 90_000)
+                val models = parseProviderModels(result.optJSONArray("models"))
+                _state.update {
+                    if (it.modelDiscovery.stamp != stamp) it
+                    else it.copy(
+                        modelDiscovery = it.modelDiscovery.copy(
+                            loading = false,
+                            models = models,
+                            error = null
+                        )
+                    )
+                }
+            } catch (t: Throwable) {
+                // dsh's error names the endpoint and reason; it never echoes the key.
+                appendLog("测试连接失败：${readableError(t)}")
+                _state.update {
+                    if (it.modelDiscovery.stamp != stamp) it
+                    else it.copy(
+                        modelDiscovery = it.modelDiscovery.copy(
+                            loading = false,
+                            models = emptyList(),
+                            error = readableError(t)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Makes a model the default for new conversations. With an open session dsh's own
+     * selection path is used (it also applies the model immediately); without one the
+     * stored default entry is written.
+     */
+    fun setDefaultModel(provider: String, model: String, effort: String?) {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        if (provider.isBlank() || model.isBlank()) return
+        val sessionId = _state.value.activeSessionId
+        scope.launch {
+            val params = JSONObject()
+                .put("provider", provider)
+                .put("model", model)
+            if (!sessionId.isNullOrBlank()) params.put("sessionId", sessionId)
+            if (!effort.isNullOrBlank()) params.put("reasoningEffort", effort)
+            try {
+                client.callObject("model.setDefault", params, 60_000)
+            } catch (t: Throwable) {
+                appendLog("设置默认模型失败：${readableError(t)}")
+                notifyState("设置默认模型失败：${readableError(t)}")
+                refreshModelProviders()
+                return@launch
+            }
+            appendLog("默认模型已设为 $provider/$model")
+            notifyState("默认模型已设为 $model")
+            refreshModelProviders()
+            if (!sessionId.isNullOrBlank()) loadModels(sessionId)
+        }
+    }
+
     /**
      * Reads the process permission catalog and the `permission` settings namespace. Both are
      * display state until the user picks a value; a failure is only logged so a missing
@@ -2093,6 +4134,441 @@ object AgentEngine {
     }
 
     fun refreshAgentPresets() = describeAgentPresets()
+
+    /**
+     * Reads the curated dsh settings namespaces and dsh's locale preference. One
+     * `settings/describe` feeds both, so the native forms and the language card cannot
+     * disagree about the profile they are looking at.
+     */
+    fun refreshAgentSettings() {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) return
+        scope.launch { loadAgentSettingsNow(client) }
+    }
+
+    private suspend fun loadAgentSettingsNow(client: BridgeClient) {
+        _state.update {
+            it.copy(
+                agentSettings = it.agentSettings.copy(loading = true, error = null),
+                languageSettings = it.languageSettings.copy(error = null)
+            )
+        }
+        val result = try {
+            client.callObject("settings.describe", timeoutMs = 25_000)
+        } catch (t: Throwable) {
+            appendLog("读取 dsh 设置失败：${readableError(t)}")
+            _state.update {
+                it.copy(
+                    agentSettings = it.agentSettings.copy(
+                        loading = false,
+                        error = readableError(t)
+                    ),
+                    languageSettings = it.languageSettings.copy(
+                        loaded = true,
+                        error = readableError(t)
+                    )
+                )
+            }
+            return
+        }
+        val snapshot = AgentSettingsParser.parse(result)
+        val language = AgentSettingsParser.parseLanguage(result)
+        _state.update {
+            it.copy(
+                agentSettings = snapshot.copy(saving = it.agentSettings.saving),
+                languageSettings = language.copy(saving = it.languageSettings.saving)
+            )
+        }
+    }
+
+    /**
+     * Writes the changed fields of one namespace. dsh answers with the updated namespace
+     * view, which replaces the stale group so the next save uses the new revision. Secret
+     * values travel in this call only and are never read back.
+     */
+    suspend fun saveAgentSettings(
+        ns: String,
+        revision: Int,
+        edits: List<AgentSettingEdit>
+    ): AgentSettingGroup? {
+        if (edits.isEmpty()) return null
+        val client = bridge ?: throw IllegalStateException("Agent 尚未连接")
+        if (_state.value.connection != AgentConnection.Ready) {
+            throw IllegalStateException("Agent 尚未连接")
+        }
+        _state.update {
+            it.copy(agentSettings = it.agentSettings.copy(saving = true, error = null))
+        }
+        val ops = JSONArray()
+        edits.forEach { edit ->
+            val op = JSONObject()
+                .put("op", if (edit.value == null) "unset" else "set")
+                .put("path", JSONArray(edit.path))
+            if (edit.value != null) op.put("value", edit.value)
+            ops.put(op)
+        }
+        val params = JSONObject().put("ns", ns).put("ops", ops)
+        if (revision > 0) params.put("expectedRevision", revision)
+        val result = try {
+            client.callObject("settings.mutate", params, 30_000)
+        } catch (t: Throwable) {
+            _state.update {
+                it.copy(
+                    agentSettings = it.agentSettings.copy(
+                        saving = false,
+                        error = readableError(t)
+                    )
+                )
+            }
+            throw t
+        }
+        val group = AgentSettingsParser.parseMutated(
+            result,
+            _state.value.agentSettings.writable
+        )
+        _state.update { current ->
+            val groups = if (group == null) current.agentSettings.groups
+            else current.agentSettings.groups.map { if (it.ns == group.ns) group else it }
+            current.copy(
+                agentSettings = current.agentSettings.copy(
+                    saving = false,
+                    groups = groups,
+                    error = null
+                )
+            )
+        }
+        appendLog("已保存 dsh 设置：$ns（${edits.size} 项）")
+        return group
+    }
+
+    /**
+     * Sets dsh's Harness locale. The native UI is Chinese-only in this build, so this
+     * deliberately affects the Harness page rather than the app's own strings.
+     */
+    fun setHarnessLocale(locale: String?) {
+        val value = locale?.takeIf { it == "zh" || it == "en" }
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        val revision = _state.value.languageSettings.revision
+        _state.update {
+            it.copy(languageSettings = it.languageSettings.copy(saving = true, error = null))
+        }
+        scope.launch {
+            val op = JSONObject()
+                .put("op", if (value == null) "unset" else "set")
+                .put("path", JSONArray().put("preference"))
+            if (value != null) op.put("value", value)
+            val params = JSONObject()
+                .put("ns", "locale")
+                .put("ops", JSONArray().put(op))
+            if (revision > 0) params.put("expectedRevision", revision)
+            try {
+                val result = client.callObject("settings.mutate", params, 20_000)
+                val applied = (result.optJSONObject("value")?.opt("preference") as? String)
+                    ?.takeIf { it.isNotBlank() }
+                _state.update {
+                    it.copy(
+                        languageSettings = it.languageSettings.copy(
+                            loaded = true,
+                            saving = false,
+                            value = applied,
+                            revision = result.optInt("revision", revision),
+                            error = null
+                        )
+                    )
+                }
+                appendLog(if (applied == null) "Harness 语言已恢复默认" else "Harness 语言已设为 $applied")
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(
+                        languageSettings = it.languageSettings.copy(
+                            saving = false,
+                            error = readableError(t)
+                        )
+                    )
+                }
+                notifyState("设置 Harness 语言失败：${readableError(t)}")
+            }
+        }
+    }
+
+    /**
+     * Reads the DeepSeek Account state, then the profile and balances when a credential is
+     * stored. Profile and balance failures stay separate so one failing call does not hide
+     * the other. No credential or token is ever requested here.
+     */
+    fun refreshAccount() {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) return
+        scope.launch {
+            _state.update {
+                it.copy(account = it.account.copy(loading = true, error = null))
+            }
+            val state = try {
+                client.callObject("account.state", JSONObject(), 30_000)
+            } catch (t: Throwable) {
+                appendLog("读取 DeepSeek 账号失败：${readableError(t)}")
+                _state.update {
+                    it.copy(
+                        account = it.account.copy(
+                            loading = false,
+                            loaded = true,
+                            error = readableError(t)
+                        )
+                    )
+                }
+                return@launch
+            }
+            val stored = state.optString("status") == "credential-stored"
+            val attempt = state.optJSONObject("attempt")?.let { raw ->
+                AgentAccountAttempt(
+                    phase = raw.optString("phase"),
+                    errorCode = raw.optString("errorCode").takeIf { it.isNotBlank() }
+                )
+            }
+            var profile: AgentAccountProfile? = null
+            var profileFailed = false
+            var wallets = emptyList<AgentAccountWallet>()
+            var bonusWallets = emptyList<AgentAccountWallet>()
+            var balanceFailed = false
+            if (stored) {
+                try {
+                    val result = client.callObject("account.profile", accountClient(), 45_000)
+                    when (result.optString("status")) {
+                        "ready" -> {
+                            val value = result.optJSONObject("profile")
+                            profile = AgentAccountProfile(
+                                id = value?.optText("id"),
+                                name = value?.optText("name"),
+                                contact = value?.optText("contact"),
+                                avatarUrl = value?.optText("avatarUrl")
+                            )
+                        }
+                        "failed" -> profileFailed = true
+                    }
+                } catch (t: Throwable) {
+                    profileFailed = true
+                    appendLog("读取账号资料失败：${readableError(t)}")
+                }
+                try {
+                    val result = client.callObject("account.balance", accountClient(), 45_000)
+                    when (result.optString("status")) {
+                        "ready" -> {
+                            wallets = parseWallets(result.optJSONArray("wallets"))
+                            bonusWallets = parseWallets(result.optJSONArray("bonusWallets"))
+                        }
+                        "failed" -> balanceFailed = true
+                    }
+                } catch (t: Throwable) {
+                    balanceFailed = true
+                    appendLog("读取账号余额失败：${readableError(t)}")
+                }
+            }
+            _state.update {
+                it.copy(
+                    account = AgentAccountSnapshot(
+                        loaded = true,
+                        loading = false,
+                        status = if (stored) "credential-stored" else "signed-out",
+                        usageUrl = state.optText("usageUrl")
+                            ?: state.optJSONObject("links")?.optText("usageUrl"),
+                        topUpUrl = state.optText("topUpUrl")
+                            ?: state.optJSONObject("links")?.optText("topUpUrl"),
+                        attempt = attempt,
+                        profile = profile,
+                        profileFailed = profileFailed,
+                        wallets = wallets,
+                        bonusWallets = bonusWallets,
+                        balanceFailed = balanceFailed
+                    )
+                )
+            }
+        }
+    }
+
+    /** Removes dsh's local account grant; remote revocation continues in the background. */
+    fun signOutAccount() {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        if (_state.value.account.signingOut) return
+        _state.update {
+            it.copy(account = it.account.copy(signingOut = true, error = null))
+        }
+        scope.launch {
+            try {
+                client.callObject("account.signOut", accountClient(), 45_000)
+                _state.update {
+                    it.copy(
+                        account = AgentAccountSnapshot(
+                            loaded = true,
+                            status = "signed-out"
+                        )
+                    )
+                }
+                appendLog("已退出 DeepSeek 账号（不会删除 API Key）")
+                notifyState("已退出 DeepSeek 账号")
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(
+                        account = it.account.copy(
+                            signingOut = false,
+                            error = readableError(t)
+                        )
+                    )
+                }
+                notifyState("退出账号失败：${readableError(t)}")
+            }
+        }
+    }
+
+    private fun accountClient(): JSONObject = JSONObject()
+        .put("version", runCatching { BuildConfig.VERSION_NAME }.getOrDefault("0.1.1"))
+        .put("locale", java.util.Locale.getDefault().toLanguageTag())
+        .put(
+            "timezoneOffsetSeconds",
+            java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000
+        )
+
+    private fun parseWallets(array: JSONArray?): List<AgentAccountWallet> {
+        if (array == null) return emptyList()
+        val result = mutableListOf<AgentAccountWallet>()
+        for (index in 0 until array.length()) {
+            val wallet = array.optJSONObject(index) ?: continue
+            val currency = wallet.optText("currency") ?: continue
+            val balance = wallet.opt("balance")?.toString() ?: continue
+            result += AgentAccountWallet(currency = currency, balance = balance)
+        }
+        return result
+    }
+
+    /** Searches the configured npm registry; results are display data until inspected. */
+    fun searchPlugins(query: String) {
+        val text = query.trim()
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) {
+            notifyState("Agent 尚未连接")
+            return
+        }
+        _state.update {
+            it.copy(
+                pluginSearch = it.pluginSearch.copy(
+                    query = text,
+                    loading = true,
+                    searched = true,
+                    error = null
+                )
+            )
+        }
+        scope.launch {
+            try {
+                val result = client.callObject(
+                    "plugin.search",
+                    JSONObject().put("text", text).put("size", 30),
+                    40_000
+                )
+                val rows = mutableListOf<AgentPluginMarketResult>()
+                result.optJSONArray("results")?.let { array ->
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        val name = item.optText("name") ?: continue
+                        val keywords = mutableListOf<String>()
+                        item.optJSONArray("keywords")?.let { words ->
+                            for (position in 0 until words.length()) {
+                                words.optString(position)
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let(keywords::add)
+                            }
+                        }
+                        rows += AgentPluginMarketResult(
+                            name = name,
+                            version = item.optText("version"),
+                            description = item.optText("description") ?: "",
+                            date = item.optText("date"),
+                            publisher = item.optText("publisher"),
+                            homepage = item.optText("homepage"),
+                            repository = item.optText("repository"),
+                            keywords = keywords,
+                            official = item.optBoolean("official", false)
+                        )
+                    }
+                }
+                _state.update {
+                    it.copy(
+                        pluginSearch = AgentPluginSearch(
+                            query = result.optText("query") ?: text,
+                            registry = result.optText("registry") ?: "",
+                            total = result.optInt("total", rows.size),
+                            results = rows,
+                            searched = true
+                        )
+                    )
+                }
+            } catch (t: Throwable) {
+                appendLog("搜索插件失败：${readableError(t)}")
+                _state.update {
+                    it.copy(
+                        pluginSearch = it.pluginSearch.copy(
+                            loading = false,
+                            searched = true,
+                            error = readableError(t)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearPluginSearch() {
+        _state.update { it.copy(pluginSearch = AgentPluginSearch()) }
+    }
+
+    /**
+     * Removes one installed bundle. pnpm runs inside Kali, so the call gets the same long
+     * budget as install; the inventory reloads even on failure because a failed removal
+     * can still have changed the profile.
+     */
+    suspend fun uninstallPlugin(name: String): AgentPluginUninstall {
+        val bundle = name.trim()
+        if (bundle.isEmpty()) throw IllegalArgumentException("缺少插件名称")
+        val client = bridge ?: throw IllegalStateException("Agent 尚未连接")
+        if (_state.value.connection != AgentConnection.Ready) {
+            throw IllegalStateException("Agent 尚未连接")
+        }
+        _state.update { it.copy(pluginRemoving = bundle) }
+        try {
+            val result = try {
+                client.callObject(
+                    "plugin.uninstall",
+                    JSONObject().put("name", bundle),
+                    16 * 60_000L
+                )
+            } catch (t: Throwable) {
+                loadPluginsNow(client)
+                throw t
+            }
+            loadPluginsNow(client)
+            val removal = AgentPluginUninstall(
+                changed = result.optBoolean("changed", false),
+                restartRequired = result.optBoolean("restartRequired", false),
+                restartReason = result.optText("restartReason"),
+                bundle = result.optText("bundle") ?: bundle,
+                error = result.optText("error")
+            )
+            appendLog(
+                "插件卸载结果：${removal.bundle} changed=${removal.changed} " +
+                    "error=${removal.error ?: "none"}"
+            )
+            return removal
+        } finally {
+            _state.update { it.copy(pluginRemoving = null) }
+        }
+    }
 
     private fun applyAgentPresetRoster(result: JSONObject) {
         val array = result.optJSONArray("presets")
@@ -2406,7 +4882,7 @@ object AgentEngine {
     }
 
     /** Runs one slash command through dsh; its `command/run`/`command/done` records render the line. */
-    fun runCommand(line: String) {
+    fun runCommand(line: String, images: List<AgentDraftImage> = emptyList()) {
         val trimmed = line.trim()
         if (trimmed.isEmpty()) return
         val state = _state.value
@@ -2416,6 +4892,17 @@ object AgentEngine {
             notifyState("Agent 尚未连接")
             return
         }
+        val submitted = JSONArray()
+        images.forEach { image ->
+            submitted.put(
+                JSONObject()
+                    .put("type", "image")
+                    .put("mediaType", image.mediaType)
+                    .put("data", Base64.encodeToString(image.bytes, Base64.NO_WRAP))
+                    .put("name", image.name)
+            )
+        }
+        val name = slashName(trimmed)
         scope.launch {
             val result = try {
                 client.call(
@@ -2423,7 +4910,7 @@ object AgentEngine {
                     JSONObject()
                         .put("sessionId", sessionId)
                         .put("line", trimmed)
-                        .put("submittedAttachments", JSONArray()),
+                        .put("submittedAttachments", submitted),
                     60_000
                 )
             } catch (t: Throwable) {
@@ -2437,9 +4924,17 @@ object AgentEngine {
             }
             // A settled success or error is also recorded as a durable command/done event,
             // which folds into the transcript; adding it here would duplicate the notice.
-            val failure = result.optJSONObject("result")
-            if (failure?.optString("kind") == "error") {
-                appendLog("命令失败：${failure.optString("text")}")
+            val outcome = result.optJSONObject("result")
+            if (outcome?.optString("kind") == "error") {
+                appendLog("命令失败：${outcome.optString("text")}")
+                return@launch
+            }
+            // dsh-web starts its export download on the client side when `/export` settles.
+            // The app's equivalent receipt is the export strip, which carries open/share/save.
+            if (name.equals("export", ignoreCase = true) &&
+                _state.value.capabilities.contains("session.export")
+            ) {
+                exportSession(sessionId)
             }
         }
     }
@@ -2578,13 +5073,32 @@ object AgentEngine {
         }
         // dsh resolves slash commands outside the model path: sending "/model …" as a
         // prompt would just show the text to the model. Route known commands through
-        // commands/execute so the registry (and its durable records) owns the line. A
-        // prompt carrying attachments is never a command — dsh's rule is one bare text block.
-        if (mode != "steer" && images.isEmpty() && files.isEmpty()) {
+        // commands/execute so the registry (and its durable records) owns the line.
+        //
+        // Attachments follow dsh's own admission rule: images travel as encoded inputs
+        // only for a command that declares `input.attachments`; staged files cannot ride
+        // a command yet (they need upload receipts), so the draft is refused instead of
+        // silently becoming a model prompt.
+        if (mode != "steer") {
             slashName(trimmed)?.let { name ->
-                if (_state.value.commands.any { it.name.equals(name, ignoreCase = true) }) {
-                    runCommand(trimmed)
-                    return
+                val command = _state.value.commands.firstOrNull {
+                    it.name.equals(name, ignoreCase = true)
+                }
+                if (command != null) {
+                    when {
+                        !command.acceptsAttachments && (images.isNotEmpty() || files.isNotEmpty()) -> {
+                            addNotice("/${command.name} 不接受附件，请先移除附件", isError = true)
+                            return
+                        }
+                        files.isNotEmpty() -> {
+                            addNotice("/${command.name} 暂不能携带文件附件，请先移除文件", isError = true)
+                            return
+                        }
+                        else -> {
+                            runCommand(trimmed, images)
+                            return
+                        }
+                    }
                 }
             }
         }
@@ -3348,6 +5862,106 @@ object AgentEngine {
         }
     }
 
+    /** Renames one Workspace in dsh's registry; dsh answers with the row it stored. */
+    fun renameWorkspace(id: String, title: String) {
+        val trimmed = title.trim()
+        if (trimmed.isEmpty()) {
+            notifyState("工作区名称不能为空")
+            return
+        }
+        val client = bridge ?: return
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "workspace.rename",
+                    JSONObject().put("workspaceId", id).put("title", trimmed),
+                    30_000
+                )
+            } catch (t: Throwable) {
+                notifyState(workspaceFailure(t, "重命名工作区失败"))
+                return@launch
+            }
+            val row = result.optJSONObject("workspace")
+            if (row != null) {
+                val renamed = AgentWorkspace(
+                    id = row.optString("id").ifBlank { id },
+                    path = row.optString("path"),
+                    title = row.optString("title"),
+                    sessionIds = row.optJSONArray("sessionIds").stringList()
+                )
+                _state.update { state ->
+                    state.copy(
+                        workspaces = state.workspaces.map { if (it.id == id) renamed else it }
+                    )
+                }
+            }
+            refreshWorkspacesNow(client)
+            addNotice("工作区已重命名为「$trimmed」", isError = false)
+        }
+    }
+
+    /**
+     * Removes one Workspace registration. dsh keeps the directory and every Session; the
+     * chats simply return to the drawer's ungrouped shelf.
+     */
+    fun deleteWorkspace(id: String) {
+        val client = bridge ?: return
+        val title = _state.value.workspaces.firstOrNull { it.id == id }?.displayTitle ?: "工作区"
+        scope.launch {
+            try {
+                client.callObject(
+                    "workspace.delete",
+                    JSONObject().put("workspaceId", id),
+                    30_000
+                )
+            } catch (t: Throwable) {
+                notifyState(workspaceFailure(t, "移除工作区失败"))
+                return@launch
+            }
+            refreshWorkspacesNow(client)
+            addNotice("已移除工作区「$title」，目录与对话都保留", isError = false)
+        }
+    }
+
+    /**
+     * Moves one Workspace before [beforeId] in dsh's durable order; null appends it.
+     * The returned id order is authoritative, so the drawer cannot drift from the host.
+     */
+    fun moveWorkspace(id: String, beforeId: String?) {
+        val client = bridge ?: return
+        scope.launch {
+            val params = JSONObject().put("workspaceId", id)
+            if (beforeId != null) params.put("beforeWorkspaceId", beforeId)
+            val result = try {
+                client.callObject("workspace.reorder", params, 30_000)
+            } catch (t: Throwable) {
+                notifyState(workspaceFailure(t, "调整工作区顺序失败"))
+                return@launch
+            }
+            val order = result.optJSONArray("workspaceIds").stringList()
+            if (order.isNotEmpty()) {
+                _state.update { state ->
+                    val byId = state.workspaces.associateBy { it.id }
+                    val ordered = order.mapNotNull { byId[it] }
+                    state.copy(
+                        workspaces = ordered + state.workspaces.filterNot { it.id in order }
+                    )
+                }
+            }
+            refreshWorkspacesNow(client)
+        }
+    }
+
+    /** dsh's stable code for a Workspace failure, with the raw text as the fallback. */
+    private fun workspaceFailure(error: Throwable, action: String): String {
+        val code = (error as? AgentBridgeException)?.details?.optString("dshCode").orEmpty()
+        return when (code) {
+            "workspace/name-conflict" -> "已有同名工作区，请换一个名称"
+            "workspace/invalid-path" -> "这个目录不能作为工作区"
+            else -> "$action：${readableError(error)}"
+        }
+    }
+
     /** Reads the plugin bundles the user installed into the dsh profile. */
     fun refreshPlugins() {
         val client = bridge ?: return
@@ -3660,10 +6274,21 @@ object AgentEngine {
 
     /** Forks the session at its latest completed turn and opens the copy. */
     fun forkSession(id: String) {
+        forkSessionAt(id, null)
+    }
+
+    /**
+     * Forks at an exact source event seq (`atSeq` is inclusive). dsh-web branches at the
+     * last message of a completed turn; the app only offers that point, so the copy always
+     * ends on a settled turn boundary.
+     */
+    fun forkSessionAt(id: String, atSeq: Long?) {
         val client = bridge ?: return
         scope.launch {
+            val params = JSONObject().put("sessionId", id)
+            if (atSeq != null) params.put("atSeq", atSeq)
             val result = try {
-                client.callObject("session.fork", JSONObject().put("sessionId", id), 30_000)
+                client.callObject("session.fork", params, 30_000)
             } catch (t: Throwable) {
                 eventMutex.withLock {
                     addNotice("分叉失败：${readableError(t)}", isError = true)
@@ -3684,6 +6309,196 @@ object AgentEngine {
 
     fun clearTransientError() {
         _state.update { it.copy(error = null) }
+    }
+
+    /** Reads the like/dislike records of a conversation; failures stay silent and retryable. */
+    private suspend fun loadMessageFeedback(sessionId: String) {
+        val client = bridge ?: return
+        val result = runCatching {
+            client.callObject(
+                "feedback.list",
+                JSONObject().put("sessionId", sessionId),
+                20_000
+            )
+        }.getOrNull() ?: return
+        // The service answers with its own envelope inside the RPC value.
+        if (result.optBoolean("ok") != true) return
+        val value = result.optJSONObject("value") ?: return
+        val array = value.optJSONArray("items") ?: return
+        val records = LinkedHashMap<String, AgentMessageFeedback>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val messageId = item.optString("messageId")
+            if (messageId.isBlank()) continue
+            records[messageId] = AgentMessageFeedback(
+                messageId = messageId,
+                rating = item.optString("rating").ifBlank { "positive" },
+                note = item.optString("note").takeIf { it.isNotBlank() },
+                category = item.optString("category").takeIf { it.isNotBlank() },
+                version = item.optString("version").takeIf { it.isNotBlank() }
+            )
+        }
+        _state.update { state ->
+            if (state.activeSessionId == sessionId) state.copy(messageFeedback = records) else state
+        }
+    }
+
+    /**
+     * Records a like/dislike for a finalized assistant message. The row updates at once
+     * and rolls back on refusal, so the transcript keeps showing what dsh actually stored.
+     */
+    fun rateMessage(
+        messageId: String,
+        rating: String,
+        category: String? = null,
+        note: String? = null
+    ) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        if (messageId.isBlank() || sessionId.isBlank()) return
+        if (rating != "positive" && rating != "negative") return
+        val previous = state.messageFeedback[messageId]
+        val cleanNote = note?.trim()?.takeIf { it.isNotEmpty() }
+        val cleanCategory = category?.takeIf { it in FEEDBACK_CATEGORIES }
+        val optimistic = AgentMessageFeedback(
+            messageId = messageId,
+            rating = rating,
+            note = cleanNote,
+            category = cleanCategory,
+            version = previous?.version
+        )
+        _state.update {
+            it.copy(messageFeedback = it.messageFeedback + (messageId to optimistic))
+        }
+        scope.launch {
+            val params = JSONObject()
+                .put("sessionId", sessionId)
+                .put("messageId", messageId)
+                .put("rating", rating)
+                .put("ifVersion", previous?.version ?: JSONObject.NULL)
+            if (cleanCategory != null) params.put("category", cleanCategory)
+            if (cleanNote != null) params.put("note", cleanNote)
+            var stored: JSONObject? = null
+            val failure = try {
+                val result = client.callObject("feedback.put", params, 20_000)
+                stored = result.optJSONObject("value")
+                feedbackFailure(result)
+            } catch (t: Throwable) {
+                readableError(t)
+            }
+            if (failure != null) {
+                eventMutex.withLock {
+                    _state.update { current ->
+                        if (current.activeSessionId != sessionId) return@update current
+                        val map = current.messageFeedback.toMutableMap()
+                        if (previous == null) map.remove(messageId) else map[messageId] = previous
+                        current.copy(messageFeedback = map)
+                    }
+                    addNotice("反馈未保存：$failure", isError = true)
+                }
+                // A stale version can never succeed on retry; pull dsh's current records
+                // so the next tap sends the right token.
+                if (failure == STALE_FEEDBACK) loadMessageFeedback(sessionId)
+                return@launch
+            }
+            // dsh hands back the stored record; its version is the token the next edit
+            // must present, so keep it instead of the null we sent on creation.
+            if (stored != null) {
+                val version = stored.optString("version").takeIf { it.isNotBlank() }
+                val storedCategory = stored.optString("category").takeIf { it.isNotBlank() }
+                val storedNote = stored.optString("note").takeIf { it.isNotBlank() }
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) return@update current
+                    val record = current.messageFeedback[messageId] ?: return@update current
+                    current.copy(
+                        messageFeedback = current.messageFeedback + (messageId to record.copy(
+                            category = storedCategory,
+                            note = storedNote,
+                            version = version ?: record.version
+                        ))
+                    )
+                }
+            }
+        }
+    }
+
+    /** Removes the feedback attached to one message, if any. */
+    fun clearMessageFeedback(messageId: String) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        val previous = state.messageFeedback[messageId] ?: return
+        _state.update {
+            it.copy(messageFeedback = it.messageFeedback - messageId)
+        }
+        scope.launch {
+            val params = JSONObject()
+                .put("sessionId", sessionId)
+                .put("messageId", messageId)
+                .put("ifVersion", previous.version ?: JSONObject.NULL)
+            val failure = try {
+                val result = client.callObject("feedback.delete", params, 20_000)
+                feedbackFailure(result)
+            } catch (t: Throwable) {
+                readableError(t)
+            }
+            if (failure != null) {
+                eventMutex.withLock {
+                    _state.update { current ->
+                        if (current.activeSessionId != sessionId) return@update current
+                        current.copy(
+                            messageFeedback = current.messageFeedback + (messageId to previous)
+                        )
+                    }
+                    addNotice("反馈未删除：$failure", isError = true)
+                }
+            }
+        }
+    }
+
+    /** Null when the service envelope reports success; otherwise a readable reason. */
+    private fun feedbackFailure(result: JSONObject): String? {
+        if (result.optBoolean("ok")) return null
+        val error = result.optJSONObject("error")
+        val code = error?.optString("code").orEmpty()
+        return when (code) {
+            "session-not-found" -> "会话不存在"
+            "target-not-found" -> "这条消息不再支持反馈"
+            "version-conflict" -> STALE_FEEDBACK
+            "note-blank" -> "说明不能为空"
+            "note-too-large" -> "说明过长"
+            else -> error?.optString("message")?.takeIf { it.isNotBlank() } ?: "dsh 拒绝了该操作"
+        }
+    }
+
+    /**
+     * Re-reads every projection for the active session. The stats panel calls this after
+     * a reconnect or when the reader wants to confirm the live numbers.
+     */
+    fun refreshStats() {
+        val client = bridge ?: return
+        val sessionId = _state.value.activeSessionId ?: return
+        scope.launch {
+            val failure = try {
+                val value = client.callObject(
+                    "session.projections",
+                    JSONObject().put("sessionId", sessionId),
+                    20_000
+                )
+                eventMutex.withLock {
+                    if (_state.value.activeSessionId == sessionId) {
+                        applyProjectionsLocked(sessionId, value)
+                    }
+                }
+                null
+            } catch (t: Throwable) {
+                readableError(t)
+            }
+            if (failure != null) {
+                eventMutex.withLock { addNotice("统计刷新失败：$failure", isError = true) }
+            }
+        }
     }
 
     private fun applyProjectionsLocked(sessionId: String, block: JSONObject) {
@@ -3734,8 +6549,528 @@ object AgentEngine {
             } else {
                 state
             }
-            else -> state
+            "tokenUsage" -> if (active) state.copy(tokenUsage = parseTokenUsage(value)) else state
+            "contextPressure" -> if (active) {
+                state.copy(contextPressure = parseContextPressure(value))
+            } else {
+                state
+            }
+            "contextBreakdown" -> if (active) {
+                state.copy(contextBreakdown = parseContextBreakdown(value))
+            } else {
+                state
+            }
+            "goal" -> if (active) {
+                // Activation is process-local and absent from the durable projection. A
+                // projection update for the same revision (the echo of a mutation) keeps
+                // what the goal service just told us instead of dropping it.
+                val previous = state.goal
+                val parsed = parseGoal(value)
+                state.copy(goal = parsed?.let { next ->
+                    if (previous != null && previous.id == next.id && previous.revision == next.revision) {
+                        next.copy(activation = previous.activation)
+                    } else {
+                        next
+                    }
+                })
+            } else {
+                state
+            }
+            "modelSelection" -> if (active) {
+                state.copy(modelSelection = parseModelSelection(value))
+            } else {
+                state
+            }
+            "subagentTiming" -> if (active) {
+                state.copy(subagentTiming = parseSubagentTiming(value))
+            } else {
+                state
+            }
+            "agentTeam" -> if (active) {
+                state.copy(agentTeam = parseAgentTeam(value))
+            } else {
+                state
+            }
+            "turnOutline" -> if (active) {
+                state.copy(turnOutline = parseTurnOutline(value))
+            } else {
+                state
+            }
+            "sessionStats" -> if (active) {
+                state.copy(sessionStats = parseSessionStats(value))
+            } else {
+                state
+            }
+            // Projections this build has no typed home for stay inspectable. A newer dsh
+            // adding one must not mean the app silently drops half the session state.
+            else -> if (active) retainProjection(state, key, value) else state
         }
+    }
+
+    /** Keeps unknown projections in a bounded, newest-24 map keyed by projection name. */
+    private fun retainProjection(
+        state: AgentState,
+        key: String,
+        value: Any?
+    ): AgentState {
+        if (key.isBlank() || value == null) return state
+        val encoded = when (value) {
+            is String -> value
+            else -> value.toString()
+        }.take(MAX_EXTRA_PROJECTION)
+        if (encoded.isBlank()) return state
+        if (state.extraProjections[key] == encoded) return state
+        val kept = LinkedHashMap<String, String>()
+        for ((name, json) in state.extraProjections) {
+            if (name == key) continue
+            kept[name] = json
+            if (kept.size >= MAX_EXTRA_PROJECTIONS - 1) break
+        }
+        kept[key] = encoded
+        return state.copy(extraProjections = kept)
+    }
+
+    /** Whether the most recent slash-command record was `/export`. */
+    private fun lastCommandWasExport(): Boolean {
+        val item = _state.value.items.lastOrNull {
+            it is UserItem && it.source == "command"
+        } as? UserItem ?: return false
+        val command = item.text.trim().substringBefore(' ')
+        return command == "/export"
+    }
+
+    /** Remembers an event kind the app does not render, so support can see the gap. */
+    private fun recordUnknownEvent(type: String) {
+        _state.update { state ->
+            if (type in state.unknownEvents) {
+                state
+            } else {
+                state.copy(
+                    unknownEvents = (state.unknownEvents + type)
+                        .takeLast(MAX_UNKNOWN_EVENTS)
+                )
+            }
+        }
+    }
+
+    private fun parseUsage(value: JSONObject?): AgentUsage? {
+        if (value == null) return null
+        val usage = AgentUsage(
+            inputTokens = value.optLong("inputTokens"),
+            outputTokens = value.optLong("outputTokens"),
+            cacheReadTokens = value.optLong("cacheReadTokens"),
+            cacheWriteTokens = value.optLong("cacheWriteTokens"),
+            reasoningTokens = value.optLong("reasoningTokens")
+        )
+        return if (usage.hasData) usage else null
+    }
+
+    private fun parseTokenUsage(value: Any?): AgentTokenUsage {
+        val json = value as? JSONObject ?: return AgentTokenUsage()
+        return AgentTokenUsage(
+            uncachedInputTokens = json.optLong("uncachedInputTokens")
+                .orIfZero { json.optLong("inputTokens") },
+            outputTokens = json.optLong("outputTokens"),
+            cacheReadTokens = json.optLong("cacheReadTokens"),
+            cacheWriteTokens = json.optLong("cacheWriteTokens")
+        )
+    }
+
+    private fun Long.orIfZero(alternative: () -> Long): Long =
+        if (this != 0L) this else alternative()
+
+    private fun parseContextPressure(value: Any?): AgentContextPressure {
+        val json = value as? JSONObject ?: return AgentContextPressure()
+        return AgentContextPressure(
+            pressureTokens = json.longOrNull("pressureTokens"),
+            projectedTokens = json.longOrNull("projectedTokens"),
+            contextWindow = json.longOrNull("contextWindow")
+        )
+    }
+
+    private fun parseContextBreakdown(value: Any?): AgentContextBreakdown {
+        val json = value as? JSONObject ?: return AgentContextBreakdown()
+        return AgentContextBreakdown(
+            systemTokens = json.optLong("systemTokens"),
+            toolsTokens = json.optLong("toolsTokens"),
+            messageTokens = json.optLong("messageTokens")
+        )
+    }
+
+    private fun parseGoal(value: Any?): AgentGoal? {
+        val json = value as? JSONObject ?: return null
+        val goal = json.optJSONObject("goal") ?: return null
+        val blocked = goal.optJSONObject("blockedReason")
+        val parsed = AgentGoal(
+            id = goal.optString("id"),
+            revision = goal.optLong("revision"),
+            objective = goal.optString("objective"),
+            phase = goal.optString("phase"),
+            maxGoalRounds = goal.optInt("maxGoalRounds"),
+            roundsStarted = json.optInt("roundsStarted", goal.optInt("roundsStarted")),
+            blockedCode = blocked?.optString("code")?.takeIf { it.isNotBlank() },
+            blockedMessage = blocked?.optString("message")?.takeIf { it.isNotBlank() }
+        )
+        return if (parsed.hasData) parsed else null
+    }
+
+    /**
+     * Reads the flat GoalView the goal service returns (`id/revision/objective/...`),
+     * as opposed to the projection's `{goal:{…}, roundsStarted}` wrapper.
+     */
+    private fun parseGoalView(value: JSONObject?): AgentGoal? {
+        if (value == null) return null
+        val blocked = value.optJSONObject("blockedReason")
+        val parsed = AgentGoal(
+            id = value.optString("id"),
+            revision = value.optLong("revision"),
+            objective = value.optString("objective"),
+            phase = value.optString("phase"),
+            maxGoalRounds = value.optInt("maxGoalRounds"),
+            roundsStarted = value.optInt("roundsStarted"),
+            blockedCode = blocked?.optString("code")?.takeIf { it.isNotBlank() },
+            blockedMessage = blocked?.optString("message")?.takeIf { it.isNotBlank() },
+            activation = value.optString("activation").takeIf { it.isNotBlank() }
+        )
+        return if (parsed.hasData) parsed else null
+    }
+
+    private fun parseModelSelection(value: Any?): AgentModelSelection {
+        val json = value as? JSONObject ?: return AgentModelSelection()
+        val selected = json.optJSONObject("next") ?: json.optJSONObject("lastUsed") ?: return AgentModelSelection()
+        return AgentModelSelection(
+            provider = selected.optString("provider"),
+            model = selected.optString("model"),
+            reasoningEffort = selected.optString("reasoningEffort").takeIf { it.isNotBlank() }
+        )
+    }
+
+    private fun parseSubagentTiming(value: Any?): AgentSubagentTiming? {
+        val json = value as? JSONObject ?: return null
+        val active = json.optJSONObject("active")
+        return AgentSubagentTiming(
+            settledMs = json.optLong("settledMs"),
+            activeSince = active?.longOrNull("since"),
+            activeThrough = active?.longOrNull("through"),
+            lastTurnCompleted = if (json.has("lastTurnCompleted")) {
+                json.optBoolean("lastTurnCompleted")
+            } else {
+                null
+            }
+        )
+    }
+
+    private fun parseAgentTeam(value: Any?): AgentTeam? {
+        val json = value as? JSONObject ?: return null
+        val members = mutableListOf<AgentTeamMember>()
+        val memberArray = json.optJSONArray("members")
+        if (memberArray != null) {
+            for (index in 0 until memberArray.length()) {
+                val item = memberArray.optJSONObject(index) ?: continue
+                val id = item.optString("id")
+                if (id.isBlank()) continue
+                members += AgentTeamMember(
+                    id = id,
+                    name = item.optString("name").ifBlank { id },
+                    role = item.optString("role").ifBlank { "teammate" },
+                    phase = item.optString("phase").ifBlank { "active" },
+                    error = item.optString("error").takeIf { it.isNotBlank() }
+                )
+            }
+        }
+        val tasks = mutableListOf<AgentTeamTask>()
+        val taskArray = json.optJSONArray("tasks")
+        if (taskArray != null) {
+            for (index in 0 until taskArray.length()) {
+                val item = taskArray.optJSONObject(index) ?: continue
+                val id = item.optString("id")
+                if (id.isBlank()) continue
+                tasks += AgentTeamTask(
+                    id = id,
+                    revision = item.optLong("revision"),
+                    subject = item.optString("subject"),
+                    description = item.optString("description"),
+                    status = item.optString("status").ifBlank { "pending" },
+                    ownerId = item.optString("ownerId").takeIf { it.isNotBlank() }
+                )
+            }
+        }
+        val team = AgentTeam(
+            members = members,
+            tasks = tasks,
+            failure = json.optString("failure").takeIf { it.isNotBlank() }
+        )
+        return if (team.hasData) team else null
+    }
+
+    private fun JSONObject.longOrNull(key: String): Long? =
+        if (has(key) && !isNull(key)) optLong(key) else null
+
+    /** `turnOutline` is an array of `{turn, seq, prompt, response}` entries. */
+    private fun parseTurnOutline(value: Any?): List<AgentTurnOutlineEntry> {
+        val array = value as? JSONArray ?: return emptyList()
+        val entries = mutableListOf<AgentTurnOutlineEntry>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val turn = item.optInt("turn", -1)
+            if (turn <= 0) continue
+            entries += AgentTurnOutlineEntry(
+                turn = turn,
+                seq = item.longOrNull("seq"),
+                prompt = item.optString("prompt"),
+                response = item.optString("response")
+            )
+        }
+        return entries
+    }
+
+    private fun parseSessionStats(value: Any?): AgentSessionStats {
+        val json = value as? JSONObject ?: return AgentSessionStats()
+        return AgentSessionStats(
+            turns = json.optInt("turns"),
+            steps = json.optInt("steps"),
+            llmMs = json.longOrNull("llmMs"),
+            toolMs = json.longOrNull("toolMs"),
+            ttftMs = json.longOrNull("ttftMs"),
+            ttftSteps = json.optInt("ttftSteps"),
+            decodeMs = json.longOrNull("decodeMs"),
+            decodeTokens = json.longOrNull("decodeTokens")
+        )
+    }
+
+    /** Keeps only the catalog rows bound to [sessionId]; other sessions stay out of view. */
+    private fun parseSchedules(value: Any?, sessionId: String): List<AgentSchedule> {
+        val array = when (value) {
+            is JSONArray -> value
+            is JSONObject -> value.optJSONArray("schedules")
+            else -> null
+        } ?: return emptyList()
+        val schedules = mutableListOf<AgentSchedule>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val schedule = parseSchedule(item, sessionId, item.optString("status", "active"))
+                ?: continue
+            if (schedule.sessionId == sessionId) schedules += schedule
+        }
+        return schedules.sortedBy { it.scheduledAt ?: Long.MAX_VALUE }
+    }
+
+    private fun parseSchedule(
+        item: JSONObject?,
+        sessionId: String,
+        status: String
+    ): AgentSchedule? {
+        if (item == null) return null
+        val id = item.optString("id")
+        if (id.isBlank()) return null
+        val weekdays = mutableListOf<Int>()
+        item.optJSONArray("weekdays")?.let { array ->
+            for (index in 0 until array.length()) {
+                val day = array.optInt(index)
+                if (day in 1..7) weekdays += day
+            }
+        }
+        val lastDelivery = item.optJSONObject("lastDelivery")
+        // A catalog row names its own Session; an update result does not, so the caller's
+        // binding is the fallback.
+        val boundSession = item.optString("sessionId").takeIf { it.isNotBlank() } ?: sessionId
+        return AgentSchedule(
+            id = id,
+            sessionId = boundSession,
+            kind = item.optString("kind"),
+            title = item.optString("title"),
+            prompt = item.optString("prompt"),
+            scheduledAt = parseInstant(item.optString("scheduledAt")),
+            status = status.ifBlank { "active" },
+            afterSeconds = item.longOrNull("afterSeconds"),
+            everySeconds = item.longOrNull("everySeconds"),
+            time = item.optString("time").takeIf { it.isNotBlank() },
+            timeZone = item.optString("timeZone").takeIf { it.isNotBlank() },
+            weekdays = weekdays,
+            expression = item.optString("expression").takeIf { it.isNotBlank() },
+            lastDeliveredAt = parseInstant(lastDelivery?.optString("deliveredAt")),
+            raw = item.toString()
+        )
+    }
+
+    private fun parseScheduleHistory(value: JSONObject, id: String): AgentScheduleHistory {
+        val records = mutableListOf<AgentScheduleDelivery>()
+        value.optJSONArray("records")?.let { array ->
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                records += AgentScheduleDelivery(
+                    scheduledAt = parseInstant(item.optString("scheduledAt")),
+                    deliveredAt = parseInstant(item.optString("deliveredAt")),
+                    prompt = item.optString("prompt").takeIf { it.isNotBlank() },
+                    messageId = item.optString("messageId")
+                )
+            }
+        }
+        val retention = value.optJSONObject("retention")
+        return AgentScheduleHistory(
+            id = id,
+            records = records,
+            retentionDays = retention?.optInt("days") ?: 0,
+            retentionRecords = retention?.optInt("records") ?: 0,
+            earlierUnavailable = value.optBoolean("earlierRecordsUnavailable", false),
+            earlierPruned = value.optBoolean("earlierRecordsPruned", false),
+            nextBefore = value.optString("nextBefore").takeIf { it.isNotBlank() },
+            loading = false,
+            error = null
+        )
+    }
+
+    /** dsh stamps schedule times as ISO instants; an unparseable stamp stays unknown. */
+    private fun parseInstant(value: String?): Long? {
+        if (value.isNullOrBlank()) return null
+        return runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()
+    }
+
+    private fun parseJobs(value: Any?): List<AgentJob> {
+        val array = when (value) {
+            is JSONArray -> value
+            is JSONObject -> value.optJSONArray("jobs")
+            else -> null
+        } ?: return emptyList()
+        val jobs = mutableListOf<AgentJob>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            parseJob(item)?.let { jobs += it }
+        }
+        return jobs
+    }
+
+    private fun parseJob(item: JSONObject): AgentJob? {
+        val id = item.optString("id")
+        if (id.isBlank()) return null
+        val output = item.optJSONObject("output")
+        val spill = mutableListOf<String>()
+        output?.optJSONArray("spillPaths")?.let { paths ->
+            for (index in 0 until paths.length()) {
+                paths.optString(index).takeIf { it.isNotBlank() }?.let { spill += it }
+            }
+        }
+        return AgentJob(
+            id = id,
+            kind = item.optString("kind"),
+            label = item.optString("label").ifBlank { id },
+            status = item.optString("status").ifBlank { "running" },
+            progress = item.optString("progress").takeIf { it.isNotBlank() },
+            detail = item.optString("detail").takeIf { it.isNotBlank() },
+            startedAt = item.optLong("startedAt", 0L),
+            finishedAt = item.longOrNull("finishedAt"),
+            outputTotal = output?.optLong("total", 0L) ?: 0L,
+            outputLimitBytes = item.longOrNull("outputLimitBytes"),
+            spillPaths = spill
+        )
+    }
+
+    private fun parseJobOutput(jobId: String, value: Any?): AgentJobOutput {
+        val json = value as? JSONObject ?: return AgentJobOutput(jobId)
+        val chunks = mutableListOf<AgentJobChunk>()
+        json.optJSONArray("chunks")?.let { array ->
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                chunks += AgentJobChunk(
+                    at = item.optLong("at", 0L),
+                    text = item.optString("text"),
+                    channel = item.optString("channel").ifBlank { "stdout" },
+                    gapBefore = item.optBoolean("gapBefore")
+                )
+            }
+        }
+        return AgentJobOutput(
+            jobId = jobId,
+            job = json.optJSONObject("job")?.let { parseJob(it) },
+            chunks = chunks,
+            next = json.optLong("next", 0L),
+            lossy = json.optBoolean("lossy"),
+            loading = false
+        )
+    }
+
+    private fun parseChanges(value: JSONObject, seq: Long): AgentChanges {
+        val files = mutableListOf<AgentChangedFile>()
+        value.optJSONArray("files")?.let { array ->
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val path = item.optString("path")
+                if (path.isBlank()) continue
+                files += AgentChangedFile(
+                    path = path,
+                    display = item.optString("display").ifBlank { path },
+                    added = item.optInt("added"),
+                    deleted = item.optInt("deleted"),
+                    binary = item.optBoolean("binary"),
+                    oversized = item.optBoolean("oversized")
+                )
+            }
+        }
+        return AgentChanges(
+            seq = seq,
+            turn = value.optInt("turn"),
+            total = value.optInt("total", files.size),
+            added = value.optInt("added"),
+            deleted = value.optInt("deleted"),
+            files = files
+        )
+    }
+
+    private fun parseChangesDiff(value: Any?): AgentChangesDiff {
+        val json = value as? JSONObject
+            ?: return AgentChangesDiff(error = "差异数据格式不正确")
+        val hunks = mutableListOf<AgentDiffHunk>()
+        json.optJSONArray("hunks")?.let { array ->
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index) ?: continue
+                val lines = mutableListOf<String>()
+                item.optJSONArray("lines")?.let { list ->
+                    for (line in 0 until list.length()) {
+                        lines += list.optString(line)
+                    }
+                }
+                hunks += AgentDiffHunk(
+                    oldStart = item.optInt("oldStart"),
+                    oldLines = item.optInt("oldLines"),
+                    newStart = item.optInt("newStart"),
+                    newLines = item.optInt("newLines"),
+                    lines = lines
+                )
+            }
+        }
+        return AgentChangesDiff(
+            path = json.optString("path"),
+            display = json.optString("display").ifBlank { json.optString("path") },
+            kind = json.optString("kind").ifBlank { "text" },
+            before = json.optBoolean("before"),
+            after = json.optBoolean("after"),
+            coarse = json.optBoolean("coarse"),
+            hunks = hunks
+        )
+    }
+
+    private fun parseDeliverableFiles(value: Any?): List<AgentDeliverable> {
+        val array = value as? JSONArray ?: return emptyList()
+        val files = mutableListOf<AgentDeliverable>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val path = item.optString("path")
+            if (path.isBlank()) continue
+            files += AgentDeliverable(path, item.optString("description"))
+        }
+        return files
+    }
+
+    /** Appends [files] to [existing], replacing entries that share a path. */
+    private fun mergeDeliverables(
+        existing: List<AgentDeliverable>,
+        files: List<AgentDeliverable>
+    ): List<AgentDeliverable> {
+        if (files.isEmpty()) return existing
+        val merged = LinkedHashMap<String, AgentDeliverable>()
+        existing.forEach { merged[it.path] = it }
+        files.forEach { merged[it.path] = it }
+        return merged.values.toList()
     }
 
     private fun parseTodos(value: Any?): List<AgentTodo> {
@@ -3886,6 +7221,12 @@ object AgentEngine {
         return value.optLong("seq", -1L).takeIf { it >= 0 }
     }
 
+    /** dsh stamps every logged event with its wall-clock time; older hosts omit it. */
+    private fun timeOf(value: JSONObject): Long? {
+        if (!value.has("time") || value.isNull("time")) return null
+        return value.optLong("time", -1L).takeIf { it > 0 }
+    }
+
     private fun appendLog(line: String) {
         val cleaned = line.trim().takeIf { it.isNotBlank() } ?: return
         Log.d(TAG, "log: $cleaned")
@@ -3934,4 +7275,10 @@ object AgentEngine {
     }
 
     private fun now(): Long = System.currentTimeMillis()
+
+    /** A model capacity, present only when dsh actually stated a positive number. */
+    private fun JSONObject.positiveInt(name: String): Int? {
+        if (!has(name) || isNull(name)) return null
+        return optInt(name).takeIf { it > 0 }
+    }
 }

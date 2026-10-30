@@ -10,13 +10,19 @@ import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentDraftFile
 import com.kingkang.app.agent.AgentDraftImage
 import com.kingkang.app.agent.AgentEngine
+import com.kingkang.app.agent.AgentFileReference
 import com.kingkang.app.agent.AgentImage
 import com.kingkang.app.agent.AgentPluginInspection
+import com.kingkang.app.agent.AgentProviderDraft
 import com.kingkang.app.agent.AgentQuestion
 import com.kingkang.app.agent.AgentSession
+import com.kingkang.app.agent.AgentSessionReference
+import com.kingkang.app.agent.AgentSettingEdit
+import com.kingkang.app.agent.AgentSettingGroup
 import com.kingkang.app.agent.AgentState
 import com.kingkang.app.agent.AgentSubagent
 import com.kingkang.app.data.SettingsStore
+import com.kingkang.app.files.FileActions
 import com.kingkang.app.runtime.ChrootEngine
 import com.kingkang.app.runtime.CommandSpec
 import com.kingkang.app.runtime.HarnessManager
@@ -36,10 +42,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import org.json.JSONObject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -150,6 +158,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _session = MutableStateFlow<TerminalSession?>(null)
     val session: StateFlow<TerminalSession?> = _session.asStateFlow()
 
+    /**
+     * One shell line the terminal should run as soon as it is attached. "在终端中打开"
+     * sets it from the file sidebar; the terminal screen consumes it and clears it, so a
+     * later restart never re-runs a stale command.
+     */
+    private val _terminalCommand = MutableStateFlow<String?>(null)
+    val terminalCommand: StateFlow<String?> = _terminalCommand.asStateFlow()
+
+    /** Opens (or reuses) the terminal and changes into [path] once the shell is ready. */
+    fun openTerminalAt(path: String) {
+        val trimmed = path.trim()
+        if (trimmed.isEmpty()) return
+        val quoted = "'" + trimmed.replace("'", "'\\''") + "'"
+        _terminalCommand.value = "cd -- $quoted\n"
+        prepareTerminal()
+    }
+
+    fun consumeTerminalCommand() {
+        _terminalCommand.value = null
+    }
+
     val agentState: StateFlow<AgentState> = AgentEngine.state
 
     val sessions: StateFlow<List<AgentSession>> = agentState
@@ -176,6 +205,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         refreshEnvironment()
         AgentEngine.init(application)
         AgentEngine.ensureStarted(application)
+        // dsh may hold a theme chosen in the Harness. Reconcile once when the bridge is
+        // ready so the native palette matches without waiting for a Harness visit.
+        viewModelScope.launch {
+            AgentEngine.state
+                .map { it.connection }
+                .distinctUntilChanged()
+                .collect { connection ->
+                    if (connection == AgentConnection.Ready) syncThemeFromDsh()
+                }
+        }
     }
 
     fun prepareTerminal() {
@@ -893,6 +932,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settingsStore.hasCompletedOnboarding = true
     }
 
+    fun collapsedWorkspaceIds(): Set<String> = settingsStore.collapsedWorkspaceIds
+
+    /** Folding a workspace header is a drawer preference, not dsh state. */
+    fun setWorkspaceCollapsed(id: String, collapsed: Boolean) {
+        val current = settingsStore.collapsedWorkspaceIds
+        settingsStore.collapsedWorkspaceIds = if (collapsed) current + id else current - id
+    }
+
+    fun recentDirectories(): List<String> = settingsStore.recentDirectories
+
+    /** Records a confirmed pick; the picker shows these as one-tap shortcuts. */
+    fun rememberDirectory(path: String) {
+        val trimmed = path.trim()
+        if (trimmed.isBlank()) return
+        settingsStore.recentDirectories = listOf(trimmed) + settingsStore.recentDirectories.filter {
+            it != trimmed
+        }
+    }
+
     /** Switches the app palette and mirrors the choice into dsh's ui-theme setting. */
     fun setThemeMode(mode: String) {
         val value = when (mode) {
@@ -1019,6 +1077,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshAgentCatalogs() = AgentEngine.refreshCatalogs()
 
+    suspend fun fileReferences(query: String): List<AgentFileReference> =
+        AgentEngine.fileReferences(query)
+
+    suspend fun sessionReferences(query: String): List<AgentSessionReference> =
+        AgentEngine.sessionReferences(query)
+
     fun loadAgentImage(sessionId: String, image: AgentImage) =
         AgentEngine.loadImage(sessionId, image)
 
@@ -1028,9 +1092,87 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createWorkspace(path: String) = AgentEngine.createWorkspace(path)
 
+    fun renameWorkspace(id: String, title: String) = AgentEngine.renameWorkspace(id, title)
+
+    fun deleteWorkspace(id: String) = AgentEngine.deleteWorkspace(id)
+
+    fun moveWorkspace(id: String, beforeId: String?) = AgentEngine.moveWorkspace(id, beforeId)
+
+    fun browseFiles(path: String? = null) = AgentEngine.browseFiles(path)
+
+    fun openFilePreview(path: String) = AgentEngine.openFilePreview(path)
+
+    fun closeFilePreview() = AgentEngine.closeFilePreview()
+
     fun refreshWorkspaces() = AgentEngine.refreshWorkspaces()
 
     fun refreshPlugins() = AgentEngine.refreshPlugins()
+
+    /** Reads the curated dsh settings and the Harness locale card. */
+    fun refreshAgentSettings() = AgentEngine.refreshAgentSettings()
+
+    suspend fun saveAgentSettings(
+        ns: String,
+        revision: Int,
+        edits: List<AgentSettingEdit>
+    ): AgentSettingGroup? = AgentEngine.saveAgentSettings(ns, revision, edits)
+
+    fun setHarnessLocale(locale: String?) = AgentEngine.setHarnessLocale(locale)
+
+    fun refreshAccount() = AgentEngine.refreshAccount()
+
+    fun signOutAccount() = AgentEngine.signOutAccount()
+
+    fun searchPlugins(query: String) = AgentEngine.searchPlugins(query)
+
+    fun clearPluginSearch() = AgentEngine.clearPluginSearch()
+
+    /**
+     * Removes one installed plugin. Like an update, dsh loads bundles only at startup, so
+     * an idle agent restarts here; a running turn is never cut off for it.
+     */
+    fun uninstallPlugin(name: String) {
+        if (AgentEngine.state.value.pluginRemoving != null) return
+        viewModelScope.launch {
+            _pluginInstallNote.value = null
+            try {
+                val removal = AgentEngine.uninstallPlugin(name)
+                val bundle = removal.bundle ?: name
+                val note = when {
+                    removal.error != null -> PluginInstallNote(
+                        text = "未卸载：${pluginErrorText(removal.error)}",
+                        failed = true
+                    )
+                    !removal.changed -> PluginInstallNote("没有可卸载的插件：$bundle", failed = true)
+                    removal.restartRequired -> PluginInstallNote(
+                        "已卸载 $bundle，重启 Agent 后生效" +
+                            (removal.restartReason?.let { "（$it）" } ?: "")
+                    )
+                    else -> PluginInstallNote("已卸载 $bundle")
+                }
+                _pluginInstallNote.value = note
+                emitUiMessage(note.text)
+                if (!note.failed && !AgentEngine.state.value.running) AgentEngine.restart()
+            } catch (t: Throwable) {
+                val text = "卸载插件失败：${t.message ?: "未知错误"}"
+                _pluginInstallNote.value = PluginInstallNote(text, failed = true)
+                emitUiMessage(text)
+            }
+        }
+    }
+
+    /**
+     * Adopts a theme changed in the Harness. The engine owns the last-writer decision;
+     * this only mirrors the result into the app palette.
+     */
+    fun syncThemeFromDsh() {
+        viewModelScope.launch {
+            val value = AgentEngine.reconcileThemePreference() ?: return@launch
+            if (value == _themeMode.value) return@launch
+            settingsStore.themeMode = value
+            _themeMode.value = value
+        }
+    }
 
     /**
      * Changes the npm source used both by Kali-side dsh installs/updates and by plugin
@@ -1102,9 +1244,115 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closeSubagent() = AgentEngine.closeSubagent()
 
+    fun exportSession(sessionId: String? = null, includeDescendants: Boolean = true) =
+        AgentEngine.exportSession(sessionId, includeDescendants)
+
+    /** Opens the archive produced by the last export. Returns an error message, or null. */
+    fun openExport(): String? {
+        val path = AgentEngine.state.value.export.hostPath ?: return "还没有可打开的导出文件"
+        return FileActions.open(getApplication(), File(path))
+    }
+
+    fun shareExport(): String? {
+        val path = AgentEngine.state.value.export.hostPath ?: return "还没有可分享的导出文件"
+        return FileActions.share(getApplication(), File(path))
+    }
+
+    fun dismissExport() = AgentEngine.dismissExport()
+
+    fun refreshStats() = AgentEngine.refreshStats()
+
+    fun loadJobs() = AgentEngine.loadJobs()
+
+    fun killJob(jobId: String) = AgentEngine.killJob(jobId)
+
+    fun loadJobOutput(jobId: String, append: Boolean = false) =
+        AgentEngine.loadJobOutput(jobId, append)
+
+    fun loadChanges() = AgentEngine.loadChanges()
+
+    fun loadChangesDiff(index: Int) = AgentEngine.loadChangesDiff(index)
+
+    fun loadGoal() = AgentEngine.loadGoal()
+
+    fun pauseGoal() = AgentEngine.pauseGoal()
+
+    fun resumeGoal() = AgentEngine.resumeGoal()
+
+    fun clearGoal() = AgentEngine.clearGoal()
+
+    fun editGoal(objective: String, maxGoalRounds: Int?) =
+        AgentEngine.editGoal(objective, maxGoalRounds)
+
+    fun loadSchedules() = AgentEngine.loadSchedules()
+
+    fun updateSchedule(
+        id: String,
+        title: String? = null,
+        prompt: String? = null,
+        change: JSONObject? = null
+    ) = AgentEngine.updateSchedule(id, title, prompt, change)
+
+    fun deleteSchedule(id: String) = AgentEngine.deleteSchedule(id)
+
+    fun loadScheduleHistory(id: String, before: String? = null) =
+        AgentEngine.loadScheduleHistory(id, before)
+
+    fun dismissScheduleHistory(id: String) = AgentEngine.dismissScheduleHistory(id)
+
+    fun browseDirectory(path: String? = null) = AgentEngine.browseDirectory(path)
+
+    fun createDirectory(name: String) = AgentEngine.createDirectory(name)
+
+    fun closeDirectoryBrowser() = AgentEngine.closeDirectoryBrowser()
+
+    /** Opens a file from Kali (deliverable, changed file) after staging it for Android. */
+    fun openGuestFile(path: String, share: Boolean = false) =
+        AgentEngine.openGuestFile(path, share)
+
+    fun openAttachment(file: com.kingkang.app.agent.AgentFile) =
+        AgentEngine.openAttachment(file)
+
+    fun shareAttachment(file: com.kingkang.app.agent.AgentFile) =
+        AgentEngine.shareAttachment(file)
+
+    /** Resolves the staged host file so the preview can read it without leaving the app. */
+    fun attachmentHostFile(file: com.kingkang.app.agent.AgentFile): java.io.File? =
+        AgentEngine.attachmentHostFile(file)
+
+    suspend fun speechCatalog(): com.kingkang.app.agent.AgentSpeechCatalog =
+        AgentEngine.speechCatalog()
+
+    suspend fun prepareSpeech(providerId: String) =
+        AgentEngine.prepareSpeech(providerId)
+
+    suspend fun cancelSpeechPreparation(providerId: String) =
+        AgentEngine.cancelSpeechPreparation(providerId)
+
+    suspend fun transcribeSpeech(
+        wav: ByteArray,
+        providerId: String?,
+        language: String?
+    ): String = AgentEngine.transcribeSpeech(wav, providerId, language)
+
     fun refreshSubagents() = AgentEngine.refreshSubagents()
 
     fun selectChat(id: String) = AgentEngine.openSession(id)
+
+    /** Branches the conversation at one finished message and opens the copy. */
+    fun forkAtMessage(atSeq: Long?) {
+        val id = AgentEngine.state.value.activeSessionId ?: return
+        AgentEngine.forkSessionAt(id, atSeq)
+    }
+
+    fun rateMessage(
+        messageId: String,
+        rating: String,
+        category: String? = null,
+        note: String? = null
+    ) = AgentEngine.rateMessage(messageId, rating, category, note)
+
+    fun clearMessageFeedback(messageId: String) = AgentEngine.clearMessageFeedback(messageId)
 
     fun archiveChat(id: String) = AgentEngine.archiveSession(id)
 
@@ -1146,6 +1394,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setAgentCredential(ref: String, value: String) = AgentEngine.setCredential(ref, value)
 
     fun removeAgentCredential(ref: String) = AgentEngine.removeCredential(ref)
+
+    fun refreshModelProviders() = AgentEngine.refreshModelProviders()
+
+    fun saveModelProvider(draft: AgentProviderDraft, defaultModel: String?) =
+        AgentEngine.saveModelProvider(draft, defaultModel)
+
+    fun removeModelProvider(
+        route: String,
+        apiKeyRef: String?,
+        deleteKey: Boolean,
+        confirmed: Boolean
+    ) = AgentEngine.removeModelProvider(route, apiKeyRef, deleteKey, confirmed)
+
+    fun discoverProviderModels(
+        provider: String,
+        baseURL: String,
+        api: String,
+        apiKey: String
+    ) = AgentEngine.discoverProviderModels(provider, baseURL, api, apiKey)
+
+    fun setDefaultModel(provider: String, model: String, effort: String? = null) =
+        AgentEngine.setDefaultModel(provider, model, effort)
 
     fun selectAgentPermission(value: String) = AgentEngine.selectSessionPermission(value)
 

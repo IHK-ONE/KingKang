@@ -60,7 +60,9 @@ import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentPlugin
 import com.kingkang.app.agent.AgentPluginInspection
 import com.kingkang.app.agent.AgentPluginOffer
+import com.kingkang.app.agent.AgentPluginMarketResult
 import com.kingkang.app.ui.theme.Accent
+import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
 import com.kingkang.app.ui.theme.ErrorContainer
@@ -93,6 +95,9 @@ fun PluginsScreen(
 
     var showInstall by remember { mutableStateOf(false) }
     var spec by remember { mutableStateOf("") }
+    var detailPlugin by remember { mutableStateOf<AgentPlugin?>(null) }
+    var confirmUninstall by remember { mutableStateOf<AgentPlugin?>(null) }
+    var searchText by remember { mutableStateOf("") }
     var inspecting by remember { mutableStateOf(false) }
     var inspected by remember { mutableStateOf<AgentPluginInspection?>(null) }
     var installError by remember { mutableStateOf<String?>(null) }
@@ -241,9 +246,12 @@ fun PluginsScreen(
                             updating = incompatibleUpdateVersion(plugin, agent.dshVersion)
                                 ?.let { installing == "${plugin.name}@$it" } == true,
                             changing = changing == plugin.name,
-                            enabled = ready && changing == null && installing == null,
+                            removing = agent.pluginRemoving == plugin.name,
+                            enabled = ready && changing == null && installing == null &&
+                                agent.pluginRemoving == null,
                             onToggle = { vm.setPluginEnabled(plugin.name, it) },
-                            onUpdate = { version -> vm.updatePlugin(plugin.name, version) }
+                            onUpdate = { version -> vm.updatePlugin(plugin.name, version) },
+                            onManage = { detailPlugin = plugin }
                         )
                     }
                 }
@@ -267,6 +275,123 @@ fun PluginsScreen(
                             enabled = ready && installing == null && changing == null,
                             onInstall = { vm.installPlugin(offer.spec) }
                         )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+            SectionLabel("插件市场")
+            Spacer(Modifier.height(8.dp))
+            SettingsLikeCard {
+                Text(
+                    "从当前 NPM 源搜索 dsh 插件。第三方插件会以 dsh 的权限运行，" +
+                        "安装前请确认来源。",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(SurfaceVariant)
+                            .padding(horizontal = 11.dp, vertical = 9.dp)
+                    ) {
+                        BasicTextField(
+                            value = searchText,
+                            onValueChange = { searchText = it.take(120) },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = MaterialTheme.typography.bodySmall.copy(
+                                color = TextPrimary,
+                                fontSize = 11.5.sp
+                            ),
+                            cursorBrush = SolidColor(Accent),
+                            singleLine = true,
+                            enabled = ready && !agent.pluginSearch.loading,
+                            decorationBox = { inner ->
+                                if (searchText.isEmpty()) {
+                                    Text(
+                                        "搜索插件，例如 web-search",
+                                        color = TextMuted,
+                                        fontSize = 11.5.sp
+                                    )
+                                }
+                                inner()
+                            }
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = { vm.searchPlugins(searchText.trim()) },
+                        enabled = ready && !agent.pluginSearch.loading &&
+                            agent.pluginRemoving == null,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Border),
+                        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp),
+                        modifier = Modifier.height(34.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = TextSecondary,
+                            disabledContentColor = TextMuted
+                        )
+                    ) {
+                        Text("搜索", fontSize = 11.sp)
+                    }
+                }
+
+                val market = agent.pluginSearch
+                if (market.loading) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            color = TextMuted,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("正在搜索插件源…", color = TextMuted, fontSize = 10.5.sp)
+                    }
+                }
+                market.error?.let { message ->
+                    Spacer(Modifier.height(10.dp))
+                    Text(message, color = ErrorText, fontSize = 10.5.sp, lineHeight = 15.sp)
+                }
+                if (market.searched && !market.loading && market.error == null) {
+                    Spacer(Modifier.height(12.dp))
+                    if (market.results.isEmpty()) {
+                        Text(
+                            "没有找到相关插件。可以换一个关键词，或直接输入包名安装。",
+                            color = TextMuted,
+                            fontSize = 10.5.sp,
+                            lineHeight = 15.sp
+                        )
+                    } else {
+                        Text(
+                            "共 ${market.total} 个结果",
+                            color = TextMuted,
+                            fontSize = 10.sp
+                        )
+                        market.results.forEachIndexed { index, result ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 10.dp),
+                                    color = Border.copy(alpha = 0.7f)
+                                )
+                            }
+                            val alreadyInstalled = agent.plugins.any { it.name == result.name }
+                            MarketResultRow(
+                                result = result,
+                                alreadyInstalled = alreadyInstalled,
+                                installing = installing == marketInstallSpec(result),
+                                enabled = ready && installing == null &&
+                                    agent.pluginRemoving == null && !alreadyInstalled,
+                                onInstall = { vm.installPlugin(marketInstallSpec(result)) }
+                            )
+                        }
                     }
                 }
             }
@@ -367,6 +492,171 @@ fun PluginsScreen(
         )
     }
 
+    detailPlugin?.let { plugin ->
+        PluginDetailDialog(
+            plugin = plugin,
+            removing = agent.pluginRemoving == plugin.name,
+            onDismiss = { detailPlugin = null },
+            onOpenHarness = {
+                detailPlugin = null
+                onOpenHarness()
+            },
+            onUninstall = {
+                detailPlugin = null
+                confirmUninstall = plugin
+            }
+        )
+    }
+
+    confirmUninstall?.let { plugin ->
+        AlertDialog(
+            onDismissRequest = { confirmUninstall = null },
+            containerColor = Surface,
+            titleContentColor = TextPrimary,
+            textContentColor = TextSecondary,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("卸载 ${plugin.displayTitle}？", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Text(
+                    "插件会从 dsh 的 profile 中移除，它的设置和相关数据可能一并删除。" +
+                        "其他插件不受影响；如果 Agent 空闲会立即重启，否则在下次重启后生效。",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.uninstallPlugin(plugin.name)
+                    confirmUninstall = null
+                }) {
+                    Text("卸载", color = ErrorText)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmUninstall = null }) {
+                    Text("取消", color = TextSecondary)
+                }
+            }
+        )
+    }
+
+}
+
+@Composable
+private fun PluginDetailDialog(
+    plugin: AgentPlugin,
+    removing: Boolean,
+    onDismiss: () -> Unit,
+    onOpenHarness: () -> Unit,
+    onUninstall: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Surface,
+        titleContentColor = TextPrimary,
+        textContentColor = TextSecondary,
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    plugin.displayTitle,
+                    modifier = Modifier.weight(1f, fill = false),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                plugin.version?.let { version ->
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        version,
+                        color = TextMuted,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp
+                    )
+                }
+                if (plugin.official) {
+                    Spacer(Modifier.width(6.dp))
+                    MonoTag("官方")
+                }
+            }
+        },
+        text = {
+            Column {
+                Text(
+                    plugin.name,
+                    color = TextMuted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.5.sp
+                )
+                if (plugin.description.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        plugin.description,
+                        color = TextSecondary,
+                        fontSize = 11.5.sp,
+                        lineHeight = 16.sp
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(SurfaceVariant.copy(alpha = 0.6f))
+                        .padding(horizontal = 12.dp, vertical = 9.dp)
+                ) {
+                    Text(
+                        "插件自己的设置页需要在 Harness 中打开。",
+                        color = TextSecondary,
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        "路径：Harness → 插件 → ${plugin.displayTitle}",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        lineHeight = 14.sp
+                    )
+                }
+                if (plugin.removable) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "卸载会移除插件及其配置，来源不可信的插件建议先停用。",
+                        color = Amber,
+                        fontSize = 10.sp,
+                        lineHeight = 14.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onOpenHarness) {
+                Text("打开 Harness", color = Accent)
+            }
+        },
+        dismissButton = {
+            Row {
+                if (plugin.removable) {
+                    if (removing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .padding(horizontal = 14.dp)
+                                .size(14.dp),
+                            color = TextMuted,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        TextButton(onClick = onUninstall) {
+                            Text("卸载", color = ErrorText)
+                        }
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("关闭", color = TextSecondary)
+                }
+            }
+        }
+    )
 }
 
 /**
@@ -420,9 +710,11 @@ private fun InstalledPluginRow(
     dshVersion: String?,
     updating: Boolean,
     changing: Boolean,
+    removing: Boolean,
     enabled: Boolean,
     onToggle: (Boolean) -> Unit,
-    onUpdate: (String) -> Unit
+    onUpdate: (String) -> Unit,
+    onManage: () -> Unit
 ) {
     val updateVersion = incompatibleUpdateVersion(plugin, dshVersion)
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -492,9 +784,19 @@ private fun InstalledPluginRow(
                     }
                 }
             }
+            Spacer(Modifier.height(5.dp))
+            Text(
+                "详情与设置",
+                color = TextMuted,
+                fontSize = 10.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onManage)
+                    .padding(vertical = 2.dp)
+            )
         }
         Spacer(Modifier.width(12.dp))
-        if (changing) {
+        if (changing || removing) {
             Box(
                 Modifier.size(width = 52.dp, height = 48.dp),
                 contentAlignment = Alignment.Center
@@ -578,6 +880,101 @@ private fun OfferPluginRow(
             }
         } else {
             OutlinedButton(
+                onClick = onInstall,
+                enabled = enabled,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, Border),
+                contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp),
+                modifier = Modifier.height(30.dp),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = TextSecondary,
+                    disabledContentColor = TextMuted
+                )
+            ) {
+                Text("安装", fontSize = 10.5.sp)
+            }
+        }
+    }
+}
+
+private fun marketInstallSpec(result: AgentPluginMarketResult): String =
+    result.version?.takeIf { it.isNotBlank() }
+        ?.let { "${result.name}@$it" }
+        ?: result.name
+
+@Composable
+private fun MarketResultRow(
+    result: AgentPluginMarketResult,
+    alreadyInstalled: Boolean,
+    installing: Boolean,
+    enabled: Boolean,
+    onInstall: () -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    result.name,
+                    modifier = Modifier.weight(1f, fill = false),
+                    color = TextPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                result.version?.let { version ->
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        version,
+                        color = TextMuted,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.sp
+                    )
+                }
+                if (result.official) {
+                    Spacer(Modifier.width(6.dp))
+                    MonoTag("官方")
+                }
+            }
+            if (result.description.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    result.description,
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            val meta = listOfNotNull(
+                result.publisher?.takeIf { it.isNotBlank() }?.let { "发布者 $it" },
+                result.date?.takeIf { it.isNotBlank() }?.take(10)
+            ).joinToString(" · ")
+            if (meta.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(meta, color = TextMuted, fontSize = 9.sp)
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        when {
+            alreadyInstalled -> Text(
+                "已安装",
+                color = TextMuted,
+                fontSize = 10.sp,
+                modifier = Modifier.padding(horizontal = 6.dp)
+            )
+            installing -> Box(
+                Modifier.size(width = 52.dp, height = 40.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(15.dp),
+                    color = TextMuted,
+                    strokeWidth = 2.dp
+                )
+            }
+            else -> OutlinedButton(
                 onClick = onInstall,
                 enabled = enabled,
                 shape = RoundedCornerShape(10.dp),

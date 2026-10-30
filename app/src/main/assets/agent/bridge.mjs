@@ -15,24 +15,49 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import {
+  closeSync,
+  createWriteStream,
+  copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
+  renameSync,
   readdirSync,
   readlinkSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { posix as posixPath } from "node:path";
 import { createInterface } from "node:readline";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 
 const PROTOCOL = 1;
-const BRIDGE_VERSION = "2.4.0";
+const BRIDGE_VERSION = "2.5.3";
+/** Settings namespace the pi-ai adapter reads provider routes from (the web Models page writes it). */
+const MODEL_PROVIDER_NS = "llm-pi-ai";
+/** Namespace holding the model new Agents are created with. */
+const DEFAULT_MODEL_NS = "agent-default-model";
+/** Wire protocols the pi-ai adapter can serve; the first is the safest default for a custom gateway. */
+const MODEL_PROTOCOLS = ["openai-completions", "openai-responses", "anthropic-messages"];
+/** Route ids double as credential-key segments, so they keep the same lowercase grammar. */
+const PROVIDER_ROUTE_PATTERN = /^[a-z][a-z0-9-]*$/;
+/** Credential references are POSIX shell identifiers, the same grammar dsh enforces. */
+const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const NODE_BIN = process.env.KK_NODE_BIN || "/opt/kingkang/node/bin/node";
 const DSH_BIN = process.env.KK_DSH_BIN || "/opt/kingkang/dsh/bin/dsh";
 const WORKDIR = process.env.KK_WORKDIR || "/root";
+/** Session archives are written inside Kali; the app reads them through the rootfs mount. */
+const EXPORT_DIR = "/root/.dsh/exports";
+/** Archives kept on disk; each export prunes everything beyond this. */
+const EXPORT_KEEP = 5;
 /** dsh profile the bridge starts; its directory is what pnpm reads `.npmrc` from. */
 const PROFILE_NAME = "web";
 const PROFILE_DIR = `${WORKDIR}/.dsh/profiles/${PROFILE_NAME}`;
@@ -54,6 +79,8 @@ const CAPABILITIES = [
   "session.list",
   "session.create",
   "session.history",
+  "session.export",
+  "file.share",
   "session.prompt",
   "session.cancel",
   "session.updateQueue",
@@ -62,16 +89,43 @@ const CAPABILITIES = [
   "session.selectModel",
   "session.rename",
   "session.fork",
+  "job.list",
+  "job.kill",
+  "job.output",
+  "changes.summary",
+  "changes.diff",
+  "goal.get",
+  "goal.pause",
+  "goal.resume",
+  "goal.clear",
+  "goal.edit",
+  "schedule.catalog",
+  "schedule.update",
+  "schedule.delete",
+  "schedule.history",
   "subagent.list",
   "subagent.history",
   "subagent.prompt",
   "subagent.interrupt",
   "command.list",
   "command.execute",
+  "reference.files",
+  "reference.sessions",
+  "speech.catalog",
+  "speech.prepare",
+  "speech.cancelPreparation",
+  "speech.transcribe",
   "skill.list",
   "web.url",
   "workspace.list",
   "workspace.create",
+  "workspace.rename",
+  "workspace.delete",
+  "workspace.reorder",
+  "workspace.files",
+  "workspace.readFile",
+  "workspace.mkdir",
+  "workspace.browse",
   "workspace.archiveSession",
   "workspace.unarchiveSession",
   "workspace.pinSession",
@@ -83,11 +137,22 @@ const CAPABILITIES = [
   "plugin.update",
   "plugin.registry.get",
   "plugin.registry.set",
+  "plugin.uninstall",
+  "plugin.search",
+  "account.state",
+  "account.profile",
+  "account.balance",
+  "account.signOut",
   "approval.respond",
   "question.respond",
   "credentials.describe",
   "credentials.set",
   "credentials.unset",
+  "model.providers",
+  "model.saveProvider",
+  "model.removeProvider",
+  "model.discover",
+  "model.setDefault",
   "permission.catalog",
   "settings.describe",
   "settings.mutate",
@@ -148,6 +213,11 @@ const pendingWaterfalls = new Map();
 const attempts = new Map();
 /** Latest wire projection values per session, for cheap model selection reads. */
 const projectionCache = new Map();
+/**
+ * The newest `workspace/changes` announcement per session: the event's seq is the
+ * coordinate the Host serves that turn's change summary under.
+ */
+const changesSeqBySession = new Map();
 
 let activeFollow = null;
 let lastFollowSessionId = null;
@@ -353,6 +423,17 @@ function normalizeEvent(sessionId, event, view) {
   const type = String(event.type || "");
   if (isSilentEvent(type)) return null;
   const data = event.data && typeof event.data === "object" ? event.data : {};
+  // Remember the newest change announcement even though the event renders nothing:
+  // its seq is the only handle on the Host-served summary and comparisons.
+  if (type === "workspace/changes" && typeof event.seq === "number") {
+    const seen = changesSeqBySession.get(sessionId);
+    if (seen === undefined || event.seq > seen.seq) {
+      changesSeqBySession.set(sessionId, {
+        seq: event.seq,
+        turn: typeof data.turn === "number" ? data.turn : null,
+      });
+    }
+  }
   const base = {
     sessionId,
     seq: typeof event.seq === "number" ? event.seq : null,
@@ -369,8 +450,21 @@ function normalizeEvent(sessionId, event, view) {
       const source =
         message.source && typeof message.source === "object" ? message.source : {};
       // dsh also records runtime/time context snapshots as `user/message`; only a
-      // real user turn (source.kind "user") belongs in the transcript.
-      if (source.kind && source.kind !== "user") return null;
+      // real user turn belongs in the transcript. Schedule reminders and background
+      // job completion notices are the exceptions: they explain why a turn started
+      // or what finished, so the app renders them as context lines.
+      if (source.kind && source.kind !== "user") {
+        if (source.kind !== "schedule" && source.kind !== "tool-jobs") return null;
+        return {
+          ...base,
+          kind: "context.message",
+          text: textOf(message.content),
+          source: source.kind,
+          form: typeof source.form === "string" ? source.form : null,
+          summary: typeof source.summary === "string" ? source.summary : null,
+          messageId: message.id == null ? null : String(message.id),
+        };
+      }
       return {
         ...base,
         kind: "user.message",
@@ -402,6 +496,9 @@ function normalizeEvent(sessionId, event, view) {
         images: imagesOf(data.message?.content),
         usage: data.usage ?? null,
         source: data.message?.source ?? null,
+        // Feedback and message-level actions address the finalized message by this id;
+        // a streamed partial that never finalized carries none.
+        messageId: data.message?.id == null ? null : String(data.message.id),
       };
     case "tool/call":
       return {
@@ -430,6 +527,9 @@ function normalizeEvent(sessionId, event, view) {
         text: textOf(content),
         isError,
         view: view ?? null,
+        // dsh-web derives diff/file/search cards from result meta; forward it unchanged
+        // so the app can render the same structured views.
+        meta: data.meta ?? null,
       };
     }
     case "turn/start":
@@ -444,7 +544,67 @@ function normalizeEvent(sessionId, event, view) {
       return { ...base, kind: "subagent.catalog" };
     case "todo/write":
       return { ...base, kind: "todo.write", todos: data.todos ?? [] };
+    case "deliverables/presented": {
+      // The present tool's durable record: the files an agent declared as deliverables.
+      const files = Array.isArray(data.files) ? data.files : [];
+      return {
+        ...base,
+        kind: "deliverables",
+        turn: data.turn,
+        callId: data.callId == null ? null : String(data.callId),
+        files: files
+          .filter((file) => file && typeof file.path === "string" && file.path.length > 0)
+          .map((file) => ({
+            path: file.path,
+            description: typeof file.description === "string" ? file.description : "",
+          })),
+      };
+    }
+    case "workspace/changes":
+      // The announcement itself carries only a turn; the summary is fetched over HTTP
+      // with the seq recorded above, so the app is told where the data lives.
+      return {
+        ...base,
+        kind: "changes",
+        turn: typeof data.turn === "number" ? data.turn : null,
+      };
     default:
+      if (type.startsWith("tool-workflow/")) {
+        // Workflow runs are durable log-only records (there is no RPC for them). The
+        // four event types fold into one transcript card, so forward the run id and
+        // whichever member facts this event carries.
+        const phase = type.slice("tool-workflow/".length);
+        return {
+          ...base,
+          kind: "workflow",
+          phase,
+          runId: data.runId == null ? "" : String(data.runId),
+          name: phase === "run-start" ? String(data.name || "") : "",
+          memberSeq: typeof data.seq === "number" ? data.seq : null,
+          label: typeof data.label === "string" ? data.label : null,
+          memberPhase: typeof data.phase === "string" ? data.phase : null,
+          childId: data.childId == null ? null : String(data.childId),
+          outcome: typeof data.outcome === "string" ? data.outcome : null,
+          stopReason: typeof data.stopReason === "string" ? data.stopReason : null,
+        };
+      }
+      if (type.startsWith("compaction/")) {
+        // Compaction is a log-only lifecycle bracket. The divider needs the phase plus
+        // what was folded away; the model-facing summary is capped rather than dropped,
+        // so the reader can expand it without the bridge forwarding an unbounded string.
+        const summary = typeof data.summary === "string" ? data.summary.slice(0, 8_000) : null;
+        return {
+          ...base,
+          kind: "compaction",
+          phase: type.slice("compaction/".length),
+          compactionId: typeof data.compactionId === "string" ? data.compactionId : null,
+          turn: typeof data.turn === "number" ? data.turn : null,
+          shadowedTokens: typeof data.shadowedTokenCount === "number" ? data.shadowedTokenCount : null,
+          shadowedItems: Array.isArray(data.shadowedSeqs) ? data.shadowedSeqs.length : null,
+          summary,
+          error: typeof data.error === "string" ? data.error : null,
+        };
+      }
       if (type.startsWith("command/")) {
         const phase = type.slice("command/".length);
         // `command/run` names the command and its raw input; `command/done`
@@ -631,6 +791,40 @@ async function postJsonOnce(path, body, timeoutMs) {
     return JSON.parse(text);
   } catch {
     throw codedError("transport", `invalid JSON from ${path}`, { body: text.slice(0, 500) });
+  }
+}
+
+async function getJsonOnce(path, timeoutMs) {
+  const response = await fetch(new URL(path, baseUrl), {
+    method: "GET",
+    headers: apiHeaders({ accept: "application/json", origin: baseUrl }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw codedError("transport", `HTTP ${response.status} for ${path}`, {
+      status: response.status,
+      body: text.slice(0, 500),
+    });
+  }
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw codedError("transport", `invalid JSON from ${path}`, { body: text.slice(0, 500) });
+  }
+}
+
+/** Read one Host-served JSON record, re-trading a stale cookie exactly once. */
+async function getJson(path, timeoutMs = 20_000, allowAuthRetry = true) {
+  try {
+    return await getJsonOnce(path, timeoutMs);
+  } catch (error) {
+    if (allowAuthRetry && error?.details?.status === 401) {
+      info(`dsh 拒绝了 ${path} 的会话（HTTP 401），正在重新认证`);
+      if (await refreshAuth()) return getJson(path, timeoutMs, false);
+    }
+    throw error;
   }
 }
 
@@ -833,9 +1027,90 @@ function firstStreamItem(endpoint, args, timeoutMs = 15_000) {
   });
 }
 
+const JOB_TERMINAL = new Set(["completed", "failed", "killed"]);
+
+/**
+ * Snapshots one background job's output. `job/follow` is a live stream — the first frame
+ * opens the job, output frames carry offsets, and status frames follow the run — so we
+ * read until the job settles or the stream goes quiet, then close it. The app renders the
+ * collected scrollback rather than holding a stream open.
+ */
+function collectJobOutput(sessionId, jobId, from = 0) {
+  return new Promise((resolve, reject) => {
+    let streamId = null;
+    let settled = false;
+    let job = null;
+    let next = Number.isFinite(from) ? from : 0;
+    let lossy = false;
+    let started = false;
+    let quiet = null;
+    const chunks = [];
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(grace);
+      clearTimeout(quiet);
+      if (streamId) closeStream(streamId);
+      if (error) reject(error);
+      else resolve({ job, chunks, next, lossy });
+    };
+    const grace = setTimeout(
+      () => finish(codedError("transport", "job/follow 连接超时")),
+      10_000
+    );
+    const armQuiet = () => {
+      clearTimeout(grace);
+      started = true;
+      clearTimeout(quiet);
+      quiet = setTimeout(() => finish(null), 1_500);
+    };
+    try {
+      streamId = openLogicalStream(
+        "job/follow",
+        { request: { sessionId, jobId, from: next } },
+        {
+          onItem: (value) => {
+            if (!value || typeof value !== "object") return;
+            if (value.type === "opened") {
+              job = value.job || job;
+              if (Number.isFinite(value.from)) next = value.from;
+              armQuiet();
+            } else if (value.type === "output") {
+              const list = Array.isArray(value.chunks) ? value.chunks : [];
+              for (const chunk of list) {
+                chunks.push({
+                  at: Number(chunk.at) || 0,
+                  text: String(chunk.text ?? ""),
+                  channel: chunk.channel || "stdout",
+                  gapBefore: chunk.gapBefore === true,
+                });
+              }
+              if (Number.isFinite(value.next)) next = value.next;
+              if (value.lossy === true) lossy = true;
+              armQuiet();
+            } else if (value.type === "status") {
+              job = value.job || job;
+              if (job && JOB_TERMINAL.has(job.status)) finish(null);
+              else armQuiet();
+            }
+          },
+          onEnd: () => finish(null),
+          onError: (error) =>
+            finish(
+              codedError("transport", error?.message || "job/follow 读取失败", {
+                dshCode: error?.code || "unknown",
+              })
+            ),
+        }
+      );
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
 /** Picks the Chinese display text out of a dsh localized string or map. */
-function localizedText(value) {
-  if (typeof value === "string") return value;
+function localizedText(value) {  if (typeof value === "string") return value;
   if (value && typeof value === "object") {
     for (const key of ["zh-CN", "zh", "en"]) {
       if (typeof value[key] === "string" && value[key]) return value[key];
@@ -1930,6 +2205,20 @@ function subagentAddress(payload) {
   return { parentSessionId, childSessionId };
 }
 
+/**
+ * dsh addresses one exact goal revision, so a mutation made against a stale card is
+ * rejected instead of overwriting a newer change. The app sends the id and revision it
+ * last saw; this keeps the wire shape honest.
+ */
+function goalRef(payload) {
+  const id = String(payload?.id || "").trim();
+  const revision = Number(payload?.revision);
+  if (!id || !Number.isInteger(revision) || revision < 1) {
+    throw badRequest("goal action needs the current goal id and revision");
+  }
+  return { id, revision };
+}
+
 async function readProjections(sessionId) {
   if (!sessionId) return null;
   const value = await callDsh("session/projections", { request: { sessionId } });
@@ -1972,12 +2261,37 @@ async function subagentList(payload) {
       }
       const timing = child?.values?.subagentTiming;
       const label = typeof row?.label === "string" ? row.label : undefined;
+      const usage = child?.values?.tokenUsage;
+      const tokens = usage
+        ? Number(usage.uncachedInputTokens || 0) +
+          Number(usage.outputTokens || 0) +
+          Number(usage.cacheReadTokens || 0) +
+          Number(usage.cacheWriteTokens || 0)
+        : undefined;
+      // dsh-web's exact whole-second activity: settled turns plus the live span.
+      let durationMs;
+      if (timing) {
+        const active = timing.active;
+        const end = active
+          ? active.through != null
+            ? Number(active.through)
+            : Date.now()
+          : 0;
+        durationMs = Number(timing.settledMs || 0) +
+          (active ? Math.max(0, end - Number(active.since || 0)) : 0);
+      }
       return {
         kind: "child",
         id,
         mode,
         ...(label ? { label } : {}),
+        ...(typeof child?.values?.title === "string" && child.values.title
+          ? { title: child.values.title }
+          : {}),
         activity: timing && timing.active ? "running" : "inactive",
+        completed: timing?.lastTurnCompleted === true,
+        ...(Number.isFinite(tokens) ? { tokens } : {}),
+        ...(Number.isFinite(durationMs) ? { durationMs } : {}),
         hasChildren: Array.isArray(child?.values?.subagentCatalog)
           ? child.values.subagentCatalog.length > 0
           : false,
@@ -2061,6 +2375,794 @@ async function sessionModels(payload) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Model providers (the web Models page's counterpart)
+// ---------------------------------------------------------------------------
+
+/** The settings view for one namespace, or null when this dsh has no such entry. */
+function settingsNamespace(described, ns) {
+  const list = Array.isArray(described?.namespaces) ? described.namespaces : [];
+  return list.find((item) => item && item.ns === ns) || null;
+}
+
+/**
+ * Only the profile fields a form can safely render. Provider profiles are never
+ * supposed to hold secrets — the key lives in the credential store behind
+ * `apiKeyEnv` — but an imported profile could carry headers, so the bridge
+ * whitelists instead of forwarding whatever settings returned.
+ */
+function sanitizeModelEntry(raw) {
+  const source = typeof raw === "string" ? { id: raw } : raw;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const id = typeof source.id === "string" ? source.id.trim() : "";
+  if (!id) return null;
+  const entry = { id };
+  if (typeof source.name === "string" && source.name.trim()) {
+    entry.name = source.name.trim();
+  }
+  if (Number.isFinite(source.contextWindow) && source.contextWindow > 0) {
+    entry.contextWindow = Math.floor(Number(source.contextWindow));
+  }
+  if (Number.isFinite(source.maxTokens) && source.maxTokens > 0) {
+    entry.maxTokens = Math.floor(Number(source.maxTokens));
+  }
+  if (Array.isArray(source.inputModalities)) {
+    const modalities = source.inputModalities.filter(
+      (item) => item === "text" || item === "image"
+    );
+    if (modalities.length > 0) entry.inputModalities = modalities;
+  }
+  return entry;
+}
+
+function sanitizeProviderProfile(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const profile = {};
+  if (typeof raw.displayName === "string" && raw.displayName.trim()) {
+    profile.displayName = raw.displayName.trim();
+  }
+  if (typeof raw.api === "string" && raw.api.trim()) profile.api = raw.api.trim();
+  if (typeof raw.baseURL === "string" && raw.baseURL.trim()) {
+    profile.baseURL = raw.baseURL.trim();
+  }
+  if (typeof raw.apiKeyEnv === "string" && raw.apiKeyEnv.trim()) {
+    profile.apiKeyEnv = raw.apiKeyEnv.trim();
+  }
+  if (Array.isArray(raw.models)) {
+    profile.models = raw.models.map(sanitizeModelEntry).filter(Boolean);
+  }
+  if (Number.isFinite(raw.defaultContextWindow) && raw.defaultContextWindow > 0) {
+    profile.defaultContextWindow = Math.floor(Number(raw.defaultContextWindow));
+  }
+  if (Number.isFinite(raw.defaultMaxTokens) && raw.defaultMaxTokens > 0) {
+    profile.defaultMaxTokens = Math.floor(Number(raw.defaultMaxTokens));
+  }
+  if (Array.isArray(raw.defaultInput)) {
+    const input = raw.defaultInput.filter((item) => item === "text" || item === "image");
+    if (input.length > 0) profile.defaultInput = input;
+  }
+  return profile;
+}
+
+/** The credential reference a new route stores its key under unless the form names one. */
+function defaultCredentialRef(route) {
+  const base = route.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+  return `${base.startsWith("_") || /^[0-9]/.test(base) ? `_${base}` : base}_API_KEY`;
+}
+
+function validHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The provider directory plus each route's editable profile, key presence, and the
+ * settings revision writes must carry. The secret value never leaves dsh.
+ */
+async function modelProviders() {
+  const described = await callDsh("settings/describe", {});
+  const view = settingsNamespace(described, MODEL_PROVIDER_NS);
+  let directory = [];
+  if (view) {
+    try {
+      const value = await callDsh("llm/listConfigurableProviders", {});
+      directory = Array.isArray(value) ? value : [];
+    } catch (error) {
+      // An older dsh has the settings entry but no directory; stored profiles
+      // still render, and the add form falls back to a hand-declared route.
+      info(`读取供应商目录失败：${describeError(error)}`);
+    }
+  }
+  const section = view?.value && typeof view.value === "object" ? view.value : {};
+  const rawProfiles =
+    section.providers && typeof section.providers === "object" && !Array.isArray(section.providers)
+      ? section.providers
+      : {};
+  const rows = new Map();
+  const ensureRow = (route) => {
+    let row = rows.get(route);
+    if (!row) {
+      row = {
+        provider: route,
+        displayName: route,
+        declared: false,
+        defaultBaseURL: null,
+        nativeAuth: null,
+        error: null,
+        hasProfile: false,
+        profile: null,
+      };
+      rows.set(route, row);
+    }
+    return row;
+  };
+  for (const entry of directory) {
+    if (!entry || typeof entry !== "object") continue;
+    const route = typeof entry.provider === "string" ? entry.provider : "";
+    if (!route) continue;
+    const row = ensureRow(route);
+    if (typeof entry.displayName === "string" && entry.displayName) {
+      row.displayName = entry.displayName;
+    }
+    row.declared = entry.declared === true;
+    if (typeof entry.defaultBaseURL === "string" && entry.defaultBaseURL) {
+      row.defaultBaseURL = entry.defaultBaseURL;
+    }
+    if (entry.nativeAuth && typeof entry.nativeAuth === "object") {
+      row.nativeAuth = {
+        env: Array.isArray(entry.nativeAuth.env)
+          ? entry.nativeAuth.env.map((name) => String(name))
+          : [],
+        oauth: entry.nativeAuth.oauth === true,
+      };
+    }
+    if (typeof entry.error === "string" && entry.error) row.error = entry.error;
+  }
+  for (const [route, profile] of Object.entries(rawProfiles)) {
+    if (!route) continue;
+    const row = ensureRow(route);
+    row.hasProfile = true;
+    row.profile = sanitizeProviderProfile(profile);
+    if (row.profile?.displayName) row.displayName = row.profile.displayName;
+  }
+  const refs = [
+    ...new Set(
+      [...rows.values()]
+        .map((row) => row.profile?.apiKeyEnv)
+        .filter((ref) => typeof ref === "string" && ref)
+    ),
+  ];
+  let credentialState = {};
+  if (refs.length > 0) {
+    try {
+      // dsh answers with one view per reference, keyed directly by the
+      // reference name — not under a `refs` wrapper.
+      const result = await callDsh("credentials/describe", { refs });
+      if (result && typeof result === "object") credentialState = result;
+    } catch (error) {
+      info(`读取供应商凭据状态失败：${describeError(error)}`);
+    }
+  }
+  const providers = [...rows.values()]
+    .map((row) => {
+      const ref = row.profile?.apiKeyEnv || "";
+      const credential = ref ? credentialState[ref] : null;
+      return {
+        provider: row.provider,
+        displayName: row.displayName || row.provider,
+        declared: row.declared,
+        defaultBaseURL: row.defaultBaseURL,
+        hasProfile: row.hasProfile,
+        profile: row.profile,
+        keyRef: ref,
+        keyConfigured: Boolean(credential?.configured),
+        keySource:
+          credential && typeof credential.source === "string" && credential.source
+            ? credential.source
+            : null,
+        keyWritable: credential?.writable !== false,
+        error: row.error,
+        nativeAuth: row.nativeAuth,
+      };
+    })
+    .sort(
+      (left, right) =>
+        Number(right.hasProfile) - Number(left.hasProfile) ||
+        left.provider.localeCompare(right.provider)
+    );
+  const defaultView = settingsNamespace(described, DEFAULT_MODEL_NS);
+  const defaultSection =
+    defaultView?.value && typeof defaultView.value === "object" ? defaultView.value : null;
+  const currentDefault =
+    defaultSection && typeof defaultSection.provider === "string" && defaultSection.provider
+      ? {
+          provider: defaultSection.provider,
+          model: typeof defaultSection.model === "string" ? defaultSection.model : "",
+          reasoningEffort:
+            typeof defaultSection.reasoningEffort === "string"
+              ? defaultSection.reasoningEffort
+              : null,
+        }
+      : null;
+  return {
+    supported: Boolean(view),
+    ns: MODEL_PROVIDER_NS,
+    writable: Boolean(described?.writable) && Boolean(view),
+    revision: Number(view?.revision) || 0,
+    protocols: MODEL_PROTOCOLS,
+    providers,
+    default: currentDefault,
+  };
+}
+
+async function saveModelProvider(payload) {
+  const route = String(payload?.route || "").trim();
+  if (!PROVIDER_ROUTE_PATTERN.test(route)) {
+    throw badRequest("供应商 ID 只能包含小写字母、数字和连字符，并以字母开头");
+  }
+  const previous = String(payload?.previousRoute || "").trim();
+  if (previous && !PROVIDER_ROUTE_PATTERN.test(previous)) {
+    throw badRequest("原供应商 ID 格式不正确");
+  }
+  const displayName = String(payload?.displayName || "").trim();
+  const api = String(payload?.api || "").trim();
+  if (api && !MODEL_PROTOCOLS.includes(api)) {
+    throw badRequest(`不支持的协议：${api}`);
+  }
+  const baseURL = String(payload?.baseURL || "").trim();
+  if (baseURL && !validHttpUrl(baseURL)) {
+    throw badRequest("endpoint 必须是 http(s) 地址");
+  }
+  const models = Array.isArray(payload?.models)
+    ? payload.models.map(sanitizeModelEntry).filter(Boolean)
+    : [];
+  const apiKey = typeof payload?.apiKey === "string" ? payload.apiKey.trim() : "";
+  const requestedRef = String(payload?.apiKeyRef || "").trim();
+  if (requestedRef && !CREDENTIAL_REF_PATTERN.test(requestedRef)) {
+    throw badRequest("凭据引用只能包含字母、数字和下划线");
+  }
+  const apiKeyRef = requestedRef || (apiKey ? defaultCredentialRef(route) : "");
+  const profile = {};
+  if (displayName) profile.displayName = displayName;
+  if (api) profile.api = api;
+  if (baseURL) profile.baseURL = baseURL;
+  if (models.length > 0) profile.models = models;
+  if (apiKeyRef) profile.apiKeyEnv = apiKeyRef;
+
+  const ops = [];
+  if (previous && previous !== route) {
+    ops.push({ op: "unset", path: ["providers", previous] });
+  }
+  ops.push({ op: "set", path: ["providers", route], value: profile });
+  const args = { ns: MODEL_PROVIDER_NS, ops };
+  if (Number.isFinite(payload?.expectedRevision)) {
+    args.expectedRevision = Number(payload.expectedRevision);
+  }
+  // The settings write goes first: a rejected profile (missing endpoint or
+  // models for a hand-declared route) must not leave a stray credential behind.
+  const result = await callDsh("settings/mutate", args, 30_000);
+  let keyStored = false;
+  let keyError = null;
+  if (apiKey) {
+    try {
+      await callDsh("credentials/set", { ref: apiKeyRef, value: apiKey }, 30_000);
+      keyStored = true;
+    } catch (error) {
+      // The route is saved; report the key failure so the form can stay open
+      // instead of pretending the provider is ready.
+      keyError = describeError(error);
+    }
+  }
+  return {
+    saved: true,
+    route,
+    apiKeyRef: apiKeyRef || null,
+    keyStored,
+    keyError,
+    revision: Number(result?.revision) || 0,
+  };
+}
+
+async function removeModelProvider(payload) {
+  const route = String(payload?.route || "").trim();
+  if (!PROVIDER_ROUTE_PATTERN.test(route)) throw badRequest("供应商 ID 格式不正确");
+  const args = {
+    ns: MODEL_PROVIDER_NS,
+    ops: [{ op: "unset", path: ["providers", route] }],
+  };
+  if (Number.isFinite(payload?.expectedRevision)) {
+    args.expectedRevision = Number(payload.expectedRevision);
+  }
+  const result = await callDsh("settings/mutate", args, 30_000);
+  let keyRemoved = false;
+  let keyError = null;
+  const ref = String(payload?.apiKeyRef || "").trim();
+  if (payload?.deleteKey === true && ref && CREDENTIAL_REF_PATTERN.test(ref)) {
+    try {
+      await callDsh("credentials/unset", { ref }, 20_000);
+      keyRemoved = true;
+    } catch (error) {
+      keyError = describeError(error);
+    }
+  }
+  return {
+    removed: true,
+    keyRemoved,
+    keyError,
+    revision: Number(result?.revision) || 0,
+  };
+}
+
+/**
+ * Interrogate a provider endpoint for its models. This is the draft the user is
+ * editing, so nothing is written: the key travels in this one request and the
+ * reply is candidate metadata the form may adopt.
+ */
+async function discoverProviderModels(payload) {
+  const request = {};
+  const provider = String(payload?.provider || "").trim();
+  if (provider) request.provider = provider;
+  const baseURL = String(payload?.baseURL || "").trim();
+  if (baseURL) {
+    if (!validHttpUrl(baseURL)) throw badRequest("endpoint 必须是 http(s) 地址");
+    request.baseURL = baseURL;
+  }
+  const api = String(payload?.api || "").trim();
+  if (api) request.api = api;
+  const apiKey = typeof payload?.apiKey === "string" ? payload.apiKey.trim() : "";
+  if (apiKey) request.apiKey = apiKey;
+  if (!request.provider && !request.baseURL) {
+    throw badRequest("请填写供应商 ID 或 endpoint");
+  }
+  const models = await callDsh(
+    "llm/discoverModels",
+    { settingsNs: MODEL_PROVIDER_NS, request },
+    60_000
+  );
+  return {
+    models: Array.isArray(models) ? models.map(sanitizeModelEntry).filter(Boolean) : [],
+  };
+}
+
+/**
+ * Make a model the default for conversations created from now on. dsh itself
+ * saves the default when a Session selects a model, so an open Session takes
+ * that path (and applies the choice immediately); without one the same value is
+ * written through the config entry that owns it.
+ */
+async function setDefaultModel(payload) {
+  const provider = String(payload?.provider || "").trim();
+  const model = String(payload?.model || "").trim();
+  if (!provider || !model) throw badRequest("provider 与 model 均为必填");
+  const effort = String(payload?.reasoningEffort || "").trim();
+  const sessionId = String(payload?.sessionId || "").trim();
+  if (sessionId) {
+    const request = { sessionId, provider, model };
+    if (effort) request.reasoningEffort = effort;
+    const value = await callDsh("session/selectModel", { request }, 45_000);
+    return {
+      selected: value?.selected ?? request,
+      viaSession: true,
+      revision: null,
+    };
+  }
+  const described = await callDsh("settings/describe", {});
+  const view = settingsNamespace(described, DEFAULT_MODEL_NS);
+  if (!view) {
+    throw codedError(
+      "unsupported",
+      "当前 dsh 没有可写的默认模型设置，请在对话里切换一次模型"
+    );
+  }
+  const ops = [
+    { op: "set", path: ["provider"], value: provider },
+    { op: "set", path: ["model"], value: model },
+  ];
+  if (effort) {
+    ops.push({ op: "set", path: ["reasoningEffort"], value: effort });
+  } else {
+    ops.push({ op: "unset", path: ["reasoningEffort"] });
+  }
+  const args = { ns: DEFAULT_MODEL_NS, ops };
+  if (Number.isFinite(view.revision)) args.expectedRevision = Number(view.revision);
+  const result = await callDsh("settings/mutate", args, 30_000);
+  return {
+    selected: { provider, model, ...(effort ? { reasoningEffort: effort } : {}) },
+    viaSession: false,
+    revision: Number(result?.revision) || 0,
+  };
+}
+
+/**
+ * Host paths the directory picker must never enumerate. They either belong to Android
+ * (mounted into the PRoot only for the runtime's own use) or describe the kernel, not
+ * a place a user would keep a workspace.
+ */
+const BROWSE_DENY = ["/sdcard", "/storage", "/mnt", "/media", "/data", "/proc", "/sys", "/dev"];
+/** Kali-side staging area the phone can read directly (bind-mounted from filesDir/shared). */
+const OUTBOX_DIR = "/root/shared/outbox";
+const OUTBOX_KEEP = 20;
+
+/**
+ * Lists direct subdirectories of one Kali path for the workspace picker. Files are
+ * omitted because every caller here is choosing a directory; symlinks are skipped so a
+ * link cannot walk the picker outside the path the user navigated to.
+ */
+function browseDirectories(rawPath) {
+  const input = String(rawPath || "").trim() || WORKDIR;
+  if (!input.startsWith("/")) throw badRequest("目录必须是 Kali 中的绝对路径");
+  const normalized = posixPath.normalize(input);
+  if (!normalized.startsWith("/")) throw badRequest("目录路径无效");
+  if (BROWSE_DENY.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))) {
+    throw codedError("forbidden", "不能浏览这个目录");
+  }
+  let stats;
+  try {
+    stats = statSync(normalized);
+  } catch {
+    throw codedError("not-found", "目录不存在或不可访问");
+  }
+  if (!stats.isDirectory()) throw codedError("not-directory", "这不是一个目录");
+  let dirents;
+  try {
+    dirents = readdirSync(normalized, { withFileTypes: true });
+  } catch (error) {
+    throw codedError("forbidden", `无法读取目录：${error?.code || error}`);
+  }
+  const entries = [];
+  for (const entry of dirents) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    entries.push({
+      name: entry.name,
+      path: posixPath.join(normalized, entry.name),
+    });
+  }
+  entries.sort((a, b) => {
+    const hidden = Number(a.name.startsWith(".")) - Number(b.name.startsWith("."));
+    return hidden !== 0 ? hidden : a.name.localeCompare(b.name);
+  });
+  return {
+    path: normalized,
+    parent: normalized === "/" ? null : posixPath.dirname(normalized),
+    entries: entries.slice(0, 300),
+    truncated: entries.length > 300,
+  };
+}
+
+/** One safe leaf name for a file copied out of Kali toward the phone. */
+function safeShareName(value) {
+  const base = String(value || "").split(/[\\/]/).pop() || "file";
+  const cleaned = base
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/[<>:"|?*]/g, "_")
+    .replace(/^\.+/, "")
+    .trim()
+    .slice(0, 120);
+  return cleaned || "file";
+}
+
+/** Copies a Kali file into the phone-visible shared directory, then prunes old copies. */
+function shareFile(rawPath) {
+  const input = String(rawPath || "").trim();
+  if (!input.startsWith("/")) throw badRequest("文件必须是 Kali 中的绝对路径");
+  const normalized = posixPath.normalize(input);
+  if (BROWSE_DENY.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))) {
+    throw codedError("forbidden", "不能打开这个位置的文件");
+  }
+  let stats;
+  try {
+    stats = statSync(normalized);
+  } catch {
+    throw codedError("not-found", "文件不存在或不可访问");
+  }
+  if (!stats.isFile()) throw codedError("not-file", "只能打开普通文件");
+  if (stats.size > 512 * 1024 * 1024) {
+    throw codedError("too-large", "文件超过 512 MB，无法交给其他应用");
+  }
+  mkdirSync(OUTBOX_DIR, { recursive: true });
+  const leaf = safeShareName(posixPath.basename(normalized));
+  const target = `${OUTBOX_DIR}/${Date.now()}-${leaf}`;
+  try {
+    copyFileSync(normalized, target);
+  } catch (error) {
+    throw codedError("file", `无法读取文件：${error?.code || error}`);
+  }
+  pruneOutbox(target);
+  return { guestPath: target, name: leaf, size: stats.size };
+}
+
+/** Keeps the shared outbox bounded; it is a hand-off area, not storage. */
+function pruneOutbox(keepPath) {
+  try {
+    const entries = readdirSync(OUTBOX_DIR)
+      .map((name) => {
+        const path = `${OUTBOX_DIR}/${name}`;
+        try {
+          return { path, mtime: statSync(path).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const entry of entries.slice(OUTBOX_KEEP)) {
+      if (entry.path === keepPath) continue;
+      try {
+        unlinkSync(entry.path);
+      } catch {
+        // A concurrent hand-off may have removed it already.
+      }
+    }
+  } catch {
+    // Pruning is best-effort; the hand-off itself already succeeded.
+  }
+}
+
+/** Creates one directory below a browsable Kali parent for the picker. */
+function createDirectory(rawParent, rawName) {
+  const parent = String(rawParent || "").trim() || WORKDIR;
+  if (!parent.startsWith("/")) throw badRequest("目录必须是 Kali 中的绝对路径");
+  const normalized = posixPath.normalize(parent);
+  if (BROWSE_DENY.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))) {
+    throw codedError("forbidden", "不能在这个位置创建文件夹");
+  }
+  const name = String(rawName || "").trim();
+  if (!name || name === "." || name === ".." || /[\\/]/.test(name)) {
+    throw badRequest("文件夹名称无效");
+  }
+  const target = posixPath.join(normalized, name);
+  if (!target.startsWith(`${normalized}/`)) throw badRequest("文件夹名称无效");
+  let stats;
+  try {
+    stats = statSync(normalized);
+  } catch {
+    throw codedError("not-found", "上级目录不存在或不可访问");
+  }
+  if (!stats.isDirectory()) throw codedError("not-directory", "上级路径不是目录");
+  try {
+    mkdirSync(target);
+  } catch (error) {
+    if (error?.code === "EEXIST") throw codedError("exists", "同名文件夹已存在");
+    throw codedError("file", `无法创建文件夹：${error?.code || error}`);
+  }
+  return { path: target, name };
+}
+
+/** Direct children one sidebar read returns; a bigger directory reports `truncated`. */
+const WORKSPACE_FILE_MAX = 500;
+/** Bytes one preview read returns; a bigger file is cut and reports `truncated`. */
+const WORKSPACE_PREVIEW_MAX = 4 * 1024 * 1024;
+
+/**
+ * Resolves a path the file sidebar asked for, confined to the workspace root the app
+ * names. The root is the active Session's cwd, so a crafted file name can never walk a
+ * preview outside the project the user is looking at.
+ */
+function workspaceScope(rawRoot, rawPath) {
+  const root = posixPath.normalize(String(rawRoot || "").trim());
+  if (!root.startsWith("/")) throw badRequest("工作区路径无效");
+  if (BROWSE_DENY.some((prefix) => root === prefix || root.startsWith(`${prefix}/`))) {
+    throw codedError("forbidden", "这个工作区位置不可浏览");
+  }
+  const input = String(rawPath || "").trim() || root;
+  if (!input.startsWith("/")) throw badRequest("路径必须是 Kali 中的绝对路径");
+  const path = posixPath.normalize(input);
+  const inside = root === "/" ? path.startsWith("/") : path === root || path.startsWith(`${root}/`);
+  if (!inside) throw codedError("forbidden", "路径不在工作区内");
+  if (BROWSE_DENY.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))) {
+    throw codedError("forbidden", "不能浏览这个位置");
+  }
+  return { root, path };
+}
+
+/**
+ * Lists the direct children of one workspace directory for the native file sidebar.
+ * Symlinks are reported but never followed: the sidebar is a window into the project,
+ * and a link is how a project accidentally points somewhere else.
+ */
+function listWorkspaceFiles(rawRoot, rawPath) {
+  const { root, path } = workspaceScope(rawRoot, rawPath);
+  let stats;
+  try {
+    stats = lstatSync(path);
+  } catch {
+    throw codedError("not-found", "目录不存在或不可访问");
+  }
+  if (stats.isSymbolicLink()) throw codedError("forbidden", "符号链接不展开");
+  if (!stats.isDirectory()) throw codedError("not-directory", "这不是一个目录");
+  let dirents;
+  try {
+    dirents = readdirSync(path, { withFileTypes: true });
+  } catch (error) {
+    throw codedError("forbidden", `无法读取目录：${error?.code || error}`);
+  }
+  const entries = [];
+  for (const entry of dirents) {
+    const full = posixPath.join(path, entry.name);
+    let info = null;
+    try {
+      info = lstatSync(full);
+    } catch {
+      // A file that vanished mid-listing still has a name worth showing.
+    }
+    const mtime = info ? Math.round(info.mtimeMs) : 0;
+    if (entry.isSymbolicLink()) {
+      entries.push({ name: entry.name, path: full, type: "link", size: 0, mtime });
+      continue;
+    }
+    if (entry.isDirectory()) {
+      entries.push({ name: entry.name, path: full, type: "directory", size: 0, mtime });
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    entries.push({
+      name: entry.name,
+      path: full,
+      type: "file",
+      size: info ? info.size : 0,
+      mtime,
+    });
+  }
+  entries.sort((a, b) => {
+    const hidden = Number(a.name.startsWith(".")) - Number(b.name.startsWith("."));
+    return hidden !== 0 ? hidden : a.name.localeCompare(b.name);
+  });
+  return {
+    root,
+    path,
+    parent: path === root || path === "/" ? null : posixPath.dirname(path),
+    entries: entries.slice(0, WORKSPACE_FILE_MAX),
+    truncated: entries.length > WORKSPACE_FILE_MAX,
+  };
+}
+
+/**
+ * Reads one workspace file for the native preview. The bytes go back base64 so the app
+ * can choose a charset or decode an image; the bridge itself never guesses content.
+ * Reading stops at [WORKSPACE_PREVIEW_MAX] and reports the cut instead of silently
+ * pretending the prefix is the whole file.
+ */
+function readWorkspaceFile(rawRoot, rawPath) {
+  const { path } = workspaceScope(rawRoot, rawPath);
+  let stats;
+  try {
+    stats = lstatSync(path);
+  } catch {
+    throw codedError("not-found", "文件不存在或不可访问");
+  }
+  if (stats.isSymbolicLink()) throw codedError("forbidden", "符号链接不预览");
+  if (!stats.isFile()) throw codedError("not-file", "只能预览普通文件");
+  const length = Math.min(stats.size, WORKSPACE_PREVIEW_MAX);
+  const buffer = Buffer.alloc(length);
+  let read = 0;
+  let fd = null;
+  try {
+    fd = openSync(path, "r");
+    while (read < length) {
+      const chunk = readSync(fd, buffer, read, length - read, read);
+      if (chunk <= 0) break;
+      read += chunk;
+    }
+  } catch (error) {
+    throw codedError("file", `无法读取文件：${error?.code || error}`);
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Closing a read handle cannot change the answer.
+      }
+    }
+  }
+  return {
+    path,
+    name: posixPath.basename(path),
+    size: stats.size,
+    truncated: stats.size > read,
+    base64: buffer.subarray(0, read).toString("base64"),
+  };
+}
+
+/** One safe path segment from dsh's Content-Disposition (or a fallback name). */
+function safeExportName(value, sessionId) {
+  const fallback = `dsh-session-${String(sessionId).replace(/[^A-Za-z0-9_-]/g, "_")}.zip`;
+  const base = String(value || "")
+    .split(/[\\/]/)
+    .pop()
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/[<>:"|?*]/g, "_")
+    .trim();
+  if (!base || base === "." || base === "..") return fallback;
+  return base.toLowerCase().endsWith(".zip") ? base.slice(0, 120) : `${base.slice(0, 116)}.zip`;
+}
+
+/** Deletes old archives so a long-lived rootfs does not accumulate session logs. */
+function pruneExports(keepPath) {
+  try {
+    const entries = readdirSync(EXPORT_DIR)
+      .filter((name) => name.toLowerCase().endsWith(".zip"))
+      .map((name) => {
+        const path = `${EXPORT_DIR}/${name}`;
+        try {
+          return { path, mtime: statSync(path).mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const entry of entries.slice(EXPORT_KEEP)) {
+      if (entry.path === keepPath) continue;
+      try {
+        unlinkSync(entry.path);
+      } catch {
+        // A file removed by a concurrent export is already gone; no action.
+      }
+    }
+  } catch {
+    // Pruning is best-effort; the caller's archive is still valid.
+  }
+}
+
+/**
+ * Streams dsh's session-log archive (`GET /api/session.export`) into the Kali export
+ * directory and reports the guest path. Streaming keeps a large archive off the heap;
+ * the app copies it out as a content:// file and converts the guest path to the rootfs.
+ */
+async function exportSession(payload) {
+  const sessionId = String(payload?.sessionId || "").trim();
+  if (!sessionId) throw badRequest("缺少会话 ID");
+  const route = new URL("/api/session.export", baseUrl);
+  route.searchParams.set("sessionId", sessionId);
+  route.searchParams.set(
+    "includeDescendants",
+    payload?.includeDescendants === false ? "false" : "true"
+  );
+  const response = await fetch(route, {
+    headers: apiHeaders({ accept: "application/zip" }),
+    signal: AbortSignal.timeout(180_000),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw codedError("transport", `导出失败：HTTP ${response.status}`, {
+      status: response.status,
+      body: detail.slice(0, 300),
+    });
+  }
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  let suggested = match ? match[1].replace(/"/g, "") : "";
+  try {
+    suggested = decodeURIComponent(suggested);
+  } catch {
+    // Keep the raw name when it is not percent-encoded.
+  }
+  const name = safeExportName(suggested, sessionId);
+  mkdirSync(EXPORT_DIR, { recursive: true });
+  const target = `${EXPORT_DIR}/${name}`;
+  // Land the stream in a `.part` file first: a failed or truncated download must not
+  // masquerade as a valid archive or survive as debris.
+  const partial = `${target}.part`;
+  try {
+    await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
+    renameSync(partial, target);
+  } catch (error) {
+    try {
+      unlinkSync(partial);
+    } catch {
+      // Nothing to clean up when creation itself failed.
+    }
+    throw error;
+  }
+  pruneExports(target);
+  const size = statSync(target).size;
+  return { path: target, name, bytes: size, sessionId };
+}
+
 async function dispatch(method, params) {
   const payload = params && typeof params === "object" ? params : {};
   switch (method) {
@@ -2097,8 +3199,19 @@ async function dispatch(method, params) {
         agentPreset: value?.agentPreset ?? null,
       };
     }
+    case "session.export":
+      return await exportSession(payload);
+    case "file.share":
+      return shareFile(payload.path);
     case "session.history":
       return sessionHistory(payload);
+    case "session.projections": {
+      // One authenticated read of every projection value, used by the stats panel's
+      // manual refresh; the live change feed keeps pushing in between.
+      const sessionId = String(payload.sessionId || "");
+      if (!sessionId) throw codedError("invalid", "缺少会话 ID");
+      return await callDsh("session/projections", { request: { sessionId } });
+    }
     case "session.prompt": {
       const content = Array.isArray(payload.content)
         ? payload.content
@@ -2169,6 +3282,203 @@ async function dispatch(method, params) {
       if (payload.atSeq != null) request.atSeq = Number(payload.atSeq);
       return callDsh("session/fork", { request });
     }
+    case "feedback.list": {
+      const request = { sessionId: String(payload.sessionId || "") };
+      return callDsh("messageFeedback/list", { request });
+    }
+    case "feedback.put": {
+      const request = {
+        sessionId: String(payload.sessionId || ""),
+        messageId: String(payload.messageId || ""),
+        rating: payload.rating === "negative" ? "negative" : "positive",
+        // null means "create if absent"; a version string makes the write conditional.
+        ifVersion: payload.ifVersion == null ? null : String(payload.ifVersion),
+      };
+      if (typeof payload.note === "string" && payload.note.trim()) {
+        request.note = payload.note.trim();
+      }
+      if (typeof payload.category === "string" && payload.category) {
+        request.category = payload.category;
+      }
+      return callDsh("messageFeedback/put", { request });
+    }
+    case "feedback.delete": {
+      const request = {
+        sessionId: String(payload.sessionId || ""),
+        messageId: String(payload.messageId || ""),
+        ifVersion: payload.ifVersion == null ? null : String(payload.ifVersion),
+      };
+      return callDsh("messageFeedback/delete", { request });
+    }
+    case "job.list": {
+      // job/list is a stream that mirrors the roster; the frame sent on open is the
+      // complete set, so one item is the whole answer.
+      const frame = await firstStreamItem("job/list", {
+        request: { sessionId: String(payload.sessionId || "") },
+      }, 20_000);
+      if (!frame || frame.type !== "rows") {
+        throw codedError("transport", "job/list 没有返回任务列表");
+      }
+      return frame;
+    }
+    case "job.kill":
+      return callDsh("job/kill", {
+        request: {
+          sessionId: String(payload.sessionId || ""),
+          jobId: String(payload.jobId || ""),
+        },
+      });
+    case "job.output":
+      return collectJobOutput(
+        String(payload.sessionId || ""),
+        String(payload.jobId || ""),
+        Number(payload.from) || 0
+      );
+    case "changes.summary": {
+      const sessionId = String(payload.sessionId || "");
+      if (sessionId === "") throw badRequest("changes.summary needs a sessionId");
+      const announced = changesSeqBySession.get(sessionId);
+      const seq = Number.isFinite(payload.seq)
+        ? Number(payload.seq)
+        : announced?.seq;
+      // No turn has announced changes yet; an empty answer is the honest one.
+      if (!Number.isInteger(seq)) return { seq: null, turn: null, summary: null };
+      const query = new URLSearchParams({
+        sessionId,
+        seq: String(seq),
+      });
+      let summary;
+      try {
+        summary = await getJson(`/api/changes.summary?${query}`, 20_000);
+      } catch (error) {
+        // The recorder lives with the Host process. After dsh restarts, the session log
+        // still carries the announcement but the comparison is gone; that is a stale
+        // record, not a transport failure.
+        if (error?.details?.status === 404) {
+          return { seq, turn: announced?.turn ?? null, summary: null, released: true };
+        }
+        throw error;
+      }
+      return {
+        seq,
+        turn: announced?.turn ?? (summary && typeof summary.turn === "number" ? summary.turn : null),
+        summary,
+      };
+    }
+    case "changes.diff": {
+      const sessionId = String(payload.sessionId || "");
+      const seq = Number(payload.seq);
+      const index = Number(payload.index);
+      if (sessionId === "") throw badRequest("changes.diff needs a sessionId");
+      if (!Number.isInteger(seq) || !Number.isInteger(index)) {
+        throw badRequest("changes.diff needs a seq and an index");
+      }
+      const query = new URLSearchParams({
+        sessionId,
+        seq: String(seq),
+        index: String(index),
+      });
+      return getJson(`/api/changes.diff?${query}`, 30_000);
+    }
+    case "goal.get": {
+      const sessionId = String(payload.sessionId || "");
+      if (sessionId === "") throw badRequest("goal.get needs a sessionId");
+      // `undefined` is dsh's "no current goal"; null carries that through the line
+      // protocol instead of an empty object that looks like a goal.
+      const value = await callDsh("goals/get", { agentId: sessionId }, 20_000);
+      return { goal: value ?? null };
+    }
+    case "goal.pause":
+    case "goal.resume": {
+      const sessionId = String(payload.sessionId || "");
+      if (sessionId === "") throw badRequest(`${method} needs a sessionId`);
+      const value = await callDsh(`goals/${method.slice("goal.".length)}`, {
+        agentId: sessionId,
+        ref: goalRef(payload),
+      }, 30_000);
+      return { goal: value ?? null };
+    }
+    case "goal.clear": {
+      const sessionId = String(payload.sessionId || "");
+      if (sessionId === "") throw badRequest("goal.clear needs a sessionId");
+      await callDsh("goals/clear", {
+        agentId: sessionId,
+        ref: goalRef(payload),
+      }, 30_000);
+      // Clear leaves a tombstone, not a view; the projection's null is the answer.
+      return { goal: null };
+    }
+    case "goal.edit": {
+      const sessionId = String(payload.sessionId || "");
+      if (sessionId === "") throw badRequest("goal.edit needs a sessionId");
+      const request = {};
+      if (payload.objective !== undefined) {
+        const objective = String(payload.objective).trim();
+        if (objective === "") throw badRequest("goal.edit needs a non-empty objective");
+        request.objective = objective;
+      }
+      if (payload.maxGoalRounds !== undefined) {
+        const rounds = Number(payload.maxGoalRounds);
+        if (!Number.isInteger(rounds) || rounds < 1) {
+          throw badRequest("goal.edit needs maxGoalRounds to be a positive integer");
+        }
+        request.maxGoalRounds = rounds;
+      }
+      if (Object.keys(request).length === 0) {
+        throw badRequest("goal.edit needs an objective or maxGoalRounds");
+      }
+      const value = await callDsh("goals/edit", {
+        agentId: sessionId,
+        ref: goalRef(payload),
+        request,
+      }, 30_000);
+      return { goal: value ?? null };
+    }
+    case "schedule.catalog": {
+      // Host-wide roster, including the reminders whose one-shot time already passed.
+      // The caller filters by session; a shared read is cheaper than one RPC per tab.
+      const value = await callDsh("schedule/catalog", {}, 20_000);
+      return { schedules: Array.isArray(value) ? value : [] };
+    }
+    case "schedule.update": {
+      const sessionId = String(payload.sessionId || "");
+      const id = String(payload.id || "");
+      if (sessionId === "") throw badRequest("schedule.update needs a sessionId");
+      if (id === "") throw badRequest("schedule.update needs an id");
+      const expected = payload.expected;
+      if (expected === null || typeof expected !== "object") {
+        throw badRequest("schedule.update needs the record it expects to change");
+      }
+      const request = { id, sessionId, expected };
+      if (payload.change !== undefined && payload.change !== null) {
+        request.change = payload.change;
+      }
+      if (payload.title !== undefined) request.title = String(payload.title);
+      if (payload.prompt !== undefined) request.prompt = String(payload.prompt);
+      if (request.change === undefined && request.title === undefined && request.prompt === undefined) {
+        throw badRequest("schedule.update needs a change, title or prompt");
+      }
+      return callDsh("schedule/update", { request }, 30_000);
+    }
+    case "schedule.delete": {
+      const sessionId = String(payload.sessionId || "");
+      const id = String(payload.id || "");
+      if (sessionId === "") throw badRequest("schedule.delete needs a sessionId");
+      if (id === "") throw badRequest("schedule.delete needs an id");
+      return callDsh("schedule/delete", { request: { id, sessionId } }, 30_000);
+    }
+    case "schedule.history": {
+      const sessionId = String(payload.sessionId || "");
+      const id = String(payload.id || "");
+      if (sessionId === "") throw badRequest("schedule.history needs a sessionId");
+      if (id === "") throw badRequest("schedule.history needs an id");
+      const limit = Math.min(100, Math.max(1, Number(payload.limit) || 20));
+      const request = { id, sessionId, limit };
+      if (typeof payload.before === "string" && payload.before !== "") {
+        request.before = payload.before;
+      }
+      return callDsh("schedule/history", { request }, 30_000);
+    }
     case "subagent.list":
       return subagentList(payload);
     case "subagent.history":
@@ -2223,6 +3533,58 @@ async function dispatch(method, params) {
       // distinction across the line protocol instead of looking like `{}`.
       return value === undefined ? null : value;
     }
+    case "reference.files": {
+      const agentId = String(payload.sessionId || payload.agentId || "");
+      if (agentId === "") throw badRequest("reference.files needs a sessionId");
+      const query = typeof payload.query === "string" ? payload.query : "";
+      const value = await callDsh("fileReferences/list", { agentId, query }, 20_000);
+      return Array.isArray(value) ? value : [];
+    }
+    case "reference.sessions": {
+      const agentId = String(payload.sessionId || payload.agentId || "");
+      if (agentId === "") throw badRequest("reference.sessions needs a sessionId");
+      const query = typeof payload.query === "string" ? payload.query : "";
+      const value = await callDsh(
+        "sessionReferenceResolver/candidates",
+        { agentId, query },
+        20_000
+      );
+      return Array.isArray(value) ? value : [];
+    }
+    // speech/* is the experimental speech Remote shared with dsh-web's voice input. The
+    // app sends one finished 16 kHz mono WAV; dsh keeps the audio transient.
+    case "speech.catalog":
+      return await callDsh("speech/catalog", {}, 20_000);
+    case "speech.prepare": {
+      const providerId = String(payload.providerId || "");
+      if (providerId === "") throw badRequest("speech.prepare needs a providerId");
+      const options = typeof payload.downloadSource === "string" &&
+        payload.downloadSource !== ""
+        ? { downloadSource: payload.downloadSource }
+        : undefined;
+      await callDsh("speech/prepare", { providerId, options }, 30_000);
+      return { ok: true };
+    }
+    case "speech.cancelPreparation": {
+      const providerId = String(payload.providerId || "");
+      if (providerId === "") {
+        throw badRequest("speech.cancelPreparation needs a providerId");
+      }
+      await callDsh("speech/cancelPreparation", { providerId }, 60_000);
+      return { ok: true };
+    }
+    case "speech.transcribe": {
+      const audioBase64 = String(payload.audioBase64 || "");
+      if (audioBase64 === "") throw badRequest("speech.transcribe needs audioBase64");
+      const request = { audioBase64 };
+      if (typeof payload.providerId === "string" && payload.providerId !== "") {
+        request.providerId = payload.providerId;
+      }
+      if (typeof payload.language === "string" && payload.language !== "") {
+        request.language = payload.language;
+      }
+      return await callDsh("speech/transcribe", { request }, 180_000);
+    }
     case "web.url":
       return {
         url: applicationUrl || (baseUrl ? `${baseUrl}/` : null),
@@ -2261,6 +3623,72 @@ async function dispatch(method, params) {
         directoryCreated,
       };
     }
+    case "workspace.rename": {
+      const workspaceId = String(payload.workspaceId || "").trim();
+      const title = String(payload.title || "").trim();
+      if (!workspaceId) throw badRequest("缺少工作区");
+      if (!title) throw badRequest("工作区名称不能为空");
+      const value = await callDsh("workspace/rename", {
+        request: { workspaceId, title },
+      });
+      return { workspace: normalizeWorkspace(value?.workspace) };
+    }
+    case "workspace.delete": {
+      const workspaceId = String(payload.workspaceId || "").trim();
+      if (!workspaceId) throw badRequest("缺少工作区");
+      const value = await callDsh("workspace/delete", {
+        request: { workspaceId },
+      });
+      return { deleted: value?.deleted === true };
+    }
+    case "workspace.reorder": {
+      const workspaceId = String(payload.workspaceId || "").trim();
+      if (!workspaceId) throw badRequest("缺少工作区");
+      // dsh's insertBefore takes the anchor; omitting it moves the row to the end.
+      const beforeWorkspaceId = String(payload.beforeWorkspaceId || "").trim();
+      const request = { workspaceId };
+      if (beforeWorkspaceId) request.beforeWorkspaceId = beforeWorkspaceId;
+      const value = await callDsh("workspace/insertBefore", { request });
+      return {
+        workspaceIds: Array.isArray(value?.workspaceIds)
+          ? value.workspaceIds.map(String)
+          : [],
+      };
+    }
+    case "workspace.files":
+      return listWorkspaceFiles(payload.root, payload.path);
+    case "workspace.readFile":
+      return readWorkspaceFile(payload.root, payload.path);
+    case "workspace.browse":
+      return browseDirectories(payload.path);
+    case "workspace.mkdir":
+      return createDirectory(payload.parent, payload.name);
+    case "plugin.uninstall": {
+      const name = String(payload.name || "").trim();
+      if (!name) throw badRequest("缺少插件名称");
+      // Removing a bundle runs pnpm inside Kali, so it gets the same budget as install.
+      const change = await callDsh(
+        "pluginManager/removeBundle",
+        { name },
+        15 * 60_000
+      );
+      const error = change?.error;
+      const errorText = error
+        ? [error.code, error.diagnostic].filter(Boolean).join("：")
+        : null;
+      return {
+        changed: change?.changed === true,
+        application: String(change?.application || ""),
+        restartRequired: change?.application === "restart-required",
+        restartReason: change?.restartReason ? String(change.restartReason) : null,
+        stage: change?.stage ? String(change.stage) : null,
+        target: change?.target ? String(change.target) : null,
+        bundle: change?.bundle ? String(change.bundle) : name,
+        error: errorText,
+      };
+    }
+    case "plugin.search":
+      return searchPluginRegistry(payload);
     case "plugin.list": {
       const bundles = await callDsh("pluginManager/listBundles", {});
       const items = Array.isArray(bundles) ? bundles : [];
@@ -2539,6 +3967,61 @@ async function dispatch(method, params) {
       }
       return callDsh("settings/mutate", args);
     }
+    case "account.state": {
+      const state = await callDsh("account/getState", {});
+      return normalizeAccountState(state);
+    }
+    case "account.profile": {
+      const result = await callDsh("account/getProfile", accountClient(payload));
+      if (!result || result.status !== "ready") {
+        return { status: result?.status === "failed" ? "failed" : "none", profile: null };
+      }
+      const value = result.value && typeof result.value === "object" ? result.value : {};
+      return {
+        status: "ready",
+        profile: {
+          id: typeof value.id === "string" ? value.id.slice(0, 120) : null,
+          name: typeof value.name === "string" ? value.name.slice(0, 120) : null,
+          contact: typeof value.contact === "string" ? value.contact.slice(0, 200) : null,
+          avatarUrl: safeHttpLink(value.avatarUrl),
+        },
+      };
+    }
+    case "account.balance": {
+      const result = await callDsh("account/getBalance", accountClient(payload));
+      if (!result || result.status !== "ready") {
+        return { status: result?.status === "failed" ? "failed" : "none", wallets: [], bonusWallets: [] };
+      }
+      const wallet = (entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const currency = typeof entry.currency === "string" ? entry.currency.slice(0, 12) : null;
+        const balance = typeof entry.balance === "string" || typeof entry.balance === "number"
+          ? String(entry.balance).slice(0, 40)
+          : null;
+        return currency ? { currency, balance } : null;
+      };
+      return {
+        status: "ready",
+        wallets: (Array.isArray(result.value) ? result.value : []).map(wallet).filter(Boolean),
+        bonusWallets: (Array.isArray(result.bonusWallets) ? result.bonusWallets : [])
+          .map(wallet)
+          .filter(Boolean),
+      };
+    }
+    case "account.signOut": {
+      const state = await callDsh("account/signOut", accountClient(payload));
+      return normalizeAccountState(state);
+    }
+    case "model.providers":
+      return modelProviders();
+    case "model.saveProvider":
+      return saveModelProvider(payload);
+    case "model.removeProvider":
+      return removeModelProvider(payload);
+    case "model.discover":
+      return discoverProviderModels(payload);
+    case "model.setDefault":
+      return setDefaultModel(payload);
     case "plugin.registry.get":
       return { registry: readPluginRegistry() };
     case "plugin.registry.set": {
@@ -2615,6 +4098,132 @@ function writePluginRegistry(registry) {
     }
   }
   return registry;
+}
+
+/**
+ * dsh's account calls take a client descriptor for its HTTP headers. The app passes its
+ * version and locale; anything missing falls back to values this process can derive.
+ * Nothing here is identifying beyond what a normal web client already sends.
+ */
+function accountClient(payload) {
+  const locale =
+    typeof payload.locale === "string" && /^[a-zA-Z]{2}(?:[-_][a-zA-Z0-9]{2,8})?$/.test(payload.locale)
+      ? payload.locale.replace("_", "-")
+      : Intl.DateTimeFormat().resolvedOptions().locale || "en";
+  let tzOffset = Number(payload.timezoneOffsetSeconds);
+  if (!Number.isFinite(tzOffset)) tzOffset = -new Date().getTimezoneOffset() * 60;
+  return {
+    version: String(payload.version || "0.1.1").slice(0, 32),
+    locale,
+    timezoneOffsetSeconds: Math.trunc(tzOffset),
+  };
+}
+
+/** Only http(s) links leave the app, so account links get checked before they are shown. */
+function safeHttpLink(value) {
+  return typeof value === "string" && /^https?:\/\/\S+$/i.test(value)
+    ? value.slice(0, 500)
+    : null;
+}
+
+/** The account state view, with its purchase links narrowed to web URLs. */
+function normalizeAccountState(state) {
+  const attempt = state?.attempt && typeof state.attempt === "object"
+    ? {
+        phase: typeof state.attempt.phase === "string" ? state.attempt.phase : null,
+        errorCode: typeof state.attempt.errorCode === "string" ? state.attempt.errorCode : null,
+      }
+    : null;
+  return {
+    status: state?.status === "credential-stored" ? "credential-stored" : "signed-out",
+    links: {
+      usageUrl: safeHttpLink(state?.links?.usageUrl),
+      topUpUrl: safeHttpLink(state?.links?.topUpUrl),
+    },
+    attempt,
+  };
+}
+
+/**
+ * Finds packages on the configured npm registry. npm's registry search endpoint is the
+ * only discovery surface the registry offers, so this asks it for the user's words and
+ * maps only presentation-safe fields. Packages are code: the app shows a warning and
+ * dsh's own inspect step decides whether a spec is installable before anything runs.
+ */
+async function searchPluginRegistry(payload) {
+  const query = String(payload.text || "").trim() || "keywords:dsh-plugin";
+  if (query.length > 120) throw badRequest("搜索词过长");
+  const size = Math.min(Math.max(Number(payload.size) || 20, 1), 40);
+  const registry = String(payload.registry || readPluginRegistry() || DEFAULT_PLUGIN_REGISTRY);
+  if (!/^https?:\/\/\S+$/i.test(registry)) {
+    throw codedError("invalid-argument", "插件源必须是 http(s) 地址");
+  }
+  const endpoint = new URL(
+    `${registry.replace(/\/+$/, "")}/-/v1/search?text=${encodeURIComponent(query)}&size=${size}`
+  );
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(25_000),
+    });
+  } catch (error) {
+    throw codedError(
+      "network",
+      `无法连接插件源 ${endpoint.host}：${describeError(error)}`
+    );
+  }
+  if (response.status === 404) {
+    throw codedError("unsupported", "当前 npm 源不支持搜索，请手动输入包名安装");
+  }
+  if (!response.ok) {
+    throw codedError("transport", `插件源返回 HTTP ${response.status}`);
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    throw codedError("protocol", "插件源返回的不是 JSON");
+  }
+  const objects = Array.isArray(body?.objects) ? body.objects : [];
+  const results = objects
+    .map((object) => {
+      const pkg = object?.package;
+      if (!pkg || typeof pkg.name !== "string") return null;
+      const name = pkg.name.trim();
+      if (!/^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(name)) return null;
+      const links = pkg.links && typeof pkg.links === "object" ? pkg.links : {};
+      const safeLink = (value) =>
+        typeof value === "string" && /^https?:\/\//i.test(value)
+          ? value.slice(0, 300)
+          : null;
+      return {
+        name,
+        version: typeof pkg.version === "string" ? pkg.version : null,
+        description:
+          typeof pkg.description === "string"
+            ? pkg.description.replace(/\s+/g, " ").trim().slice(0, 280)
+            : "",
+        date: typeof pkg.date === "string" ? pkg.date : null,
+        publisher:
+          typeof pkg.publisher?.username === "string"
+            ? pkg.publisher.username.slice(0, 60)
+            : null,
+        homepage: safeLink(links.homepage),
+        repository: safeLink(links.repository),
+        keywords: Array.isArray(pkg.keywords)
+          ? pkg.keywords.filter((word) => typeof word === "string").slice(0, 8)
+          : [],
+        official: name.startsWith("@deepseek-ai/"),
+      };
+    })
+    .filter(Boolean);
+  return {
+    query,
+    registry,
+    total: Number(body?.total) || results.length,
+    results,
+  };
 }
 
 /** The profile's recorded dependencies; empty when the profile has no readable manifest. */

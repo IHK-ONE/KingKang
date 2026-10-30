@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -55,12 +58,15 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -71,12 +77,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.kingkang.app.HarnessUi
+import com.kingkang.app.BuildConfig
 import com.kingkang.app.MainViewModel
 import com.kingkang.app.RootProbe
+import com.kingkang.app.agent.AgentAccountSnapshot
 import com.kingkang.app.agent.AgentConnection
+import com.kingkang.app.agent.AgentLanguageSettings
 import com.kingkang.app.agent.AgentPresetCopy
 import com.kingkang.app.agent.AgentState
+import com.kingkang.app.browser.BrowserActivity
 import com.kingkang.app.ui.components.Dot
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.Accent
@@ -104,6 +115,9 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenHarness: () -> Unit,
+    onOpenProviders: () -> Unit,
+    onOpenPlugins: () -> Unit,
+    onOpenAgentSettings: (String?) -> Unit,
     onAbout: () -> Unit,
     focusSection: String? = null
 ) {
@@ -116,8 +130,92 @@ fun SettingsScreen(
     val npmRegistry by vm.npmRegistry.collectAsState()
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmUninstallHarness by remember { mutableStateOf(false) }
+    var confirmSignOut by remember { mutableStateOf(false) }
     var showNpmSource by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val credentialsAnchor = remember { BringIntoViewRequester() }
+    val appearanceAnchor = remember { BringIntoViewRequester() }
+    val languageAnchor = remember { BringIntoViewRequester() }
+    val accountAnchor = remember { BringIntoViewRequester() }
+    val connectionAnchor = remember { BringIntoViewRequester() }
+    val presetAnchor = remember { BringIntoViewRequester() }
+    val storageAnchor = remember { BringIntoViewRequester() }
+    val environmentAnchor = remember { BringIntoViewRequester() }
+    val agentSettingsAnchor = remember { BringIntoViewRequester() }
+
+    fun jumpTo(requester: BringIntoViewRequester) {
+        scope.launch {
+            delay(120)
+            runCatching { requester.bringIntoView() }
+        }
+    }
+
+    fun openExternal(url: String?) {
+        if (url == null) return
+        context.startActivity(
+            android.content.Intent(context, BrowserActivity::class.java)
+                .putExtra(BrowserActivity.EXTRA_URL, url)
+        )
+    }
+
+    // Every settings entry, including the ones that live on another page. Harness-only
+    // dsh pages are listed too, but their action lands on the native group or the Harness
+    // home with an honest hint, because dsh-web exposes no addressable settings routes.
+    val searchEntries = listOf(
+        SettingsSearchEntry("外观与主题", "跟随系统、浅色、深色", "theme dark light 主题 暗色") {
+            jumpTo(appearanceAnchor)
+        },
+        SettingsSearchEntry("Harness 语言", "中文、English、跟随 dsh", "locale language 语言 英文") {
+            jumpTo(languageAnchor)
+        },
+        SettingsSearchEntry("DeepSeek 账号", "登录状态、资料与余额", "account 账号 余额 登录 退出") {
+            jumpTo(accountAnchor)
+        },
+        SettingsSearchEntry("API Key", "写入 dsh 的凭据库", "key secret 密钥 deepseek") {
+            jumpTo(credentialsAnchor)
+        },
+        SettingsSearchEntry("模型提供方", "端点、模型与默认模型", "provider model baseurl 模型") {
+            onOpenProviders()
+        },
+        SettingsSearchEntry("网页搜索", "DeepSeek 搜索提供方与搜索次数", "web search 搜索") {
+            onOpenAgentSettings("web-search-deepseek")
+        },
+        SettingsSearchEntry("终端与沙箱", "Shell 工作目录、超时与输出上限", "bash shell sandbox cwd 终端") {
+            onOpenAgentSettings("bash-sandbox")
+        },
+        SettingsSearchEntry("子 Agent", "嵌套深度与并发", "subagent 子代理 并发") {
+            onOpenAgentSettings("subagent")
+        },
+        SettingsSearchEntry("子 Agent 模型", "限制子 Agent 可用模型", "subagent model 模型 限制") {
+            onOpenAgentSettings("subagent-model-selection-settings")
+        },
+        SettingsSearchEntry("Agent 循环", "并行工具调用与会话 Agent", "agent loop 并行 工具") {
+            onOpenAgentSettings("agent-loop")
+        },
+        SettingsSearchEntry("会话日志", "日志开关与容量", "session log 日志 容量") {
+            onOpenAgentSettings("session-log-deepseek")
+        },
+        SettingsSearchEntry("插件", "已安装插件、市场与卸载", "plugin 插件 市场 安装") {
+            onOpenPlugins()
+        },
+        SettingsSearchEntry("Agent 连接", "重启、停止与连接状态", "agent connection 重启 停止") {
+            jumpTo(connectionAnchor)
+        },
+        SettingsSearchEntry("运行模式", "新对话使用的 Agent 预设", "preset 预设 模式") {
+            jumpTo(presetAnchor)
+        },
+        SettingsSearchEntry("Kali 环境", "安装、更新与删除根文件系统", "kali rootfs 环境 删除") {
+            jumpTo(environmentAnchor)
+        },
+        SettingsSearchEntry("存储与隐私", "运行位置、网络与共享目录", "storage privacy 存储 隐私 网络") {
+            jumpTo(storageAnchor)
+        },
+        SettingsSearchEntry("DeepSeek Harness", "轨迹视图与 dsh-web 的其余页面", "harness 轨迹 dsh web") {
+            onOpenHarness()
+        }
+    )
 
     LaunchedEffect(Unit) {
         if (rootMode) vm.checkRoot()
@@ -132,6 +230,9 @@ fun SettingsScreen(
             vm.refreshAgentCredentials()
             vm.refreshAgentPermissions()
             vm.refreshAgentPresets()
+            vm.refreshModelProviders()
+            vm.refreshAgentSettings()
+            vm.refreshAccount()
         }
     }
 
@@ -171,6 +272,13 @@ fun SettingsScreen(
                 fontWeight = FontWeight.Medium
             )
             Spacer(Modifier.weight(1f))
+            IconButton(onClick = { showSearch = true }) {
+                Icon(
+                    Icons.Filled.Search,
+                    contentDescription = "搜索设置",
+                    tint = TextSecondary
+                )
+            }
         }
 
         Column(
@@ -180,15 +288,29 @@ fun SettingsScreen(
                 .navigationBarsPadding()
                 .padding(horizontal = 18.dp, vertical = 8.dp)
         ) {
-            SectionLabel("外观")
+            Box(Modifier.bringIntoViewRequester(appearanceAnchor)) {
+                SectionLabel("外观")
+            }
             Spacer(Modifier.height(8.dp))
             AppearanceCard(
                 themeMode = themeMode,
                 onSelect = vm::setThemeMode
             )
 
+            Spacer(Modifier.height(14.dp))
+            Box(Modifier.bringIntoViewRequester(languageAnchor)) {
+                HarnessLanguageCard(
+                    agent = agent,
+                    settings = agent.languageSettings,
+                    onSelect = vm::setHarnessLocale,
+                    onOpenHarness = onOpenHarness
+                )
+            }
+
             Spacer(Modifier.height(24.dp))
-            SectionLabel("Kali 环境")
+            Box(Modifier.bringIntoViewRequester(environmentAnchor)) {
+                SectionLabel("Kali 环境")
+            }
             Spacer(Modifier.height(8.dp))
             EnvironmentCard(
                 environment = environment,
@@ -227,6 +349,14 @@ fun SettingsScreen(
                 onDismissError = vm::dismissHarnessError
             )
 
+            // Providers lead the Agent section: the DeepSeek key below is only one route,
+            // and everything else (endpoints, extra models) is managed on its own page.
+            Spacer(Modifier.height(10.dp))
+            ModelProviderCard(
+                agent = agent,
+                onOpen = onOpenProviders
+            )
+
             // Credentials follow the dsh card and sit above Agent 连接: filling in the
             // API Key is the step users need first, before the bridge's diagnostics.
             Spacer(Modifier.height(10.dp))
@@ -239,8 +369,26 @@ fun SettingsScreen(
                 )
             }
 
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.bringIntoViewRequester(agentSettingsAnchor)) {
+                DshSettingsEntryCard(onOpen = { onOpenAgentSettings(null) })
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.bringIntoViewRequester(accountAnchor)) {
+                AccountCard(
+                    agent = agent,
+                    onRefresh = vm::refreshAccount,
+                    onSignOut = { confirmSignOut = true },
+                    onOpenHarness = onOpenHarness,
+                    onOpenUrl = ::openExternal
+                )
+            }
+
             Spacer(Modifier.height(24.dp))
-            SectionLabel("Agent 连接")
+            Box(Modifier.bringIntoViewRequester(connectionAnchor)) {
+                SectionLabel("Agent 连接")
+            }
             Spacer(Modifier.height(8.dp))
             AgentConnectionCard(
                 agent = agent,
@@ -292,7 +440,9 @@ fun SettingsScreen(
             }
 
             Spacer(Modifier.height(24.dp))
-            SectionLabel("运行模式")
+            Box(Modifier.bringIntoViewRequester(presetAnchor)) {
+                SectionLabel("运行模式")
+            }
             Spacer(Modifier.height(8.dp))
             AgentPresetCard(
                 agent = agent,
@@ -311,7 +461,9 @@ fun SettingsScreen(
             )
 
             Spacer(Modifier.height(24.dp))
-            SectionLabel("存储与隐私")
+            Box(Modifier.bringIntoViewRequester(storageAnchor)) {
+                SectionLabel("存储与隐私")
+            }
             Spacer(Modifier.height(8.dp))
             SettingsCard {
                 SettingsInfoRow("运行位置", "应用私有目录")
@@ -328,7 +480,7 @@ fun SettingsScreen(
                     Spacer(Modifier.width(11.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "KingKang 0.1.0",
+                            "KingKang ${BuildConfig.VERSION_NAME}",
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Medium
@@ -396,6 +548,125 @@ fun SettingsScreen(
             }
         )
     }
+
+    if (confirmSignOut) {
+        ConfirmDialog(
+            title = "退出 DeepSeek 账号？",
+            text = "会删除 dsh 保存的本地登录凭据，并在后台通知平台撤销。API Key 和模型配置不会受影响。",
+            confirmLabel = "退出账号",
+            destructive = true,
+            onDismiss = { confirmSignOut = false },
+            onConfirm = {
+                confirmSignOut = false
+                vm.signOutAccount()
+            }
+        )
+    }
+
+    if (showSearch) {
+        SettingsSearchDialog(
+            entries = searchEntries.map { entry ->
+                entry.copy(action = {
+                    showSearch = false
+                    entry.action()
+                })
+            },
+            onDismiss = { showSearch = false }
+        )
+    }
+}
+
+private data class SettingsSearchEntry(
+    val title: String,
+    val subtitle: String,
+    val keywords: String,
+    val action: () -> Unit
+)
+
+@Composable
+private fun SettingsSearchDialog(
+    entries: List<SettingsSearchEntry>,
+    onDismiss: () -> Unit
+) {
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(query, entries) {
+        val needle = query.trim()
+        if (needle.isEmpty()) {
+            entries
+        } else {
+            entries.filter { entry ->
+                entry.title.contains(needle, ignoreCase = true) ||
+                    entry.subtitle.contains(needle, ignoreCase = true) ||
+                    entry.keywords.contains(needle, ignoreCase = true)
+            }
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Surface,
+        titleContentColor = TextPrimary,
+        textContentColor = TextSecondary,
+        shape = RoundedCornerShape(20.dp),
+        title = { Text("搜索设置", fontWeight = FontWeight.Medium) },
+        text = {
+            Column {
+                BasicTextField(
+                    value = query,
+                    onValueChange = { query = it.take(60) },
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        color = TextPrimary,
+                        fontSize = 13.sp
+                    ),
+                    cursorBrush = SolidColor(Accent),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(SurfaceVariant.copy(alpha = 0.6f))
+                        .padding(horizontal = 10.dp, vertical = 9.dp)
+                )
+                Spacer(Modifier.height(8.dp))
+                if (filtered.isEmpty()) {
+                    Text(
+                        "没有匹配的设置。dsh 的其余页面可以在 Harness 中找到。",
+                        color = TextMuted,
+                        fontSize = 11.5.sp,
+                        lineHeight = 16.sp
+                    )
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 330.dp)) {
+                        items(filtered, key = { it.title }) { entry ->
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(9.dp))
+                                    .clickable(onClick = entry.action)
+                                    .padding(horizontal = 4.dp, vertical = 9.dp)
+                            ) {
+                                Text(
+                                    entry.title,
+                                    color = TextPrimary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    entry.subtitle,
+                                    color = TextMuted,
+                                    fontSize = 10.sp,
+                                    lineHeight = 14.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭", color = TextMuted)
+            }
+        }
+    )
 }
 
 @Composable
@@ -412,9 +683,10 @@ private fun AppearanceCard(
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            "切换后同步到 DeepSeek Harness。",
+            "切换后同步到 DeepSeek Harness；在 Harness 中改主题后，返回 App 会自动跟随。",
             color = TextMuted,
-            fontSize = 10.5.sp
+            fontSize = 10.5.sp,
+            lineHeight = 15.sp
         )
         Spacer(Modifier.height(12.dp))
         ChoiceSegmented(
@@ -427,6 +699,292 @@ private fun AppearanceCard(
         ) { onSelect(it) }
     }
 }
+
+@Composable
+private fun HarnessLanguageCard(
+    agent: AgentState,
+    settings: AgentLanguageSettings,
+    onSelect: (String?) -> Unit,
+    onOpenHarness: () -> Unit
+) {
+    val ready = agent.connection == AgentConnection.Ready
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Harness 语言",
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                when {
+                    !ready -> "等待连接"
+                    settings.saving -> "保存中…"
+                    !settings.loaded -> "读取中"
+                    settings.value == null -> "跟随 dsh"
+                    settings.value == "zh" -> "中文"
+                    settings.value == "en" -> "English"
+                    else -> settings.value ?: "—"
+                },
+                color = if (ready && settings.loaded) Success else TextMuted,
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "只影响 Harness 页面。App 的原生界面目前仅提供中文。",
+            color = TextMuted,
+            fontSize = 10.5.sp,
+            lineHeight = 15.sp
+        )
+        Spacer(Modifier.height(10.dp))
+        ChoiceSegmented(
+            options = listOf(
+                "" to "跟随 dsh",
+                "zh" to "中文",
+                "en" to "English"
+            ),
+            selected = settings.value ?: ""
+        ) { value ->
+            if (ready && settings.writable && !settings.saving) {
+                onSelect(value.ifBlank { null })
+            }
+        }
+        if (ready && settings.loaded && !settings.writable) {
+            Spacer(Modifier.height(6.dp))
+            Text("当前 dsh 配置不可写", color = Amber, fontSize = 9.5.sp)
+        }
+        if (settings.error != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(settings.error, color = Red, fontSize = 10.sp)
+        }
+        if (!ready) {
+            Spacer(Modifier.height(6.dp))
+            TextButton(
+                onClick = onOpenHarness,
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                Text("打开 Harness", color = Accent, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DshSettingsEntryCard(onOpen: () -> Unit) {
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "网页搜索、终端沙箱与 Agent 循环",
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "常用标量项可以直接在 App 中修改；结构化列表仍由 Harness 编辑。",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            OutlinedButton(
+                onClick = onOpen,
+                shape = RoundedCornerShape(11.dp),
+                border = BorderStroke(1.dp, Border),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                modifier = Modifier.height(32.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+            ) {
+                Text("管理", fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountCard(
+    agent: AgentState,
+    onRefresh: () -> Unit,
+    onSignOut: () -> Unit,
+    onOpenHarness: () -> Unit,
+    onOpenUrl: (String?) -> Unit
+) {
+    val account = agent.account
+    val ready = agent.connection == AgentConnection.Ready
+    val signedIn = account.status == "credential-stored"
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "DeepSeek 账号",
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                when {
+                    account.loading -> "读取中…"
+                    !ready -> "等待连接"
+                    signedIn -> "已登录"
+                    else -> "未登录"
+                },
+                color = if (signedIn) Success else TextMuted,
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        when {
+            !ready -> Text(
+                "Agent 连接后可以查看账号状态与余额。",
+                color = TextMuted,
+                fontSize = 10.5.sp
+            )
+
+            account.loading && !account.loaded -> Text(
+                "正在读取账号状态…",
+                color = TextMuted,
+                fontSize = 10.5.sp
+            )
+
+            !signedIn -> {
+                Text(
+                    "登录在 DeepSeek Harness 中完成，App 不会收集账号密码。" +
+                        "API Key 仍然可以单独配置，两者互不影响。",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = onOpenHarness,
+                        shape = RoundedCornerShape(11.dp),
+                        border = BorderStroke(1.dp, Border),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                        modifier = Modifier.height(32.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Accent)
+                    ) {
+                        Text("在 Harness 中登录", fontSize = 11.sp)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(onClick = onRefresh) {
+                        Text("刷新", color = TextMuted, fontSize = 11.sp)
+                    }
+                }
+            }
+
+            else -> {
+                val profile = account.profile
+                if (profile?.name != null || profile?.contact != null) {
+                    Text(
+                        profile.name ?: "已登录的 DeepSeek 账号",
+                        color = TextPrimary,
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    profile.contact?.let { contact ->
+                        Text(contact, color = TextMuted, fontSize = 10.5.sp)
+                    }
+                } else {
+                    Text(
+                        if (account.profileFailed) "账号资料暂时无法读取" else "已保存账号凭据",
+                        color = if (account.profileFailed) Amber else TextSecondary,
+                        fontSize = 11.sp
+                    )
+                }
+
+                val wallets = account.wallets
+                val bonus = account.bonusWallets
+                if (wallets.isNotEmpty() || bonus.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    wallets.forEach { wallet ->
+                        SettingsInfoRow(
+                            walletLabel(wallet.currency, bonus = false),
+                            wallet.balance
+                        )
+                    }
+                    bonus.forEach { wallet ->
+                        SettingsInfoRow(
+                            walletLabel(wallet.currency, bonus = true),
+                            wallet.balance
+                        )
+                    }
+                } else if (account.balanceFailed) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("余额暂时无法读取", color = Amber, fontSize = 10.5.sp)
+                }
+
+                account.attempt?.takeIf {
+                    it.phase == "failed" || it.phase == "expired" || it.errorCode != null
+                }?.let { attempt ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "上次登录未完成" + (attempt.errorCode?.let { "（$it）" } ?: ""),
+                        color = Amber,
+                        fontSize = 10.sp
+                    )
+                }
+
+                if (account.error != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(account.error, color = Red, fontSize = 10.sp)
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (account.usageUrl != null) {
+                        TextButton(
+                            onClick = { onOpenUrl(account.usageUrl) },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("用量", color = Accent, fontSize = 11.sp)
+                        }
+                    }
+                    if (account.topUpUrl != null) {
+                        TextButton(
+                            onClick = { onOpenUrl(account.topUpUrl) },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("充值", color = Accent, fontSize = 11.sp)
+                        }
+                    }
+                    TextButton(
+                        onClick = onRefresh,
+                        enabled = !account.signingOut,
+                        contentPadding = PaddingValues(0.dp)
+                    ) {
+                        Text("刷新", color = TextMuted, fontSize = 11.sp)
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = onSignOut, enabled = !account.signingOut) {
+                        Text(
+                            if (account.signingOut) "退出中…" else "退出登录",
+                            color = Red,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun walletLabel(currency: String, bonus: Boolean): String {
+    val name = when (currency) {
+        "CNY" -> "人民币"
+        "USD" -> "美元"
+        else -> currency
+    }
+    return if (bonus) "$name 赠送余额" else "$name 余额"
+}
+
 
 @Composable
 private fun AgentPresetCard(
@@ -559,7 +1117,7 @@ private fun AgentPresetCard(
 }
 
 @Composable
-private fun ChoiceSegmented(
+internal fun ChoiceSegmented(
     options: List<Pair<String, String>>,
     selected: String,
     onSelect: (String) -> Unit
@@ -1657,6 +2215,98 @@ private fun AgentConnectionCard(
 }
 
 /**
+ * Entry point for the native Models page. It summarizes the active selection and the
+ * stored routes; editing lives one tap away so this card stays short.
+ */
+@Composable
+private fun ModelProviderCard(
+    agent: AgentState,
+    onOpen: () -> Unit
+) {
+    val providers = agent.modelProviders
+    val ready = agent.connection == AgentConnection.Ready
+    val currentLabel = agent.models?.let { models ->
+        val name = models.current?.name ?: models.model
+        when {
+            name.isBlank() -> "—"
+            models.routable -> name
+            else -> "$name · 不可用"
+        }
+    } ?: "—"
+    val defaultLabel = when {
+        providers.defaultProvider == null -> "—"
+        providers.defaultModel == null -> providers.defaultProvider
+        else -> "${providers.defaultProvider} / ${providers.defaultModel}"
+    }
+
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "模型与供应商",
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                when {
+                    !ready -> "等待连接"
+                    !providers.loaded -> "读取中"
+                    !providers.supported -> "精简模式"
+                    else -> "${providers.configured.size} 个供应商"
+                },
+                color = when {
+                    !providers.supported && providers.loaded -> Amber
+                    else -> TextMuted
+                },
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "连接 OpenAI 兼容、Anthropic 或其他供应商，选择新对话默认模型。" +
+                "API Key 只写入凭据存储。",
+            color = TextMuted,
+            fontSize = 9.5.sp,
+            lineHeight = 14.sp
+        )
+
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = Border.copy(alpha = 0.7f))
+        SettingsInfoRow("当前模型", currentLabel)
+        SettingsInfoRow("默认模型", defaultLabel)
+
+        Spacer(Modifier.height(10.dp))
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (providers.loaded && !providers.supported) {
+                Text(
+                    "此 dsh 版本只在 Harness 中管理供应商",
+                    color = TextMuted,
+                    fontSize = 9.5.sp,
+                    modifier = Modifier.weight(1f)
+                )
+            } else {
+                Spacer(Modifier.weight(1f))
+            }
+            OutlinedButton(
+                onClick = onOpen,
+                enabled = ready,
+                shape = RoundedCornerShape(11.dp),
+                border = BorderStroke(1.dp, Border),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                modifier = Modifier.height(32.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+            ) {
+                Text("管理", fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+/**
  * Model provider credentials live in dsh's own store. The app can describe and replace a
  * reference, but never reads the secret back — that is the whole point of the API.
  */
@@ -1676,7 +2326,7 @@ private fun AgentCredentialsCard(
     SettingsCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "模型与凭据",
+                "DeepSeek 官方凭据",
                 color = TextPrimary,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium
@@ -1699,7 +2349,8 @@ private fun AgentCredentialsCard(
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            "API Key 只写入 dsh 的凭据存储，读取接口不会返回明文。",
+            "dsh 内置 DeepSeek 路由的 API Key。只写入凭据存储，读取接口不会返回明文；" +
+                "其他供应商在上一张卡片里管理。",
             color = TextMuted,
             fontSize = 9.5.sp,
             lineHeight = 14.sp
@@ -1707,18 +2358,6 @@ private fun AgentCredentialsCard(
 
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = Border.copy(alpha = 0.7f))
-        SettingsInfoRow("供应商", agent.models?.provider?.takeIf { it.isNotBlank() } ?: "—")
-        SettingsInfoRow(
-            "当前模型",
-            agent.models?.let { models ->
-                val name = models.current?.name ?: models.model
-                when {
-                    name.isBlank() -> "—"
-                    models.routable -> name
-                    else -> "$name · 不可用"
-                }
-            } ?: "—"
-        )
         SettingsInfoRow(
             "DeepSeek API Key",
             when {
@@ -1961,7 +2600,7 @@ private fun AgentPermissionCard(
 }
 
 @Composable
-private fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
+internal fun SettingsCard(content: @Composable ColumnScope.() -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()

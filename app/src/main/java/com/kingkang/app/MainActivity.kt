@@ -1,5 +1,6 @@
 package com.kingkang.app
 
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -24,7 +25,24 @@ class MainActivity : ComponentActivity() {
         AgentEngine.onAppForegrounded(this)
     }
 
+    override fun onStop() {
+        super.onStop()
+        // Only while nothing is on screen do completion notices leave the app.
+        AgentEngine.onAppBackgrounded()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra(AgentEngine.EXTRA_SESSION_ID)
+            ?.let(AgentEngine::openSessionFromNotification)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // A notification tap can cold-start the activity; the engine holds the id until the
+        // session list arrives.
+        intent?.getStringExtra(AgentEngine.EXTRA_SESSION_ID)
+            ?.let(AgentEngine::openSessionFromNotification)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
