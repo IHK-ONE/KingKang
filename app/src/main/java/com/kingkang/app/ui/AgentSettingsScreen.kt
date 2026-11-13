@@ -142,7 +142,6 @@ fun AgentSettingsScreen(
 
         ScrollEdgeFade(
             canScrollForward = pageScroll.canScrollForward,
-            color = com.kingkang.app.ui.theme.Background,
             modifier = Modifier.weight(1f)
         ) {
         Column(
@@ -484,6 +483,7 @@ private fun TextSettingField(
         textStyle = TextStyle(
             color = if (enabled) TextPrimary else TextMuted,
             fontSize = 12.5.sp,
+            platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
             lineHeight = 12.5.sp,
             fontFamily = FontFamily.Monospace
         ),
@@ -541,6 +541,7 @@ private fun SecretField(
         textStyle = TextStyle(
             color = if (enabled) TextPrimary else TextMuted,
             fontSize = 12.5.sp,
+            platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
             lineHeight = 12.5.sp,
             fontFamily = FontFamily.Monospace
         ),

@@ -1507,6 +1507,12 @@ data class AgentState(
      */
     val subagentTrail: List<AgentSubagent> = emptyList(),
     val items: List<AgentItem> = emptyList(),
+    /**
+     * True while a transcript is being fetched for the session on screen. With a cached
+     * transcript this stays invisible; without one the page shows a quiet loading line
+     * instead of the first-run empty state.
+     */
+    val transcriptLoading: Boolean = false,
     val running: Boolean = false,
     /**
      * A stop request is in flight. dsh acknowledges cancel immediately but settles the turn

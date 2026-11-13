@@ -11,8 +11,8 @@ android {
         applicationId = "com.kingkang.app"
         minSdk = 26
         targetSdk = 28
-        versionCode = 5
-        versionName = "0.2.2"
+        versionCode = 6
+        versionName = "0.2.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

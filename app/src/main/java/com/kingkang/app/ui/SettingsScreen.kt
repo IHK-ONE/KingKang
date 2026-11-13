@@ -289,7 +289,6 @@ fun SettingsScreen(
 
         ScrollEdgeFade(
             canScrollForward = settingsScroll.canScrollForward,
-            color = com.kingkang.app.ui.theme.Background,
             modifier = Modifier.weight(1f)
         ) {
         Column(
@@ -327,8 +326,53 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
             SectionLabel("Agent 核心")
             Spacer(Modifier.height(8.dp))
-            // The npm source leads the section because dsh itself is installed from it;
-            // the same choice is later reused for plugin installs.
+            // The order follows first use: the DeepSeek key is what makes the agent answer,
+            // then the providers it can route to, then the account and the web-search /
+            // sandbox switches. Installing or updating dsh itself comes after those.
+            Box(Modifier.bringIntoViewRequester(credentialsAnchor)) {
+                AgentCredentialsCard(
+                    agent = agent,
+                    onSave = vm::setAgentCredential,
+                    onRemove = vm::removeAgentCredential,
+                    onRefresh = vm::refreshAgentCredentials
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            ModelProviderCard(
+                agent = agent,
+                onOpen = onOpenProviders
+            )
+
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.bringIntoViewRequester(accountAnchor)) {
+                AccountCard(
+                    agent = agent,
+                    onRefresh = vm::refreshAccount,
+                    onSignOut = { confirmSignOut = true },
+                    onDismissNotification = vm::dismissAccountNotification,
+                    onOpenHarness = onOpenHarness,
+                    onOpenUrl = ::openExternal
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.bringIntoViewRequester(agentSettingsAnchor)) {
+                DshSettingsEntryCard(onOpen = { onOpenAgentSettings(null) })
+            }
+
+            if (agent.mcp.available) {
+                Spacer(Modifier.height(10.dp))
+                McpCard(
+                    settings = agent.mcp,
+                    onRefresh = vm::refreshMcp,
+                    onSave = vm::saveMcpServer,
+                    onRemove = vm::removeMcpServer
+                )
+            }
+
+            // dsh itself: installed from this npm source, and updated from these cards.
+            Spacer(Modifier.height(10.dp))
             NpmSourceCard(
                 registry = npmRegistry,
                 onSelect = vm::setNpmRegistry,
@@ -351,53 +395,6 @@ fun SettingsScreen(
                 onCancel = vm::cancelHarnessTask,
                 onDismissError = vm::dismissHarnessError
             )
-
-            // Providers lead the Agent section: the DeepSeek key below is only one route,
-            // and everything else (endpoints, extra models) is managed on its own page.
-            Spacer(Modifier.height(10.dp))
-            ModelProviderCard(
-                agent = agent,
-                onOpen = onOpenProviders
-            )
-
-            // Credentials follow the dsh card and sit above Agent 连接: filling in the
-            // API Key is the step users need first, before the bridge's diagnostics.
-            Spacer(Modifier.height(10.dp))
-            Box(Modifier.bringIntoViewRequester(credentialsAnchor)) {
-                AgentCredentialsCard(
-                    agent = agent,
-                    onSave = vm::setAgentCredential,
-                    onRemove = vm::removeAgentCredential,
-                    onRefresh = vm::refreshAgentCredentials
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-            Box(Modifier.bringIntoViewRequester(agentSettingsAnchor)) {
-                DshSettingsEntryCard(onOpen = { onOpenAgentSettings(null) })
-            }
-
-            if (agent.mcp.available) {
-                Spacer(Modifier.height(10.dp))
-                McpCard(
-                    settings = agent.mcp,
-                    onRefresh = vm::refreshMcp,
-                    onSave = vm::saveMcpServer,
-                    onRemove = vm::removeMcpServer
-                )
-            }
-
-            Spacer(Modifier.height(10.dp))
-            Box(Modifier.bringIntoViewRequester(accountAnchor)) {
-                AccountCard(
-                    agent = agent,
-                    onRefresh = vm::refreshAccount,
-                    onSignOut = { confirmSignOut = true },
-                    onDismissNotification = vm::dismissAccountNotification,
-                    onOpenHarness = onOpenHarness,
-                    onOpenUrl = ::openExternal
-                )
-            }
 
             Spacer(Modifier.height(24.dp))
             Box(Modifier.bringIntoViewRequester(connectionAnchor)) {
@@ -637,6 +634,7 @@ private fun SettingsSearchDialog(
                 textStyle = TextStyle(
                     color = TextPrimary,
                     fontSize = 13.sp,
+                    platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                     lineHeight = 13.sp,
                 ),
                 cursorBrush = SolidColor(Accent),
@@ -654,7 +652,6 @@ private fun SettingsSearchDialog(
         } else {
             ScrollEdgeFade(
                 canScrollForward = listState.canScrollForward,
-                color = Surface
             ) {
                 LazyColumn(Modifier.heightIn(max = 330.dp), state = listState) {
                     items(filtered, key = { it.title }) { entry ->
@@ -973,6 +970,7 @@ private fun McpField(
             textStyle = TextStyle(
                 color = if (enabledField) TextPrimary else TextMuted,
                 fontSize = 12.sp,
+                platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                 lineHeight = 12.sp,
                 fontFamily = FontFamily.Monospace
             ),
@@ -2285,6 +2283,7 @@ private fun NpmSourceDialog(
                         textStyle = MaterialTheme.typography.bodySmall.copy(
                             color = TextPrimary,
                             fontSize = 12.sp,
+                            platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                             lineHeight = 12.sp,
                         ),
                         cursorBrush = SolidColor(Accent),
@@ -2637,6 +2636,7 @@ private fun AgentCredentialsCard(
                     textStyle = MaterialTheme.typography.bodySmall.copy(
                         color = TextPrimary,
                         fontSize = 12.sp,
+                        platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                         lineHeight = 12.sp,
                     ),
                     cursorBrush = SolidColor(Accent),

@@ -134,6 +134,21 @@ object AgentEngine {
      */
     private var defaultPermissionEnsured = false
 
+    /** Orders concurrent workspace list refreshes so an older reply cannot win. */
+    private val workspaceRefreshStamp = AtomicLong(1)
+
+    /**
+     * Recent full transcripts keyed by session id. Stepping back from a sub-agent or
+     * returning to a conversation draws its last known content immediately, instead of
+     * flashing the empty state while the history request is in flight.
+     */
+    private val transcriptCache =
+        object : LinkedHashMap<String, List<AgentItem>>(8, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, List<AgentItem>>?
+            ): Boolean = size > 8
+        }
+
     private val liveBlocks = LinkedHashMap<String, LinkedHashMap<Int, LiveBlock>>()
 
     /**
@@ -1022,6 +1037,14 @@ object AgentEngine {
         subagentPoll?.cancel()
         subagentPoll = null
         val previousTrail = _state.value.subagentTrail
+        // Remember what was on screen under the session that is being left, so coming back
+        // to it (the sub-agent back button, the drawer) paints it again at once.
+        val previousId = _state.value.activeSessionId
+        val previousItems = _state.value.items
+        if (previousId != null && previousItems.isNotEmpty()) {
+            synchronized(transcriptCache) { transcriptCache[previousId] = previousItems }
+        }
+        val cachedItems = synchronized(transcriptCache) { transcriptCache[id] }
         val keepIds = trail.mapTo(mutableSetOf()) { it.id }
         // Synthetic child rows exist only while their level is on the trail; dropping the
         // rest keeps a ghost chat out of the drawer after returning to the root.
@@ -1036,7 +1059,8 @@ object AgentEngine {
                 // child's own. Clear it so the previous level never flashes underneath.
                 subagents = emptyList(),
                 subagentsParentAvailable = true,
-                items = emptyList(),
+                items = cachedItems.orEmpty(),
+                transcriptLoading = true,
                 running = session?.running ?: false,
                 todos = emptyList(),
                 plan = AgentPlan(),
@@ -2339,7 +2363,14 @@ object AgentEngine {
     }
 
     private suspend fun loadHistory(id: String, beforeSeq: Long?, token: Long) {
-        val client = bridge ?: return
+        val client = bridge ?: run {
+            eventMutex.withLock {
+                if (_state.value.activeSessionId == id) {
+                    _state.update { it.copy(transcriptLoading = false) }
+                }
+            }
+            return
+        }
         val view = _state.value.subagentView?.takeIf { it.id == id }
         val params = JSONObject()
         if (view == null) {
@@ -2364,6 +2395,7 @@ object AgentEngine {
                 if (token == loadToken && historyLoadingFor == id) {
                     historyLoadingFor = null
                     historyLoadFailedFor = id
+                    _state.update { it.copy(transcriptLoading = false) }
                     // A reconnect reloads the transcript on recovery (see stream.recovered),
                     // so an outage here is not something the user has to act on.
                     if (isConnectivityFailure(t)) {
@@ -2429,9 +2461,13 @@ object AgentEngine {
             if (beforeSeq == null && view == null) {
                 result.optJSONObject("projections")?.let { applyProjectionsLocked(id, it) }
             }
+            if (beforeSeq == null) {
+                synchronized(transcriptCache) { transcriptCache[id] = merged }
+            }
             _state.update {
                 it.copy(
                     items = merged,
+                    transcriptLoading = false,
                     deliverables = mergedDeliverables,
                     hasMoreHistory = result.optBoolean("hasMore"),
                     oldestSeq = oldest
@@ -5214,16 +5250,23 @@ object AgentEngine {
                 )
             )
         }
-        // KingKang's own default: a fresh profile starts every new chat with full access.
-        // Only an unset profile is touched, so a preset the user picked in dsh or here wins.
+        // KingKang's own default: new chats start with full access. dsh may materialise its
+        // own default while the profile is created, so the presence of a value is not proof
+        // the user chose it; only an explicit pick in this app stops the override.
         val applied = _state.value
-        if (!applied.permissionSettings.configured &&
+        val chosenByUser = if (::appContext.isInitialized) {
+            SettingsStore(appContext).permissionDefaultChosen
+        } else {
+            true
+        }
+        if (!defaultPermissionEnsured &&
             applied.permissionSettings.writable &&
-            !defaultPermissionEnsured &&
+            !chosenByUser &&
+            applied.permissionSettings.defaultPreset != FULL_ACCESS_PRESET &&
             applied.permissionCatalog.options.any { it.value == FULL_ACCESS_PRESET }
         ) {
             defaultPermissionEnsured = true
-            appendLog("新会话权限未设置，改用完全访问")
+            appendLog("新会话权限默认使用完全访问")
             setDefaultPermission(FULL_ACCESS_PRESET)
         }
     }
@@ -5330,8 +5373,12 @@ object AgentEngine {
         }
     }
 
-    /** Persists the default permission preset used by sessions created after this one. */
-    fun setDefaultPermission(value: String) {
+    /**
+     * Persists the default permission preset used by sessions created after this one.
+     * A pick made in this app is remembered locally, so the full-access default is not
+     * re-applied over it on the next connection.
+     */
+    fun setDefaultPermission(value: String, byUser: Boolean = false) {
         val client = bridge ?: return
         val settings = _state.value.permissionSettings
         if (!settings.writable) {
@@ -5369,6 +5416,9 @@ object AgentEngine {
                         revision = result.optInt("revision", it.permissionSettings.revision)
                     )
                 )
+            }
+            if (byUser && ::appContext.isInitialized) {
+                SettingsStore(appContext).permissionDefaultChosen = true
             }
             appendLog("已设置新会话默认权限：$value")
         }
@@ -6205,12 +6255,17 @@ object AgentEngine {
     }
 
     private suspend fun refreshWorkspacesNow(client: BridgeClient) {
+        // Several paths refresh this list (session creation, workspace creation, reconnect).
+        // A reply that started before a newer request must not overwrite the newer list:
+        // otherwise a workspace added while a chat was being created could vanish again.
+        val stamp = workspaceRefreshStamp.incrementAndGet()
         val result = try {
             client.callObject("workspace.list", timeoutMs = 25_000)
         } catch (t: Throwable) {
             appendLog("读取工作区失败：${readableError(t)}")
             return
         }
+        if (stamp != workspaceRefreshStamp.get()) return
         val workspaces = mutableListOf<AgentWorkspace>()
         result.optJSONArray("workspaces")?.let { array ->
             for (index in 0 until array.length()) {
@@ -6248,7 +6303,11 @@ object AgentEngine {
             notifyState("工作区需要 Kali 中的绝对路径（以 / 开头）")
             return
         }
-        val client = bridge ?: return
+        val client = bridge
+        if (client == null || _state.value.connection != AgentConnection.Ready) {
+            notifyState("Agent 尚未连接，稍等片刻再添加工作区")
+            return
+        }
         scope.launch {
             val result = try {
                 client.callObject(

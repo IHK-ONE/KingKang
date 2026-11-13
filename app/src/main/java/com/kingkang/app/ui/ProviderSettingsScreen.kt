@@ -194,7 +194,6 @@ private fun ProviderList(
     val pageScroll = rememberScrollState()
     ScrollEdgeFade(
         canScrollForward = pageScroll.canScrollForward,
-        color = Background,
         modifier = Modifier.fillMaxSize()
     ) {
     Column(
@@ -508,7 +507,6 @@ private fun ProviderEditor(
     val editorScroll = rememberScrollState()
     ScrollEdgeFade(
         canScrollForward = editorScroll.canScrollForward,
-        color = Background,
         modifier = Modifier.fillMaxSize()
     ) {
     Column(
@@ -964,6 +962,7 @@ private fun ProviderField(
                 textStyle = MaterialTheme.typography.bodySmall.copy(
                     color = if (enabled) TextPrimary else TextMuted,
                     fontSize = 12.5.sp,
+                    platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                     lineHeight = 12.5.sp,
                     fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default
                 ),

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -69,6 +70,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -83,6 +85,7 @@ import com.kingkang.app.MainViewModel
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentSession
 import com.kingkang.app.agent.AgentWorkspace
+import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.KkDialog
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.TerminalMark
@@ -477,9 +480,12 @@ private fun KingKangDrawer(
         }
     }.filter { (workspace, sessions) ->
         // A workspace whose chats are all pinned keeps its header so "新对话" stays
-        // reachable; one whose chats are all archived still disappears, as before.
+        // reachable; one whose chats are all archived still disappears. A blank chat is
+        // not in `history` and a fresh chat may not be in the catalog yet, so only treat
+        // the workspace as gone when every one of its chats is known to be archived —
+        // otherwise adding a workspace and opening an empty chat could hide it again.
         sessions.isNotEmpty() || workspace.sessionIds.isEmpty() ||
-            workspace.sessionIds.any { id -> history.any { it.id == id } }
+            workspace.sessionIds.any { id -> id !in agent.archivedSessionIds }
     }
     val trimmedQuery = query.trim()
     val matches = if (trimmedQuery.isEmpty()) emptyList() else ordered.filter {
@@ -843,6 +849,7 @@ private fun KingKangDrawer(
                         textStyle = MaterialTheme.typography.bodyMedium.copy(
                             color = TextPrimary,
                             fontSize = 13.5.sp,
+                            platformStyle = CompactInputPlatformStyle,
                             lineHeight = 13.5.sp,
                         ),
                         cursorBrush = SolidColor(Accent),
@@ -919,17 +926,24 @@ private fun DrawerSearchField(value: String, onValueChange: (String) -> Unit) {
             modifier = Modifier.size(15.dp)
         )
         Spacer(Modifier.width(8.dp))
-        Box(Modifier.weight(1f)) {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
             if (value.isEmpty()) {
-                Text("搜索对话名称", color = TextMuted, fontSize = 12.5.sp)
+                Text(
+                    "搜索对话名称",
+                    color = TextMuted,
+                    fontSize = 12.5.sp,
+                    lineHeight = 12.5.sp,
+                    style = TextStyle(platformStyle = CompactInputPlatformStyle),
+                )
             }
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().wrapContentHeight(Alignment.CenterVertically),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = TextPrimary,
                     fontSize = 12.5.sp,
+                    platformStyle = CompactInputPlatformStyle,
                     lineHeight = 12.5.sp,
                 ),
                 cursorBrush = SolidColor(Accent),
@@ -1113,6 +1127,7 @@ private fun WorkspaceActionsSheet(
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = TextPrimary,
                         fontSize = 14.sp,
+                        platformStyle = CompactInputPlatformStyle,
                         lineHeight = 14.sp,
                     ),
                     cursorBrush = SolidColor(Accent),
@@ -1218,6 +1233,7 @@ private fun SessionActionsSheet(
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = TextPrimary,
                         fontSize = 14.sp,
+                        platformStyle = CompactInputPlatformStyle,
                         lineHeight = 14.sp,
                     ),
                     cursorBrush = SolidColor(Accent),
@@ -1439,7 +1455,6 @@ private fun OnboardingDialog(
     ) {
         ScrollEdgeFade(
             canScrollForward = scroll.canScrollForward,
-            color = Surface
         ) {
         Column(
             Modifier
@@ -1612,7 +1627,6 @@ private fun AboutDialog(onDismiss: () -> Unit) {
         text = {
             ScrollEdgeFade(
                 canScrollForward = scroll.canScrollForward,
-                color = Surface
             ) {
             Column(
                 Modifier

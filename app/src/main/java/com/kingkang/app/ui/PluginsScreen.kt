@@ -50,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,6 +67,7 @@ import com.kingkang.app.agent.AgentPluginMarketResult
 import com.kingkang.app.agent.AgentPluginVersions
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
+import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
@@ -98,7 +100,6 @@ fun PluginsScreen(
     val ready = agent.connection == AgentConnection.Ready
     val pageScroll = rememberScrollState()
 
-    var showInstall by remember { mutableStateOf(false) }
     var spec by remember { mutableStateOf("") }
     var detailPlugin by remember { mutableStateOf<AgentPlugin?>(null) }
     var confirmUninstall by remember { mutableStateOf<AgentPlugin?>(null) }
@@ -110,13 +111,6 @@ fun PluginsScreen(
     // still in flight; otherwise its result starts a real pnpm install after 取消.
     var inspectSeq by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
-    fun dismissInstall() {
-        inspectSeq++
-        showInstall = false
-        inspecting = false
-        inspected = null
-        installError = null
-    }
 
     LaunchedEffect(agent.connection) {
         if (ready) vm.refreshPlugins()
@@ -161,7 +155,6 @@ fun PluginsScreen(
 
         ScrollEdgeFade(
             canScrollForward = pageScroll.canScrollForward,
-            color = Background,
             modifier = Modifier.weight(1f)
         ) {
         Column(
@@ -319,6 +312,7 @@ fun PluginsScreen(
                             textStyle = MaterialTheme.typography.bodySmall.copy(
                                 color = TextPrimary,
                                 fontSize = 11.5.sp,
+                                platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                                 lineHeight = 11.5.sp,
                             ),
                             cursorBrush = SolidColor(Accent),
@@ -329,7 +323,9 @@ fun PluginsScreen(
                                     Text(
                                         "搜索插件，例如 web-search",
                                         color = TextMuted,
-                                        fontSize = 11.5.sp
+                                        fontSize = 11.5.sp,
+                                        lineHeight = 11.5.sp,
+                                        style = TextStyle(platformStyle = CompactInputPlatformStyle)
                                     )
                                 }
                                 inner()
@@ -417,34 +413,117 @@ fun PluginsScreen(
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp
                 )
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(10.dp))
+                // Same shape as the market search above: one field, one button. The spec
+                // is checked with dsh before pnpm sees it, so a typo fails here, not
+                // halfway through an install.
                 Row(
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(SurfaceVariant)
+                            .padding(horizontal = 11.dp, vertical = 9.dp)
+                    ) {
+                        BasicTextField(
+                            value = spec,
+                            onValueChange = { value ->
+                                inspectSeq++
+                                spec = value.take(160)
+                                inspecting = false
+                                inspected = null
+                                installError = null
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = MaterialTheme.typography.bodySmall.copy(
+                                color = TextPrimary,
+                                fontSize = 11.5.sp,
+                                platformStyle = CompactInputPlatformStyle,
+                                lineHeight = 11.5.sp,
+                            ),
+                            cursorBrush = SolidColor(Accent),
+                            singleLine = true,
+                            enabled = ready && installing == null && !inspecting,
+                            decorationBox = { inner ->
+                                if (spec.isEmpty()) {
+                                    Text(
+                                        "npm 包名，例如 dsh-plugin-xxx",
+                                        color = TextMuted,
+                                        fontSize = 11.5.sp,
+                                        style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                                    )
+                                }
+                                inner()
+                            }
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
                     OutlinedButton(
                         onClick = {
-                            spec = ""
+                            val value = spec.trim()
+                            if (value.isBlank() || inspecting) return@OutlinedButton
+                            inspectSeq++
+                            val seq = inspectSeq
+                            inspecting = true
                             inspected = null
                             installError = null
-                            showInstall = true
+                            scope.launch {
+                                try {
+                                    val result = vm.inspectPlugin(value)
+                                    if (seq != inspectSeq) return@launch
+                                    inspected = result
+                                    if (result.accepted) {
+                                        vm.installPlugin(value)
+                                        spec = ""
+                                        inspected = null
+                                    }
+                                } catch (t: Throwable) {
+                                    if (seq == inspectSeq) {
+                                        installError = t.message ?: "检查插件失败"
+                                    }
+                                } finally {
+                                    if (seq == inspectSeq) inspecting = false
+                                }
+                            }
                         },
-                        enabled = ready && installing == null,
-                        shape = RoundedCornerShape(11.dp),
+                        enabled = ready && spec.isNotBlank() && installing == null && !inspecting,
+                        shape = RoundedCornerShape(10.dp),
                         border = BorderStroke(1.dp, Border),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                        contentPadding = PaddingValues(horizontal = 13.dp, vertical = 0.dp),
                         modifier = Modifier.height(34.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
                             contentColor = TextSecondary,
                             disabledContentColor = TextMuted
                         )
                     ) {
-                        Text("安装…", fontSize = 11.5.sp)
+                        if (inspecting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(13.dp),
+                                color = TextMuted,
+                                strokeWidth = 1.5.dp
+                            )
+                        } else {
+                            Text("安装", fontSize = 11.sp)
+                        }
                     }
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = onOpenHarness) {
-                        Text("在 Harness 中管理", color = TextMuted, fontSize = 10.5.sp)
-                    }
+                }
+                inspected?.takeIf { !it.accepted }?.let { result ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(refusalText(result), color = ErrorText, fontSize = 10.5.sp, lineHeight = 15.sp)
+                }
+                installError?.let { message ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(message, color = ErrorText, fontSize = 10.5.sp, lineHeight = 15.sp)
+                }
+                Spacer(Modifier.height(2.dp))
+                TextButton(
+                    onClick = onOpenHarness,
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp)
+                ) {
+                    Text("在 Harness 中管理", color = TextMuted, fontSize = 10.5.sp)
                 }
             }
 
@@ -460,48 +539,6 @@ fun PluginsScreen(
             Spacer(Modifier.height(28.dp))
         }
         }
-    }
-
-    if (showInstall) {
-        InstallPluginDialog(
-            spec = spec,
-            onSpecChange = {
-                inspectSeq++
-                spec = it
-                inspecting = false
-                inspected = null
-                installError = null
-            },
-            inspecting = inspecting,
-            inspected = inspected,
-            error = installError,
-            enabled = ready && installing == null,
-            onDismiss = ::dismissInstall,
-            onConfirm = {
-                val value = spec.trim()
-                if (value.isBlank() || inspecting) return@InstallPluginDialog
-                inspectSeq++
-                val seq = inspectSeq
-                inspecting = true
-                inspected = null
-                installError = null
-                scope.launch {
-                    try {
-                        val result = vm.inspectPlugin(value)
-                        if (seq != inspectSeq) return@launch
-                        inspected = result
-                        if (result.accepted && showInstall) {
-                            showInstall = false
-                            vm.installPlugin(value)
-                        }
-                    } catch (t: Throwable) {
-                        if (seq == inspectSeq) installError = t.message ?: "检查插件失败"
-                    } finally {
-                        if (seq == inspectSeq) inspecting = false
-                    }
-                }
-            }
-        )
     }
 
     detailPlugin?.let { plugin ->
@@ -605,7 +642,6 @@ private fun PluginDetailDialog(
         text = {
             ScrollEdgeFade(
                 canScrollForward = scroll.canScrollForward,
-                color = Surface
             ) {
             Column(
                 Modifier
@@ -627,7 +663,10 @@ private fun PluginDetailDialog(
                         lineHeight = 16.sp
                     )
                 }
-                versions?.let { list ->
+                // Official plugins are not third-party npm packages, so dsh cannot list
+                // their versions. Hiding the failed lookup is friendlier than reporting
+                // that English protocol error for a plugin dsh ships itself.
+                versions?.takeIf { !(plugin.official && it.problem != null) }?.let { list ->
                     Spacer(Modifier.height(12.dp))
                     Text("可用版本", color = TextSecondary, fontSize = 11.sp)
                     Spacer(Modifier.height(4.dp))
@@ -694,7 +733,7 @@ private fun PluginDetailDialog(
                         readme.loading -> Text("正在读取说明…", color = TextMuted, fontSize = 10.5.sp)
                         readme.markdown.isNotBlank() -> {
                             Text(
-                                readme.markdown.take(6000),
+                                plainReadme(readme.markdown).take(6000),
                                 color = TextSecondary,
                                 fontSize = 10.5.sp,
                                 lineHeight = 15.sp
@@ -1102,128 +1141,16 @@ private fun MarketResultRow(
     }
 }
 
-@Composable
-private fun InstallPluginDialog(
-    spec: String,
-    onSpecChange: (String) -> Unit,
-    inspecting: Boolean,
-    inspected: AgentPluginInspection?,
-    error: String?,
-    enabled: Boolean,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("安装插件", style = MaterialTheme.typography.titleMedium) },
-        text = {
-            Column {
-                Text(
-                    "先从 dsh 的 registry 检查，再交给 pnpm 安装并启用。",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp
-                )
-                Spacer(Modifier.height(12.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(SurfaceVariant)
-                        .padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    BasicTextField(
-                        value = spec,
-                        onValueChange = onSpecChange,
-                        modifier = Modifier.fillMaxWidth(),
-                        textStyle = MaterialTheme.typography.bodySmall.copy(
-                            color = TextPrimary,
-                            fontSize = 12.sp,
-                            lineHeight = 12.sp,
-                        ),
-                        cursorBrush = SolidColor(Accent),
-                        singleLine = true,
-                        enabled = enabled && !inspecting,
-                        decorationBox = { inner ->
-                            if (spec.isEmpty()) {
-                                Text(
-                                    "例如 @deepseek-ai/dsh-plugin-market",
-                                    color = TextMuted,
-                                    fontSize = 12.sp
-                                )
-                            }
-                            inner()
-                        }
-                    )
-                }
-                if (inspecting) {
-                    Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            color = TextMuted,
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("正在检查包名…", color = TextMuted, fontSize = 10.5.sp)
-                    }
-                }
-                val result = inspected
-                if (result != null) {
-                    Spacer(Modifier.height(12.dp))
-                    if (result.accepted) {
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(SurfaceVariant.copy(alpha = 0.6f))
-                                .padding(horizontal = 12.dp, vertical = 9.dp)
-                        ) {
-                            Text(
-                                result.name ?: spec,
-                                color = TextPrimary,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            val detail = listOfNotNull(
-                                result.version,
-                                result.description?.take(80)
-                            ).joinToString(" · ")
-                            if (detail.isNotBlank()) {
-                                Text(detail, color = TextMuted, fontSize = 10.sp)
-                            }
-                        }
-                    } else {
-                        Text(
-                            refusalText(result),
-                            color = ErrorText,
-                            fontSize = 10.5.sp,
-                            lineHeight = 15.sp
-                        )
-                    }
-                }
-                if (error != null) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(error, color = ErrorText, fontSize = 10.5.sp)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm, enabled = enabled && !inspecting) {
-                Text("安装", color = if (enabled) Accent else TextMuted)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
-            }
-        }
-    )
-}
+/**
+ * READMEs are written for GitHub, not for a text view: drop images and markdown link
+ * wrappers so the说明 reads as sentences instead of `![智能体搜索历史会话](preview.svg)`.
+ */
+private fun plainReadme(markdown: String): String = markdown
+    .replace(Regex("!\\[[^\\]]*\\]\\([^)]*\\)"), "")
+    .replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)")) { match -> match.groupValues[1] }
+    .replace(Regex("^#{1,6}\\s*", RegexOption.MULTILINE), "")
+    .replace(Regex("\\n{3,}"), "\n\n")
+    .trim()
 
 private fun refusalText(result: AgentPluginInspection): String {
     val reason = result.reason?.takeIf { it.isNotBlank() }

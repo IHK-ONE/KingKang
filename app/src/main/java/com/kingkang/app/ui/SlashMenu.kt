@@ -345,7 +345,6 @@ internal fun SlashMenuPanel(
         }
         ScrollEdgeFade(
             canScrollForward = listState.canScrollForward,
-            color = Surface,
             modifier = Modifier.heightIn(max = 300.dp)
         ) {
         LazyColumn(

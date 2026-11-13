@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -83,6 +84,7 @@ import com.kingkang.app.agent.AgentFilePreview
 import com.kingkang.app.agent.AgentWorkspaceMatch
 import com.kingkang.app.agent.AgentWorkspaceSearch
 import com.kingkang.app.ui.theme.Accent
+import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
@@ -312,7 +314,6 @@ fun FilesScreen(
                 )
                 else -> ScrollEdgeFade(
                     canScrollForward = fileListState.canScrollForward,
-                    color = Background,
                     modifier = Modifier.fillMaxSize()
                 ) {
                 LazyColumn(
@@ -451,16 +452,26 @@ private fun FilesSearchField(
             modifier = Modifier.size(15.dp)
         )
         Spacer(Modifier.width(8.dp))
-        Box(Modifier.weight(1f)) {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
             if (value.isEmpty()) {
-                Text(placeholder, color = TextMuted, fontSize = 12.5.sp)
+                Text(
+                    placeholder,
+                    color = TextMuted,
+                    fontSize = 12.5.sp,
+                    lineHeight = 12.5.sp,
+                    style = TextStyle(platformStyle = CompactInputPlatformStyle),
+                )
             }
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
-                modifier = Modifier.fillMaxWidth(),
-                textStyle = TextStyle(color = TextPrimary, fontSize = 12.5.sp,
-                lineHeight = 12.5.sp,),
+                modifier = Modifier.fillMaxWidth().wrapContentHeight(Alignment.CenterVertically),
+                textStyle = TextStyle(
+                    color = TextPrimary,
+                    fontSize = 12.5.sp,
+                    lineHeight = 12.5.sp,
+                    platformStyle = CompactInputPlatformStyle,
+                ),
                 cursorBrush = SolidColor(Accent),
                 singleLine = true
             )
@@ -603,7 +614,6 @@ private fun WorkspaceSearchResults(
             search.matches.isEmpty() -> FileMessage("没有匹配「${search.query}」的文件")
             else -> ScrollEdgeFade(
                 canScrollForward = listState.canScrollForward,
-                color = Background,
                 modifier = Modifier.weight(1f)
             ) {
                 LazyColumn(
@@ -905,7 +915,6 @@ private fun TextPreview(
         val visible = if (lines.size > 5_000) lines.take(5_000) else lines
         ScrollEdgeFade(
             canScrollForward = wrapState.canScrollForward,
-            color = Background,
             modifier = Modifier.fillMaxSize()
         ) {
         LazyColumn(
@@ -954,7 +963,6 @@ private fun TextPreview(
         }
         ScrollEdgeFade(
             canScrollForward = noWrapScroll.canScrollForward,
-            color = Background,
             modifier = Modifier.fillMaxSize()
         ) {
         Column(
@@ -995,7 +1003,6 @@ private fun MarkdownPreview(bytes: ByteArray, charsetChoice: String, onCharset: 
     CharsetRow(choice = charsetChoice, onChange = onCharset)
     ScrollEdgeFade(
         canScrollForward = listState.canScrollForward,
-        color = Background,
         modifier = Modifier.fillMaxSize()
     ) {
     LazyColumn(

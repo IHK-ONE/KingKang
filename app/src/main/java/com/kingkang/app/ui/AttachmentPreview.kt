@@ -219,7 +219,6 @@ private fun TextPreview(body: PreviewBody.Text) {
     Column(Modifier.fillMaxWidth()) {
         ScrollEdgeFade(
             canScrollForward = scroll.canScrollForward,
-            color = Background,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 430.dp)

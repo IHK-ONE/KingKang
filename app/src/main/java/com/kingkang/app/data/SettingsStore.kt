@@ -48,6 +48,15 @@ class SettingsStore(context: Context) {
         get() = prefs.getStringSet(KEY_COLLAPSED_WORKSPACES, null)?.toSet().orEmpty()
         set(value) = prefs.edit().putStringSet(KEY_COLLAPSED_WORKSPACES, value).apply()
 
+    /**
+     * True once the user picked the new-chat permission default in KingKang. Until then the
+     * app keeps steering a fresh profile to full access, even if dsh materialised its own
+     * default while the profile was created.
+     */
+    var permissionDefaultChosen: Boolean
+        get() = prefs.getBoolean(KEY_PERMISSION_DEFAULT_CHOSEN, false)
+        set(value) = prefs.edit().putBoolean(KEY_PERMISSION_DEFAULT_CHOSEN, value).apply()
+
     /** Directories picked recently in a picker, most recent first. */
     var recentDirectories: List<String>
         get() = prefs.getString(KEY_RECENT_DIRECTORIES, null)
@@ -63,6 +72,7 @@ class SettingsStore(context: Context) {
         const val KEY_ONBOARDING = "onboarding"
         const val KEY_THEME = "theme_mode"
         const val KEY_THEME_PENDING = "theme_sync_pending"
+        const val KEY_PERMISSION_DEFAULT_CHOSEN = "permission_default_chosen"
         const val KEY_NPM_REGISTRY = "npm_registry"
         const val KEY_PRERELEASE_UPDATES = "prerelease_updates"
         const val KEY_COLLAPSED_WORKSPACES = "collapsed_workspaces"

@@ -1535,7 +1535,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectAgentPermission(value: String) = AgentEngine.selectSessionPermission(value)
 
-    fun setAgentDefaultPermission(value: String) = AgentEngine.setDefaultPermission(value)
+    fun setAgentDefaultPermission(value: String) =
+        AgentEngine.setDefaultPermission(value, byUser = true)
 
     fun refreshAgentPermissions() = AgentEngine.refreshPermissions()
 

@@ -1,44 +1,60 @@
 package com.kingkang.app.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
  * The one scroll affordance used across the app: while more content waits below, the
- * bottom edge fades into the surface instead of ending on a hard cut. It is drawn only
- * when forward scrolling is still possible, so a list already at its end stays crisp.
+ * bottom edge fades out instead of ending on a hard cut. It is applied only when forward
+ * scrolling is still possible, so a list already at its end stays crisp.
  *
- * Every scrollable surface (transcripts, sheets, settings pages, file lists and dialog
- * bodies) wraps its viewport in this box rather than inventing its own shadow or divider.
+ * The fade is a mask on the content itself rather than a coloured stripe painted on top,
+ * so it works on any background: white pages, grey dialog bodies, cards and images all
+ * fade into whatever is actually behind them. Callers therefore never pick a colour.
  */
 @Composable
 fun ScrollEdgeFade(
     canScrollForward: Boolean,
-    color: Color,
     modifier: Modifier = Modifier,
     edgeHeight: Dp = 28.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
-    Box(modifier) {
+    Box(
+        if (canScrollForward) modifier.edgeFadeMask(edgeHeight) else modifier
+    ) {
         content()
-        if (canScrollForward) {
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(edgeHeight)
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, color)))
-            )
-        }
     }
+}
+
+@Composable
+private fun Modifier.edgeFadeMask(edgeHeight: Dp): Modifier {
+    val edgePx = with(LocalDensity.current) { edgeHeight.toPx() }
+    return this
+        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            if (size.height > 0f) {
+                val edge = edgePx.coerceIn(0f, size.height)
+                val solidStop = ((size.height - edge) / size.height).coerceIn(0f, 1f)
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        0f to Color.Black,
+                        solidStop to Color.Black,
+                        1f to Color.Transparent
+                    ),
+                    blendMode = BlendMode.DstIn
+                )
+            }
+        }
 }

@@ -74,10 +74,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -200,6 +203,7 @@ import com.kingkang.app.agent.WorkflowItem
 import com.kingkang.app.agent.activeAtToken
 import com.kingkang.app.agent.formatFileMention
 import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
 import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.TerminalMark
@@ -226,6 +230,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 import org.json.JSONObject
 import java.io.File
 import java.util.TimeZone
@@ -270,7 +275,7 @@ fun HomeScreen(
     // reader swipe between them.
     val tabs = listOf(HomeTab.Chat, HomeTab.Trajectory)
     val pagerState = rememberPagerState(pageCount = { tabs.size })
-    var modelPicker by rememberSaveable { mutableStateOf<ModelPane?>(null) }
+    var showModelPicker by rememberSaveable { mutableStateOf(false) }
     var showPermission by rememberSaveable { mutableStateOf(false) }
     var showSubagents by rememberSaveable { mutableStateOf(false) }
     var confirmPermission by rememberSaveable { mutableStateOf<String?>(null) }
@@ -596,13 +601,12 @@ fun HomeScreen(
                 permissionOptions = state.permissionCatalog.options,
                 tokenUsage = state.tokenUsage,
                 pressure = state.contextPressure,
-                suggestionsEnabled = !(modelPicker != null || showPermission ||
+                suggestionsEnabled = !(showModelPicker || showPermission ||
                     showSubagents || confirmPermission != null || showStats ||
                     showOutline || showWorkbench || jobOutputFor != null),
                 seed = composerSeed,
                 onSeedConsumed = { composerSeed = null },
-                onPickModel = { modelPicker = ModelPane.Models },
-                onPickEffort = { modelPicker = ModelPane.Efforts },
+                onPickModel = { showModelPicker = true },
                 onPickPermission = { showPermission = true },
                 onShowStats = { showStats = true },
                 onSend = { text, images, files -> vm.sendChat(text, images, files) },
@@ -674,14 +678,12 @@ fun HomeScreen(
         )
     }
 
-    modelPicker?.let { pane ->
+    if (showModelPicker) {
         ModelPickerDialog(
             models = state.models,
-            initialPane = pane,
-            onDismiss = { modelPicker = null },
+            onDismiss = { showModelPicker = false },
             onSelect = { model, effort ->
                 vm.selectModel(model.provider, model.id, effort)
-                modelPicker = null
             }
         )
     }
@@ -936,7 +938,13 @@ private fun ConversationBody(
 ) {
     val clipboard = LocalClipboardManager.current
     Box(modifier) {
-        if (state.items.isEmpty()) {
+        if (state.items.isEmpty() && state.transcriptLoading) {
+            // A session's history is on its way. Showing the first-run page here would be
+            // wrong and visibly stuck; a quiet line is honest until the transcript lands.
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("正在读取对话…", color = TextMuted, fontSize = 12.sp)
+            }
+        } else if (state.items.isEmpty()) {
             EmptyState(
                 environment = environment,
                 rootMode = rootMode,
@@ -1177,7 +1185,6 @@ private fun TurnOutlineSheet(
             }
             ScrollEdgeFade(
                 canScrollForward = listState.canScrollForward,
-                color = Surface,
                 modifier = Modifier.heightIn(max = 460.dp)
             ) {
             LazyColumn(
@@ -1402,7 +1409,6 @@ private fun WorkbenchSheet(
             }
             ScrollEdgeFade(
                 canScrollForward = listState.canScrollForward,
-                color = Surface,
                 modifier = Modifier.heightIn(max = 480.dp)
             ) {
             LazyColumn(
@@ -1899,6 +1905,7 @@ private fun GoalCreateDialog(
             textStyle = MaterialTheme.typography.bodyMedium.copy(
                 color = TextPrimary,
                 fontSize = 14.sp,
+                platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                 lineHeight = 20.sp
             ),
             cursorBrush = SolidColor(Accent),
@@ -1968,6 +1975,7 @@ private fun GoalEditDialog(
             textStyle = MaterialTheme.typography.bodyMedium.copy(
                 color = TextPrimary,
                 fontSize = 14.sp,
+                platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                 lineHeight = 20.sp
             ),
             cursorBrush = SolidColor(Accent),
@@ -1989,6 +1997,7 @@ private fun GoalEditDialog(
             textStyle = MaterialTheme.typography.bodyMedium.copy(
                 color = TextPrimary,
                 fontSize = 13.sp,
+                platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                 lineHeight = 13.sp,
             ),
             cursorBrush = SolidColor(Accent),
@@ -2581,6 +2590,7 @@ private fun ScheduleInput(
         textStyle = MaterialTheme.typography.bodyMedium.copy(
             color = TextPrimary,
             fontSize = 13.sp,
+            platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
             lineHeight = 19.sp
         ),
         cursorBrush = SolidColor(Accent),
@@ -2642,7 +2652,6 @@ private fun ScheduleDetailDialog(
         text = {
             ScrollEdgeFade(
                 canScrollForward = scroll.canScrollForward,
-                color = Surface
             ) {
             Column(
                 Modifier
@@ -3281,7 +3290,6 @@ private fun JobOutputDialog(
                         }
                         else -> ScrollEdgeFade(
                             canScrollForward = scroll.canScrollForward,
-                            color = Background,
                             modifier = Modifier.fillMaxSize()
                         ) {
                             SelectionContainer {
@@ -3453,7 +3461,6 @@ private fun ChangesDiffDialog(
                         rows.isEmpty() -> CenteredHint("没有可显示的差异。")
                         else -> ScrollEdgeFade(
                             canScrollForward = diffListState.canScrollForward,
-                            color = Background,
                             modifier = Modifier.fillMaxSize()
                         ) {
                             LazyColumn(Modifier.fillMaxWidth(), state = diffListState) {
@@ -3643,7 +3650,6 @@ private fun TrajectoryPane(
         }
         ScrollEdgeFade(
             canScrollForward = listState.canScrollForward,
-            color = Background,
             modifier = Modifier.fillMaxWidth().weight(1f)
         ) {
         LazyColumn(
@@ -3742,6 +3748,7 @@ private fun TrajectoryFilterBar(
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = TextPrimary,
                     fontSize = 12.5.sp,
+                    platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                     lineHeight = 12.5.sp,
                 ),
                 cursorBrush = SolidColor(Accent),
@@ -4299,7 +4306,6 @@ private fun SubagentPanelDialog(
             } else {
                 ScrollEdgeFade(
                     canScrollForward = listState.canScrollForward,
-                    color = Surface,
                     modifier = Modifier.heightIn(max = 460.dp)
                 ) {
                     LazyColumn(
@@ -4718,7 +4724,6 @@ private fun EmptyState(
     val scroll = rememberScrollState()
     ScrollEdgeFade(
         canScrollForward = scroll.canScrollForward,
-        color = Background,
         modifier = Modifier.fillMaxSize()
     ) {
     Column(
@@ -4765,9 +4770,9 @@ private fun EmptyState(
         Spacer(Modifier.height(20.dp))
         SuggestionRow("检查这台设备的 Kali 环境") { onSend(it) }
         Spacer(Modifier.height(8.dp))
-        SuggestionRow("列出 /root 下的文件并说明用途") { onSend(it) }
+        SuggestionRow("分析当前内网的机器拓扑") { onSend(it) }
         Spacer(Modifier.height(8.dp))
-        SuggestionRow("帮我在 Kali 里验证一个本地实验") { onSend(it) }
+        SuggestionRow("探测当前内网中可能存在漏洞的服务") { onSend(it) }
     }
     }
 }
@@ -5220,6 +5225,7 @@ private fun QueueEditDialog(
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = TextPrimary,
                         fontSize = 14.sp,
+                        platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                         lineHeight = 20.sp
                     ),
                     cursorBrush = SolidColor(Accent),
@@ -5286,7 +5292,6 @@ private fun MessageList(
     }
     ScrollEdgeFade(
         canScrollForward = listState.canScrollForward,
-        color = Background,
         modifier = Modifier.fillMaxSize()
     ) {
         LazyColumn(
@@ -7427,6 +7432,7 @@ private fun QuestionDock(
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = TextPrimary,
                         fontSize = 12.sp,
+                        platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                         lineHeight = 17.sp
                     ),
                     cursorBrush = SolidColor(Accent),
@@ -7716,7 +7722,7 @@ private fun ContextStatsDialog(
                         fontWeight = FontWeight.Medium
                     )
                     Text(
-                        "最近一次上报；缺失显示 —",
+                        "最近一次上报",
                         color = TextMuted,
                         fontSize = 10.5.sp
                     )
@@ -7731,7 +7737,6 @@ private fun ContextStatsDialog(
             Spacer(Modifier.height(4.dp))
             ScrollEdgeFade(
                 canScrollForward = scroll.canScrollForward,
-                color = Surface,
                 modifier = Modifier.fillMaxWidth()
             ) {
             Column(
@@ -7740,7 +7745,7 @@ private fun ContextStatsDialog(
                     .verticalScroll(scroll)
             ) {
                 StatSection("模型")
-                StatRow("当前模型", modelSelectionLabel(selection))
+                StatWideRow("当前模型", modelSelectionLabel(selection))
 
                 StatSection("上下文")
                 StatRow(
@@ -7833,16 +7838,43 @@ private fun StatRow(label: String, value: String, emphasis: Boolean = false) {
     ) {
         Text(
             label,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(0.45f),
             color = TextSecondary,
-            fontSize = 12.sp
+            fontSize = 12.sp,
+            maxLines = 1
         )
         Text(
             value,
+            modifier = Modifier.weight(0.55f),
             color = if (emphasis) TextPrimary else TextSecondary,
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
-            maxLines = 1
+            textAlign = TextAlign.End,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * A two-line stat used when the value is a full model name: the label stays on its own
+ * line instead of being squeezed into one character per line by a long monospace value.
+ */
+@Composable
+private fun StatWideRow(label: String, value: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+    ) {
+        Text(label, color = TextMuted, fontSize = 10.sp)
+        Text(
+            value,
+            color = TextSecondary,
+            fontSize = 12.sp,
+            fontFamily = FontFamily.Monospace,
+            lineHeight = 17.sp,
+            modifier = Modifier.padding(top = 2.dp)
         )
     }
 }
@@ -7866,7 +7898,6 @@ private fun Composer(
     seed: String? = null,
     onSeedConsumed: () -> Unit = {},
     onPickModel: () -> Unit = {},
-    onPickEffort: () -> Unit = {},
     onPickPermission: () -> Unit = {},
     onShowStats: () -> Unit = {},
     onSend: (String, List<AgentDraftImage>, List<AgentDraftFile>) -> Unit,
@@ -8609,18 +8640,13 @@ private fun Composer(
                 }
                 Spacer(Modifier.weight(1f))
                 if (!modelName.isNullOrBlank()) {
+                    // One control for both halves of the choice; the dialog shows the model
+                    // with its reasoning level and lets either be changed without leaving it.
                     ComposerChip(
-                        text = modelName,
+                        text = if (effortText != null) "$modelName · $effortText" else modelName,
                         enabled = enabled,
-                        maxWidth = 180.dp,
+                        maxWidth = 220.dp,
                         onClick = onPickModel
-                    )
-                }
-                if (effortText != null) {
-                    ComposerChip(
-                        text = "推理 $effortText",
-                        enabled = enabled,
-                        onClick = onPickEffort
                     )
                 }
             }
@@ -8782,6 +8808,7 @@ private fun Composer(
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = TextPrimary,
                     fontSize = 15.sp,
+                    platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                     lineHeight = 21.sp
                 ),
                 cursorBrush = SolidColor(Accent),
@@ -8800,7 +8827,10 @@ private fun Composer(
                             },
                             color = TextMuted,
                             fontSize = 15.sp,
-                            lineHeight = 21.sp
+                            lineHeight = 21.sp,
+                            style = androidx.compose.ui.text.TextStyle(
+                                platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle
+                            )
                         )
                     }
                     inner()
@@ -9086,222 +9116,232 @@ private fun composerMentions(text: String): List<ComposerMention> {
     return (sessions + files).sortedBy { it.range.first }
 }
 
-private enum class ModelPane { Models, Efforts }
-
 /**
- * The two composer chips each open their own list directly: the model chip picks a
- * model, the effort chip picks a reasoning level. There is no intermediate menu to
- * back out of, so a second tap always starts from the list the chip names.
- * Choosing a model installs it immediately (with the provider default effort when one
- * is declared); the effort pane offers the provider default row only for models
- * without a declared default, exactly as the native menu does.
+ * One control for model and reasoning. The current model can be swapped inline and the
+ * reasoning level is a slider over the model's own effort list, so both halves of the
+ * choice are visible in one place and take effect immediately.
  */
 @Composable
 private fun ModelPickerDialog(
     models: AgentModels?,
     onDismiss: () -> Unit,
-    onSelect: (AgentModel, String?) -> Unit,
-    initialPane: ModelPane
+    onSelect: (AgentModel, String?) -> Unit
 ) {
-    val pane = initialPane
     val currentModel = models?.current
+    var changingModel by rememberSaveable { mutableStateOf(false) }
+    val effortChoices = remember(currentModel) {
+        currentModel?.let { model ->
+            buildList {
+                if (model.efforts.isNotEmpty() && model.defaultEffort == null) {
+                    add("默认" to null)
+                }
+                model.efforts.forEach { effort -> add(effortLabel(effort) to effort.id) }
+            }
+        }.orEmpty()
+    }
+    val chosenEffort = models?.reasoningEffort
+    val selectedIndex = effortChoices.indexOfFirst { it.second == chosenEffort }
+        .takeIf { it >= 0 }
+        ?: effortChoices.indexOfFirst { it.second == models?.effectiveEffort }
+            .coerceAtLeast(0)
+    var sliderIndex by remember(currentModel?.id, chosenEffort) {
+        mutableStateOf(selectedIndex)
+    }
+    val effortText = models?.currentEffort?.let(::effortLabel)
+        ?: if (effortChoices.isNotEmpty()) "默认" else null
+    val headline = currentModel?.name ?: "选择模型"
 
     KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle(
+            title = "模型与推理",
+            subtitle = if (effortText != null) "$headline · $effortText" else headline,
+            onDismiss = onDismiss
+        )
+
+        if (models == null) {
+            Text(
+                "正在读取模型…",
+                color = TextMuted,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 14.dp)
+            )
+            return@KkDialog
+        }
+        if (!models.routable) {
+            Text(
+                "当前 provider 不可用，选择后本会话仍可能无法开始。",
+                color = Amber,
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+
+        // Model: one tappable row, with the full list only while the user is switching.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { changingModel = !changingModel }
+                .padding(horizontal = 2.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("模型", color = TextMuted, fontSize = 9.5.sp)
+                Text(
+                    headline,
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Text(
+                if (changingModel) "收起" else "更换",
+                color = Accent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        if (changingModel) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 240.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 4.dp)
+            ) {
+                models.groups.forEach { group ->
+                    Text(
+                        group.name,
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        letterSpacing = 0.5.sp,
+                        modifier = Modifier.padding(start = 8.dp, top = 8.dp, bottom = 4.dp)
+                    )
+                    group.models.forEach { model ->
+                        val selected = model.provider == models.provider && model.id == models.model
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (selected) Accent.copy(alpha = 0.08f) else Color.Transparent
+                                )
+                                .clickable {
+                                    val keepEffort = models.reasoningEffort?.takeIf { id ->
+                                        model.efforts.any { it.id == id }
+                                    }
+                                    onSelect(model, keepEffort ?: model.defaultEffort)
+                                    changingModel = false
+                                }
+                                .padding(horizontal = 8.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                if (selected) "✓" else " ",
+                                color = Success,
+                                fontSize = 11.sp,
+                                modifier = Modifier.width(18.dp)
+                            )
+                            Text(
+                                model.name,
+                                color = if (selected) TextPrimary else TextSecondary,
+                                fontSize = 12.5.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                if (models.groups.isEmpty()) {
+                    Text(
+                        "没有可选择的模型",
+                        color = TextMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+                    )
+                }
+            }
+        }
+
+        HorizontalDivider(
+            color = Border.copy(alpha = 0.7f),
+            modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+        )
+
+        // Reasoning: a slider over the model's declared levels. A model without levels
+        // says so instead of showing a dead track.
+        if (currentModel == null) {
+            Text(
+                "当前模型不在目录中，请先重新选择模型。",
+                color = Amber,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 10.dp)
+            )
+        } else if (currentModel.efforts.isEmpty()) {
+            Text(
+                "当前模型不提供可调推理等级。",
+                color = TextMuted,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 10.dp)
+            )
+        } else {
             Row(
-                Modifier.fillMaxWidth(),
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        when (pane) {
-                            ModelPane.Models -> "选择模型"
-                            ModelPane.Efforts -> currentModel?.name ?: "推理等级"
-                        },
-                        color = TextPrimary,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        when (pane) {
-                            ModelPane.Models -> "切换后用于下一条消息"
-                            ModelPane.Efforts -> "推理等级"
-                        },
-                        color = TextMuted,
-                        fontSize = 10.5.sp
-                    )
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("关闭", color = TextSecondary)
-                }
-            }
-            Spacer(Modifier.height(6.dp))
-
-            if (models == null) {
+                Text("推理能力", color = TextSecondary, fontSize = 12.sp)
+                Spacer(Modifier.weight(1f))
                 Text(
-                    "正在读取模型…",
-                    color = TextMuted,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
-                )
-                return@KkDialog
-            }
-            if (!models.routable) {
-                Text(
-                    "当前 provider 不可用，选择后本会话仍可能无法开始。",
-                    color = Amber,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+                    effortChoices.getOrNull(sliderIndex)?.first ?: "默认",
+                    color = Accent,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
-
-            when (pane) {
-                ModelPane.Models -> Column(
-                    Modifier
-                        .heightIn(max = 430.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 8.dp)
-                ) {
-                    models.groups.forEach { group ->
-                        Text(
-                            group.name,
-                            color = TextMuted,
-                            fontSize = 10.sp,
-                            letterSpacing = 0.5.sp,
-                            modifier = Modifier.padding(start = 10.dp, top = 10.dp, bottom = 4.dp)
-                        )
-                        group.models.forEach { model ->
-                            val selected = model.provider == models.provider && model.id == models.model
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(
-                                        if (selected) Accent.copy(alpha = 0.08f) else Color.Transparent
-                                    )
-                                    .clickable {
-                                        if (selected) {
-                                            onDismiss()
-                                        } else {
-                                            onSelect(model, model.defaultEffort)
-                                        }
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 9.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Text(
-                                    if (selected) "✓" else " ",
-                                    color = Success,
-                                    fontSize = 11.sp,
-                                    modifier = Modifier.width(18.dp)
-                                )
-                                Column(Modifier.weight(1f)) {
-                                    // Name only: dsh's catalog description is a marketing
-                                    // sentence ("Stronger agentic coding…") that adds
-                                    // height without helping the choice.
-                                    Text(
-                                        model.name,
-                                        color = if (selected) TextPrimary else TextSecondary,
-                                        fontSize = 13.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (models.groups.isEmpty()) {
-                        Text(
-                            "没有可选择的模型",
-                            color = TextMuted,
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
-                        )
-                    }
-                }
-
-                ModelPane.Efforts -> Column(
-                    Modifier
-                        .heightIn(max = 430.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 8.dp)
-                ) {
-                    val model = currentModel
-                    if (model == null) {
-                        Text(
-                            "当前模型不在目录中，请先重新选择模型。",
-                            color = Amber,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                        )
-                    } else {
-                        if (model.defaultEffort == null) {
-                            EffortRow(
-                                label = "默认",
-                                description = "使用 provider 默认推理等级",
-                                selected = models.reasoningEffort == null
-                            ) {
-                                onSelect(model, null)
-                            }
-                        }
-                        if (model.efforts.isEmpty()) {
-                            Text(
-                                "当前模型未提供推理等级。",
-                                color = TextMuted,
-                                fontSize = 11.5.sp,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                            )
-                        } else {
-                            model.efforts.forEach { effort ->
-                                val label = effortLabel(effort)
-                                EffortRow(
-                                    label = label,
-                                    description = effort.name.takeIf {
-                                        !it.equals(label, ignoreCase = true) && it != effort.id
-                                    },
-                                    selected = models.effectiveEffort == effort.id
-                                ) {
-                                    onSelect(model, effort.id)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-    }
-}
-
-@Composable
-private fun EffortRow(
-    label: String,
-    description: String?,
-    selected: Boolean,
-    onClick: () -> Unit
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(if (selected) Accent.copy(alpha = 0.08f) else Color.Transparent)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            if (selected) "✓" else " ",
-            color = Success,
-            fontSize = 11.sp,
-            modifier = Modifier.width(20.dp)
-        )
-        Column(Modifier.weight(1f)) {
-            Text(
-                label,
-                color = if (selected) TextPrimary else TextSecondary,
-                fontSize = 13.sp
+            Slider(
+                value = sliderIndex.toFloat(),
+                onValueChange = { value ->
+                    sliderIndex = value.roundToInt()
+                        .coerceIn(0, effortChoices.lastIndex.coerceAtLeast(0))
+                },
+                onValueChangeFinished = {
+                    val effort = effortChoices.getOrNull(sliderIndex)?.second
+                    if (effort != models.reasoningEffort) onSelect(currentModel, effort)
+                },
+                valueRange = 0f..effortChoices.lastIndex.coerceAtLeast(0).toFloat(),
+                steps = (effortChoices.size - 2).coerceAtLeast(0),
+                colors = SliderDefaults.colors(
+                    thumbColor = Accent,
+                    activeTrackColor = Accent,
+                    inactiveTrackColor = SurfaceVariant,
+                    activeTickColor = OnAccent.copy(alpha = 0.5f),
+                    inactiveTickColor = TextMuted.copy(alpha = 0.5f)
+                ),
+                modifier = Modifier.fillMaxWidth()
             )
-            if (!description.isNullOrBlank()) {
-                Text(description, color = TextMuted, fontSize = 10.5.sp)
+            if (effortChoices.size > 1) {
+                Row(Modifier.fillMaxWidth()) {
+                    Text(effortChoices.first().first, color = TextMuted, fontSize = 9.5.sp)
+                    Spacer(Modifier.weight(1f))
+                    Text(effortChoices.last().first, color = TextMuted, fontSize = 9.5.sp)
+                }
+            }
+            Text(
+                "向左更省、更快，向右推理更深入。",
+                color = TextMuted,
+                fontSize = 9.5.sp,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+
+        KkDialogActions {
+            TextButton(onClick = onDismiss) {
+                Text("完成", color = TextSecondary, fontSize = 12.sp)
             }
         }
     }
