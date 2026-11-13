@@ -33,6 +33,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { posix as posixPath } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -4741,7 +4742,17 @@ async function main() {
   lines.on("close", () => shutdown(0));
 }
 
-main().catch((error) => {
-  emit("fatal", { message: String(error?.stack || error) });
-  shutdown(1);
-});
+// Tests import the normalizers directly; the bridge only starts when it is the entry
+// script. Keeping this guard lets `node --test` load the module without spawning dsh.
+const invokedDirectly =
+  typeof process.argv[1] === "string" &&
+  pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    emit("fatal", { message: String(error?.stack || error) });
+    shutdown(1);
+  });
+}
+
+export { normalizeEvent, imagesOf };

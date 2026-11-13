@@ -35,6 +35,14 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_NPM_REGISTRY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_NPM_REGISTRY, value.trim()).apply()
 
+    /**
+     * Include prerelease (rc/alpha) dsh versions when checking for updates. Off by default:
+     * the npm `latest` tag stays a stable channel for most users.
+     */
+    var prereleaseUpdates: Boolean
+        get() = prefs.getBoolean(KEY_PRERELEASE_UPDATES, false)
+        set(value) = prefs.edit().putBoolean(KEY_PRERELEASE_UPDATES, value).apply()
+
     /** Workspace headers the user folded in the drawer; the list outlives the drawer. */
     var collapsedWorkspaceIds: Set<String>
         get() = prefs.getStringSet(KEY_COLLAPSED_WORKSPACES, null)?.toSet().orEmpty()
@@ -56,6 +64,7 @@ class SettingsStore(context: Context) {
         const val KEY_THEME = "theme_mode"
         const val KEY_THEME_PENDING = "theme_sync_pending"
         const val KEY_NPM_REGISTRY = "npm_registry"
+        const val KEY_PRERELEASE_UPDATES = "prerelease_updates"
         const val KEY_COLLAPSED_WORKSPACES = "collapsed_workspaces"
         const val KEY_RECENT_DIRECTORIES = "recent_directories"
         const val THEME_SYSTEM = "system"

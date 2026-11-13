@@ -95,7 +95,7 @@
 | `approval` / `user-questions` | 审批/提问 | ✅ | 原生 | — |
 | `plan` | 计划/Todo | ✅ | 原生 | — |
 | `subagent` | 子 Agent | ✅ | 原生 + 统计 | DSH-206 |
-| `goal` | 长期目标 | ◐ | 原生 | DSH-202 |
+| `goal` | 长期目标 | ✅ | 原生 | DSH-202 |
 | `jobs` | 后台任务 | ◐ | 原生 | DSH-201 |
 | `schedule` | 定时任务 | ✅ | 原生 | DSH-203 |
 | `workflow-run` | 工作流 | ✅ | 原生 | DSH-204 |
@@ -146,7 +146,7 @@
 | ☑ | DSH-006 | 统一错误与提示 | P0 | — |
 | ☑ | DSH-007 | 目录浏览基础 | P1 | DSH-001 |
 | ☑ | DSH-008 | WebView 权限、窗口与深链钩子 | P2 | — |
-| ◐ | DSH-009 | bridge 契约测试 | P1 | — |
+| ☑ | DSH-009 | bridge 契约测试 | P1 | — |
 
 #### DSH-001 · projection 与事件全量透传
 
@@ -214,12 +214,11 @@
 
 #### DSH-009 · bridge 契约测试
 
-`P1` · 依赖：无 · 状态：◐ 部分完成（2026-10-30）
+`P1` · 依赖：无 · 状态：☑ 完成（2026-11-13）
 
-- 已做：`AgentSettingsParserTest` 覆盖 schemastery 图、secret 旁路、只读降级、union 与数字校验；`HarnessTargetTest` 覆盖深链同源与错误文案；`SessionProjectionsTest` 用 dsh 投影/事件 fixtures 覆盖 goal、sessionStats、turnOutline、subagentTiming、modelSelection、tokenUsage、contextPressure/contextBreakdown、assistant usage 与未知投影/事件容量；`ToolViewTest` 覆盖工具视图；另有 AtMention、附件类型、工作流、浏览器策略、文件名、下载、文件浏览、Slash、语音等纯逻辑测试。`.github/workflows/unit-tests.yml` 在 push/PR 上跑 `testDebugUnitTest` 与 `node --check bridge.mjs`。
-- 未做：bridge 的 `normalizeEvent` 本身仍无 JS 侧事件流 fixtures，未知事件只验证了原生保留逻辑；没有 fake dsh RPC 集成测试与仪器测试。
-- 做法：从 dsh 源码提取事件样本，建立 JSON fixtures；对 `normalizeEvent`、projection、usage、viewJson 解析做单元测试；接入本地/CI 测试。
-- 验收：覆盖已知事件族与未知事件；升级 dsh 时先跑契约测试；失败能定位到具体事件类型。当前 fixture 测试已能按投影/视图名定位；`normalizeEvent` 仍未覆盖。
+- 已做：`AgentSettingsParserTest` 覆盖 schemastery 图、secret 旁路、只读降级、union 与数字校验；`HarnessTargetTest` 覆盖深链同源与错误文案；`SessionProjectionsTest` 用 dsh 投影/事件 fixtures 覆盖 goal、sessionStats、turnOutline、subagentTiming、modelSelection、tokenUsage、contextPressure/contextBreakdown、assistant usage、actionCards 与未知投影/事件容量；`ToolViewTest` 覆盖工具视图；另有 AtMention、附件类型、工作流、浏览器策略、文件名、下载、文件浏览、Slash、语音等纯逻辑测试。`.github/workflows/unit-tests.yml` 在 push/PR 上跑 `testDebugUnitTest`、`node --check bridge.mjs` 与 bridge 事件契约测试。
+- bridge fixtures（2026-11-13）：`app/src/test/js/bridge-events.test.mjs` 用 `node --test` 直接导入 `normalizeEvent`，覆盖 user/message（含图片引用）、schedule 上下文、runtime 丢弃、assistant/message、tool/result（meta 与图片）、静默事件、turn/end、workspace/changes 与未知事件；bridge 入口加了 `import.meta` 守卫，测试导入不会启动 dsh。
+- 未做：没有 fake dsh RPC 集成测试与仪器测试。
 
 ---
 
@@ -343,23 +342,24 @@
 
 #### DSH-202 · 长期目标 goal
 
-`P1` · 依赖：DSH-001 · 状态：☑ 完成（待设备复验）
+`P1` · 依赖：DSH-001 · 状态：☑ 完成（2026-11-13）
 
 - 现状：`/goal` 命令能设置，但没有查看与管理界面。
 - 做法：会话头部或工作台显示目标卡；查看目标、状态、进度；暂停/恢复/编辑；按 dsh 能力清除；变更同步 dsh-web。
 - 验收：命令设置的目标出现在卡片；暂停/恢复立即生效；重载后保留；冲突以 dsh 为准。
 - 进展：桥接新增 `goal.get`、`goal.pause`、`goal.resume`、`goal.edit`、`goal.clear`，全部按 `{id, revision}` 定位当前版本，旧版本由 dsh 拒绝；工作台顶部新增目标卡，显示目标文本、阶段（进行中/已暂停/已阻塞/已完成）、轮次进度和版本号，暂停/恢复/编辑（目标文本 + 最大轮次）/清除（二次确认）均可用，操作中按钮禁用并显示进行时文案；阶段、版本、目标文本由 `goal` 投影实时同步，dsh-web 的改动会直接反映到卡片；操作结果以 `goals/*` 返回的视图为准，失败时提示并自动 `goal.get` 重读当前版本；激活状态（armed/disarmed）从 `goal.get` 读取，dsh 重启后进行中的目标若未重新武装，卡片显示「自动推进已停止，恢复后会继续」并把主操作换成「恢复」。模拟器验证：`/goal` 创建后卡片出现（1/256 第 1 版），暂停→已暂停 第 2 版，恢复→进行中 第 3 版，编辑轮次 256→25 后显示 2/25 第 4 版，清除确认后回到空态；冷启动重载后目标与版本仍在。
-- 新建目标（2026-10-30）：空态的目标段新增「新建」表单，填写目标后调用 dsh 自己的 `/goal <目标>` 命令（dsh 没有创建 RPC），目标折成单行、上限 4000 字；创建后仍由投影同步到卡片，轮次上限可在卡片里继续编辑。表单未做设备复验。
+- 新建目标（2026-11-13）：目标表单改调 dsh 0.2.2 的 `goals/create`（agentId + objective/maxGoalRounds），不再依赖模型读取 `/goal` 命令；创建后由投影同步到卡片。RPC 路径未单独设备复验（创建会立刻启动目标轮次）。
 - 待补：armed/disarmed 不在持久投影里，只有打开或刷新工作台时读取，其他客户端单独改激活状态后需刷新；未提供目标历史与清除墓碑的查看；激活状态修复已编译，但模拟器在验证前被系统回收，尚未做设备复验。
 
 #### DSH-203 · 定时任务 schedule
 
-`P1` · 依赖：DSH-001、DSH-006 · 状态：☑ 完成（待设备复验）
+`P1` · 依赖：DSH-001、DSH-006 · 状态：☑ 完成（2026-11-13）
 
 - 现状：dsh-web 0.2.1-rc.5 默认带 cron 编辑器，原生完全没有。
 - 做法：列表（名称、cron、下次运行、启用状态）；新建/编辑：常用预设（每小时、每天、每周）+ 原始 cron；显示时区；启用/停用；立即运行；删除确认；非法表达式提示。
 - 进展（2026-10-30）：bridge 新增 `schedule.catalog` / `schedule.update` / `schedule.delete` / `schedule.history`，全部直接调用 dsh 的 `schedule/*` 服务；工作台新增“定时任务”段，按会话过滤 Host 目录，活动任务按下次运行升序、已结束任务排后，行内显示标题、频率（一次 / 每 N 小时 / 每天 / 每周 / cron）、时区、下次运行或已结束时间。点开详情可看完整内容与投递记录（含保留规则、分页“加载更早”），可编辑标题、内容与频率（保持当前 / 一次 / 每 N 小时 / 每天 / 每周 / cron），编辑以目录里的原始记录作为 `expected`，dsh 拒绝过期写入时提示并自动重读；删除有二次确认并说明已排队消息不会撤回；非法 HH:mm、星期为空、cron 非 5 段、时区为空都会在表单内提示。dsh 没有创建 RPC（`schedule_create` 是 Agent 工具，Web 的“新建”也只是开启新会话），所以“新建”收集标题、内容与频率后把请求填入输入框，由助手调用工具创建，界面明确说明这一路径。提醒投递时转写显示「定时任务已触发」提示（可展开提醒正文），应用在后台时会收到「定时任务已完成 / 对话失败」通知（DSH-207）。
-- 待补：dsh 的 `status: inactive` 只表示任务已结束，没有暂停/恢复或“立即运行”RPC，原生不提供这两个动作（Web 也没有）；目录不是投影，工作台打开/刷新时读取，触发后的状态变化需刷新；设备端复验未做。
+- 0.2.2（2026-11-13）：改用 `schedule/create` 直接创建并投递到当前会话；新增「立即运行」（`schedule/run`）；编辑/删除改走 `schedule/edit`（旧 `schedule/update`、`schedule/delete` 已移除），带 `expectedUpdatedAt`；状态支持 active/paused/ended 与 rrule。设备上已验证创建、立即运行（触发一次投递并得到回复）与删除。
+- 待补：目录不是投影，工作台打开/刷新时读取；没有暂停/恢复 RPC（dsh 通过 `schedule/edit` 的 active 字段暂停，原生界面尚未提供）。
 - 验收：CRUD 与 dsh-web 一致；下次运行时间正确；非法 cron 有提示；时区不混淆。
 
 #### DSH-204 · 工作流 workflow
@@ -892,3 +892,4 @@ DSH-201 ~ DSH-206 ──> DSH-208
 | 2026-10-30 | M0 收尾：投影/usage/工具视图解码抽到 `SessionProjections`，补 dsh fixtures 契约测试（`SessionProjectionsTest`、`ToolViewTest`），修复未知投影满额时淘汰方向相反的问题；新增 GitHub Actions 单测工作流 |
 | 2026-11-13 | 对照 dsh 0.2.2：定时任务改用 `schedule/edit`（0.2.2 已移除 `schedule/update`、`schedule/delete`），任务状态兼容 `active/paused/ended` 与 `rrule`；子 Agent 停止兼容 rc.2 的 `interruptByUser`；更新改为只替换 npm 包。未适配项另列于交付说明（动作卡片、MCP 管理、Office 工具图片、账户通知、消息引用、失败后继续等） |
 | 2026-11-13 | 补齐 0.2.2 能力：动作卡片投影与 `actionCards/act`、消息引用、`conversationContinuation` 继续、工具结果图片与附件完整引用、`workspaceFiles/search`、插件版本/README、MCP 设置命名空间、账号通知、团队开关、定时任务直接创建与 `schedule/run`；修复控制流投影帧（`changes` 列表）解析，使目标/用量/模型/卡片随事件实时刷新 |
+| 2026-11-13 | rc.2 实机：全工作区搜索、`read_image` 工具图片与附件读取、MCP 增删（命名空间实际是 `mcp-manager`，另兼容 `mcp`）均验证通过；Claude/Codex 插件升级到 rc.2；新增预览版本通道与 semver 版本比较、安装脚本 allow-scripts、运行版本与安装版本不一致时自动重启；用量面板按钮回到标题右侧 |

@@ -128,6 +128,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _npmRegistry = MutableStateFlow(settingsStore.npmRegistry)
     val npmRegistry: StateFlow<String> = _npmRegistry.asStateFlow()
 
+    /** Whether dsh update checks include rc/alpha releases. */
+    private val _prereleaseUpdates = MutableStateFlow(settingsStore.prereleaseUpdates)
+    val prereleaseUpdates: StateFlow<Boolean> = _prereleaseUpdates.asStateFlow()
+
     private val _rootProbe = MutableStateFlow<RootProbe>(RootProbe.Unknown)
     val rootProbe: StateFlow<RootProbe> = _rootProbe.asStateFlow()
 
@@ -213,7 +217,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .map { it.connection }
                 .distinctUntilChanged()
                 .collect { connection ->
-                    if (connection == AgentConnection.Ready) syncThemeFromDsh()
+                    if (connection == AgentConnection.Ready) {
+                        syncThemeFromDsh()
+                        // An update may have finished while this bridge was starting; make
+                        // sure the process on screen is the version installed in Kali.
+                        refreshHarness()
+                    }
                 }
         }
     }
@@ -620,6 +629,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     harnessManager.runAsset(HARNESS_STATUS_SCRIPT, HARNESS_STATUS_TIMEOUT)
                 }
                 applyHarnessOutput(output)
+                reconcileRunningDsh()
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
@@ -628,6 +638,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /**
+     * A dsh install can finish while no in-app install job is watching it (the user left
+     * the app mid-update, or another terminal updated the tree). The bridge keeps running
+     * the process it started, so compare the installed version with the live one and
+     * restart once when they differ.
+     */
+    private fun reconcileRunningDsh() {
+        val installed = versionKey(_harness.value.version) ?: return
+        val agent = AgentEngine.state.value
+        val running = versionKey(agent.dshVersion) ?: return
+        if (installed == running) return
+        if (agent.connection != AgentConnection.Ready) return
+        if (_harness.value.busy) return
+        if (agent.running) {
+            emitUiMessage("Kali 内的 dsh 已更新到 $installed，当前任务结束后请重启 Agent")
+            return
+        }
+        emitUiMessage("Kali 内的 dsh 已更新到 $installed，正在重启 Agent")
+        AgentEngine.restart()
     }
 
     fun installHarness() = startHarnessInstall(update = false)
@@ -884,8 +915,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val latest = values["KK_LATEST"]?.takeIf { it.isNotBlank() }
         val installedKey = versionKey(version)
         val latestKey = versionKey(latest)
-        val hasUpdate = installed && installedKey != null && latestKey != null &&
-            installedKey != latestKey
+        // Only a strictly newer version is an update. A prerelease installed ahead of the
+        // npm `latest` tag must never be "updated" back down to the stable channel.
+        val hasUpdate = installed && latestKey != null && installedKey != null &&
+            compareSemver(latestKey, installedKey) > 0
 
         _harness.update { state ->
             state.copy(
@@ -901,6 +934,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun versionKey(raw: String?): String? =
         raw?.let { Regex("\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?").find(it)?.value }
+
+    /** Semver precedence: a release outranks its prereleases; numeric identifiers sort first. */
+    private fun compareSemver(left: String, right: String): Int {
+        fun parse(raw: String): Pair<List<Int>, List<String>> {
+            val main = raw.substringBefore('+')
+            val core = main.substringBefore('-').split('.').map { it.toIntOrNull() ?: 0 }
+            val padded = core + List(3 - core.size) { 0 }
+            val pre = main.substringAfter('-', "").split('.').filter { it.isNotBlank() }
+            return padded.take(3) to pre
+        }
+        val (leftCore, leftPre) = parse(left)
+        val (rightCore, rightPre) = parse(right)
+        for (index in 0..2) {
+            if (leftCore[index] != rightCore[index]) {
+                return leftCore[index].compareTo(rightCore[index])
+            }
+        }
+        if (leftPre.isEmpty() && rightPre.isEmpty()) return 0
+        if (leftPre.isEmpty()) return 1
+        if (rightPre.isEmpty()) return -1
+        for (index in 0 until maxOf(leftPre.size, rightPre.size)) {
+            val a = leftPre.getOrNull(index) ?: return -1
+            val b = rightPre.getOrNull(index) ?: return 1
+            val aNumber = a.toIntOrNull()
+            val bNumber = b.toIntOrNull()
+            val compared = when {
+                aNumber != null && bNumber != null -> aNumber.compareTo(bNumber)
+                aNumber != null -> -1
+                bNumber != null -> 1
+                else -> a.compareTo(b)
+            }
+            if (compared != 0) return compared
+        }
+        return 0
+    }
 
     private fun harnessErrorText(code: String): String = when (code) {
         "NODE_MISSING" -> "Node.js 未准备好，请重试安装"
@@ -1204,6 +1272,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (AgentEngine.state.value.connection == AgentConnection.Ready) {
             AgentEngine.setPluginRegistry(value)
         }
+    }
+
+    fun setPrereleaseUpdates(enabled: Boolean) {
+        if (enabled == _prereleaseUpdates.value) return
+        settingsStore.prereleaseUpdates = enabled
+        _prereleaseUpdates.value = enabled
+        emitUiMessage(if (enabled) "更新检查将包含预览版本" else "更新检查只跟随正式版本")
     }
 
     /**
@@ -1520,7 +1595,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The npm source handed to Kali maintenance scripts; blank means the app default. */
     private fun harnessNpmEnv(): Map<String, String> =
-        mapOf("KINGKANG_NPM_REGISTRY" to _npmRegistry.value.ifBlank { NPM_REGISTRY_DEFAULT })
+        buildMap {
+            put("KINGKANG_NPM_REGISTRY", _npmRegistry.value.ifBlank { NPM_REGISTRY_DEFAULT })
+            if (_prereleaseUpdates.value) put("KINGKANG_DSH_PRERELEASE", "1")
+        }
 
     override fun onCleared() {
         installJob?.cancel()

@@ -21,6 +21,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Check bridge syntax
         run: node --check app/src/main/assets/agent/bridge.mjs
+      - name: Run bridge event contract tests
+        run: node --test app/src/test/js/bridge-events.test.mjs
       - name: Run JVM unit tests
         run: |
           chmod +x gradlew

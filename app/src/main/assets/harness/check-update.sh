@@ -17,7 +17,50 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 INSTALLED=$(dsh --version 2>/dev/null | head -n 1 | tr -d '\r')
-LATEST=$(npm view @deepseek-ai/dsh version 2>/dev/null | head -n 1 | tr -d '\r')
+if [ "${KINGKANG_DSH_PRERELEASE:-0}" = "1" ] && command -v node >/dev/null 2>&1; then
+  # The npm `latest` tag can stay on a prerelease, so the preview channel reads the whole
+  # version list and picks the highest semver instead.
+  LATEST=$(npm view @deepseek-ai/dsh versions --json 2>/dev/null | node -e '
+let s = "";
+process.stdin.on("data", (d) => (s += d)).on("end", () => {
+  let versions = [];
+  try { versions = JSON.parse(s); } catch { versions = []; }
+  if (!Array.isArray(versions)) versions = [];
+  const parse = (raw) => {
+    const main = String(raw).split("+")[0];
+    const core = main.split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+    const pre = main.split("-").slice(1).join("-").split(".").filter(Boolean);
+    return { core, pre };
+  };
+  const cmp = (a, b) => {
+    const x = parse(a), y = parse(b);
+    for (let i = 0; i < 3; i++) {
+      const d = (x.core[i] || 0) - (y.core[i] || 0);
+      if (d !== 0) return d;
+    }
+    if (!x.pre.length && !y.pre.length) return 0;
+    if (!x.pre.length) return 1;
+    if (!y.pre.length) return -1;
+    const n = Math.max(x.pre.length, y.pre.length);
+    for (let i = 0; i < n; i++) {
+      if (x.pre[i] === undefined) return -1;
+      if (y.pre[i] === undefined) return 1;
+      const xa = x.pre[i], ya = y.pre[i];
+      const xn = /^\d+$/.test(xa), yn = /^\d+$/.test(ya);
+      if (xn && yn) { const d = Number(xa) - Number(ya); if (d !== 0) return d; }
+      else if (xn) return -1;
+      else if (yn) return 1;
+      else if (xa !== ya) return xa < ya ? -1 : 1;
+    }
+    return 0;
+  };
+  versions.sort(cmp);
+  process.stdout.write(versions[versions.length - 1] || "");
+});
+' | head -n 1 | tr -d '\r')
+else
+  LATEST=$(npm view @deepseek-ai/dsh version 2>/dev/null | head -n 1 | tr -d '\r')
+fi
 
 if [ -z "$LATEST" ]; then
   echo "KK_ERROR=CHECK_FAILED"

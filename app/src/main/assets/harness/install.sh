@@ -40,12 +40,18 @@ if [ "${KINGKANG_DSH_UPDATE:-0}" = "1" ]; then
 fi
 TARGET="${KINGKANG_DSH_VERSION:-latest}"
 
+# npm 11.6+ gates dependency lifecycle scripts. dsh's trusted native helpers need
+# theirs (node-pty, koffi, protobufjs, @google/genai, dsh-subprocess-local), or the
+# package installs without its prebuilt binaries.
+ALLOW_SCRIPTS="--allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs"
+
 install_dsh() {
   if [ "$UPDATE" = "1" ]; then
     npm install -g --prefix /opt/kingkang/dsh "@deepseek-ai/dsh@$TARGET" \
-      --no-audit --no-fund --prefer-offline
+      --no-audit --no-fund --prefer-offline $ALLOW_SCRIPTS
   else
-    npm install -g --prefix /opt/kingkang/dsh @deepseek-ai/dsh@latest --no-audit --no-fund
+    npm install -g --prefix /opt/kingkang/dsh @deepseek-ai/dsh@latest \
+      --no-audit --no-fund $ALLOW_SCRIPTS
   fi
 }
 

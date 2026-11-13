@@ -4369,14 +4369,25 @@ object AgentEngine {
                 return@launch
             }
             val namespaces = describe.optJSONArray("namespaces") ?: JSONArray()
+            // The namespace id is the Loader entry id: `mcp-manager` in dsh-web-app's
+            // patch, `mcp` in some deployments. Fall back to any namespace that owns a
+            // `servers` object so a renamed entry still finds its way here.
             var namespace: JSONObject? = null
+            var fallback: JSONObject? = null
             for (index in 0 until namespaces.length()) {
                 val item = namespaces.optJSONObject(index) ?: continue
-                if (item.optString("ns") == "mcp") {
+                val ns = item.optString("ns")
+                if (ns == "mcp-manager" || ns == "mcp") {
                     namespace = item
                     break
                 }
+                if (fallback == null && item.optJSONObject("value")
+                        ?.optJSONObject("servers") != null
+                ) {
+                    fallback = item
+                }
             }
+            namespace = namespace ?: fallback
             if (namespace == null) {
                 _state.update { it.copy(mcp = AgentMcpSettings(available = false)) }
                 return@launch
@@ -4402,6 +4413,7 @@ object AgentEngine {
                     mcp = AgentMcpSettings(
                         available = true,
                         loading = false,
+                        namespace = namespace.optString("ns").ifBlank { "mcp-manager" },
                         revision = namespace.optLong("revision"),
                         servers = servers.sortedBy { server -> server.name }
                     )
@@ -4439,7 +4451,7 @@ object AgentEngine {
                 .put("path", JSONArray().put("servers").put(name))
                 .put("value", config)
             val params = JSONObject()
-                .put("ns", "mcp")
+                .put("ns", current.namespace.ifBlank { "mcp-manager" })
                 .put("ops", JSONArray().put(op))
             if (current.revision > 0) params.put("expectedRevision", current.revision)
             try {
@@ -4461,7 +4473,7 @@ object AgentEngine {
                 .put("op", "unset")
                 .put("path", JSONArray().put("servers").put(name))
             val params = JSONObject()
-                .put("ns", "mcp")
+                .put("ns", current.namespace.ifBlank { "mcp-manager" })
                 .put("ops", JSONArray().put(op))
             if (current.revision > 0) params.put("expectedRevision", current.revision)
             try {

@@ -130,6 +130,7 @@ fun SettingsScreen(
     val agent by vm.agentState.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
     val npmRegistry by vm.npmRegistry.collectAsState()
+    val prereleaseUpdates by vm.prereleaseUpdates.collectAsState()
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmUninstallHarness by remember { mutableStateOf(false) }
     var confirmSignOut by remember { mutableStateOf(false) }
@@ -345,6 +346,8 @@ fun SettingsScreen(
                 liveVersion = agent.dshVersion
                     ?.takeIf { agent.connection == AgentConnection.Ready },
                 kaliInstalled = environment.installed,
+                prerelease = prereleaseUpdates,
+                onPrereleaseChange = vm::setPrereleaseUpdates,
                 onInstall = vm::installHarness,
                 onCheckUpdate = vm::checkHarnessUpdate,
                 onUninstall = { confirmUninstallHarness = true },
@@ -1860,6 +1863,8 @@ private fun HarnessCard(
     harness: HarnessUi,
     liveVersion: String?,
     kaliInstalled: Boolean,
+    prerelease: Boolean,
+    onPrereleaseChange: (Boolean) -> Unit,
     onInstall: () -> Unit,
     onCheckUpdate: () -> Unit,
     onUninstall: () -> Unit,
@@ -2151,6 +2156,20 @@ private fun HarnessCard(
                         Spacer(Modifier.width(5.dp))
                         Text("卸载", fontSize = 11.sp)
                     }
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("预览版本", color = TextSecondary, fontSize = 11.sp)
+                        Text(
+                            "启用后检查更新会包含 rc/alpha 版本；关闭时只跟随 npm 的 latest 标签。",
+                            color = TextMuted,
+                            fontSize = 9.5.sp,
+                            lineHeight = 14.sp
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Switch(checked = prerelease, onCheckedChange = onPrereleaseChange)
                 }
                 Spacer(Modifier.height(7.dp))
                 Text(

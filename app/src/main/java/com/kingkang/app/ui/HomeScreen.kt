@@ -7793,20 +7793,28 @@ private fun ContextStatsDialog(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(22.dp))
                 .background(Surface)
-                .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp)
+                .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 16.dp)
         ) {
-            Column {
-                Text(
-                    "上下文与用量",
-                    color = TextPrimary,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    "dsh 最近一次上报的数值，缺失项显示 —",
-                    color = TextMuted,
-                    fontSize = 10.5.sp
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "上下文与用量",
+                        color = TextPrimary,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        "最近一次上报；缺失显示 —",
+                        color = TextMuted,
+                        fontSize = 10.5.sp
+                    )
+                }
+                TextButton(onClick = onRefresh) {
+                    Text("刷新", color = TextSecondary)
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("关闭", color = TextSecondary)
+                }
             }
             Spacer(Modifier.height(4.dp))
             ScrollEdgeFade(
@@ -7872,19 +7880,6 @@ private fun ContextStatsDialog(
                     )
                 }
             }
-            }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                TextButton(onClick = onRefresh) {
-                    Text("刷新", color = TextSecondary)
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("关闭", color = Accent)
-                }
             }
         }
     }

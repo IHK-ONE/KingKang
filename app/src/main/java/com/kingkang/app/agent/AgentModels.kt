@@ -1414,6 +1414,8 @@ data class AgentMcpServer(
 data class AgentMcpSettings(
     val available: Boolean = false,
     val loading: Boolean = false,
+    /** Loader entry id that owns the namespace (`mcp-manager` on 0.2.2). */
+    val namespace: String = "",
     val revision: Long = 0L,
     val servers: List<AgentMcpServer> = emptyList(),
     val error: String? = null
