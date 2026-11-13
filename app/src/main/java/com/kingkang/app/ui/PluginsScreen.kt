@@ -66,6 +66,7 @@ import com.kingkang.app.agent.AgentPluginMarketResult
 import com.kingkang.app.agent.AgentPluginVersions
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
 import com.kingkang.app.ui.theme.ErrorContainer
@@ -95,6 +96,7 @@ fun PluginsScreen(
     val installing by vm.pluginInstalling.collectAsState()
     val installNote by vm.pluginInstallNote.collectAsState()
     val ready = agent.connection == AgentConnection.Ready
+    val pageScroll = rememberScrollState()
 
     var showInstall by remember { mutableStateOf(false) }
     var spec by remember { mutableStateOf("") }
@@ -157,10 +159,15 @@ fun PluginsScreen(
             }
         }
 
+        ScrollEdgeFade(
+            canScrollForward = pageScroll.canScrollForward,
+            color = Background,
+            modifier = Modifier.weight(1f)
+        ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(pageScroll)
                 .navigationBarsPadding()
                 .padding(horizontal = 18.dp, vertical = 8.dp)
         ) {
@@ -451,6 +458,7 @@ fun PluginsScreen(
 
             Spacer(Modifier.height(28.dp))
         }
+        }
     }
 
     if (showInstall) {
@@ -564,6 +572,7 @@ private fun PluginDetailDialog(
     onOpenHarness: () -> Unit,
     onUninstall: () -> Unit
 ) {
+    val scroll = rememberScrollState()
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Surface,
@@ -593,10 +602,14 @@ private fun PluginDetailDialog(
             }
         },
         text = {
+            ScrollEdgeFade(
+                canScrollForward = scroll.canScrollForward,
+                color = Surface
+            ) {
             Column(
                 Modifier
                     .heightIn(max = 460.dp)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scroll)
             ) {
                 Text(
                     plugin.name,
@@ -722,6 +735,7 @@ private fun PluginDetailDialog(
                         lineHeight = 14.sp
                     )
                 }
+            }
             }
         },
         confirmButton = {

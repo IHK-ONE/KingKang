@@ -36,6 +36,7 @@ import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Border
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.Surface
 import com.kingkang.app.ui.theme.TextMuted
 import java.util.Locale
@@ -342,9 +343,14 @@ internal fun SlashMenuPanel(
             )
             return@Column
         }
+        ScrollEdgeFade(
+            canScrollForward = listState.canScrollForward,
+            color = Surface,
+            modifier = Modifier.heightIn(max = 300.dp)
+        ) {
         LazyColumn(
             state = listState,
-            modifier = Modifier.heightIn(max = 300.dp),
+            modifier = Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(vertical = 4.dp)
         ) {
             items(
@@ -371,6 +377,7 @@ internal fun SlashMenuPanel(
                     )
                 }
             }
+        }
         }
     }
 }

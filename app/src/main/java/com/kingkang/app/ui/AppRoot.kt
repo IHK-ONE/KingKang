@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
@@ -83,6 +84,8 @@ import com.kingkang.app.MainViewModel
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentSession
 import com.kingkang.app.agent.AgentWorkspace
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
@@ -198,6 +201,10 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                         onOpenPlugins = {
                             navigate(AppScreen.Plugins)
                             scope.launch { drawerState.close() }
+                        },
+                        onOpenGuide = {
+                            scope.launch { drawerState.close() }
+                            showGuide = true
                         },
                         onOpenSettings = {
                             settingsFocus = null
@@ -431,6 +438,7 @@ private fun KingKangDrawer(
     onOpenFiles: () -> Unit,
     onOpenHarness: () -> Unit,
     onOpenPlugins: () -> Unit,
+    onOpenGuide: () -> Unit,
     onOpenSettings: () -> Unit,
     onSessionLongPress: (AgentSession, Boolean) -> Unit,
     onWorkspaceLongPress: (AgentWorkspace) -> Unit
@@ -796,6 +804,18 @@ private fun KingKangDrawer(
                 },
                 enabled = harnessAvailable,
                 onClick = onOpenPlugins
+            )
+            DrawerAction(
+                title = "使用指南",
+                icon = { tint ->
+                    Icon(
+                        Icons.Filled.Info,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(20.dp)
+                    )
+                },
+                onClick = onOpenGuide
             )
             DrawerAction(
                 title = "设置",
@@ -1425,19 +1445,20 @@ private fun OnboardingDialog(
     onOpenSettings: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    val scroll = rememberScrollState()
+    KkDialog(
+        onDismiss = onDismiss,
+        modifier = Modifier.widthIn(max = 380.dp),
+        padding = PaddingValues(22.dp)
     ) {
+        ScrollEdgeFade(
+            canScrollForward = scroll.canScrollForward,
+            color = Surface
+        ) {
         Column(
             Modifier
-                .padding(horizontal = 24.dp)
-                .widthIn(max = 380.dp)
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(24.dp))
-                .background(Surface)
-                .verticalScroll(rememberScrollState())
-                .padding(22.dp)
+                .verticalScroll(scroll)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TerminalMark(size = 32.dp)
@@ -1507,6 +1528,15 @@ private fun OnboardingDialog(
                 )
             }
 
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "常用入口：左上角菜单管理终端、文件、插件和设置；标题栏的扳手图标是工作台，" +
+                    "列表图标用于在长对话里按轮次跳转。",
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp
+            )
+
             Spacer(Modifier.height(18.dp))
             Row(
                 Modifier.fillMaxWidth(),
@@ -1530,6 +1560,7 @@ private fun OnboardingDialog(
                     Text("稍后", color = TextMuted, fontSize = 12.sp)
                 }
             }
+        }
         }
     }
 }
@@ -1578,6 +1609,7 @@ private fun OnboardingStep(index: Int, title: String, detail: String) {
 
 @Composable
 private fun AboutDialog(onDismiss: () -> Unit) {
+    val scroll = rememberScrollState()
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Surface,
@@ -1587,18 +1619,23 @@ private fun AboutDialog(onDismiss: () -> Unit) {
         title = {
             Text(
                 "关于 KingKang",
-                style = MaterialTheme.typography.titleLarge
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary
             )
         },
         text = {
+            ScrollEdgeFade(
+                canScrollForward = scroll.canScrollForward,
+                color = Surface
+            ) {
             Column(
                 Modifier
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scroll)
                     .padding(top = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    "0.1.0 · 本地基座",
+                    "${com.kingkang.app.BuildConfig.VERSION_NAME} · 本地基座",
                     color = TextMuted,
                     fontSize = 11.sp,
                     letterSpacing = 0.4.sp
@@ -1629,6 +1666,7 @@ private fun AboutDialog(onDismiss: () -> Unit) {
                         "Android NDK 运行库。相关许可证随应用发行说明提供。",
                     fontSize = 12.sp
                 )
+            }
             }
         },
         confirmButton = {

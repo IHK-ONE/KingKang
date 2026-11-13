@@ -53,6 +53,7 @@ import com.kingkang.app.agent.AgentFile
 import com.kingkang.app.agent.AttachmentKind
 import com.kingkang.app.agent.attachmentKind
 import com.kingkang.app.files.FileActions
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.AccentSoft
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
@@ -214,14 +215,21 @@ private fun PreviewNote(message: String, hint: String?) {
 
 @Composable
 private fun TextPreview(body: PreviewBody.Text) {
+    val scroll = rememberScrollState()
     Column(Modifier.fillMaxWidth()) {
-        Box(
-            Modifier
+        ScrollEdgeFade(
+            canScrollForward = scroll.canScrollForward,
+            color = Background,
+            modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(max = 430.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(Background)
-                .verticalScroll(rememberScrollState())
+        ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(scroll)
                 .padding(12.dp)
         ) {
             SelectionContainer {
@@ -233,6 +241,7 @@ private fun TextPreview(body: PreviewBody.Text) {
                     fontFamily = FontFamily.Monospace
                 )
             }
+        }
         }
         if (body.truncated) {
             Text(

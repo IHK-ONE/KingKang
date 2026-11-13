@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
@@ -198,6 +199,9 @@ import com.kingkang.app.agent.UserItem
 import com.kingkang.app.agent.WorkflowItem
 import com.kingkang.app.agent.activeAtToken
 import com.kingkang.app.agent.formatFileMention
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogTitle
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.AccentDim
@@ -1881,8 +1885,8 @@ private fun GoalCreateDialog(
 ) {
     var objective by rememberSaveable { mutableStateOf("") }
     val canCreate = objective.isNotBlank()
-    CompactDialog(onDismiss = onDismiss) {
-        CompactDialogHeader("新建长期目标", onDismiss)
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle("新建长期目标", onDismiss = onDismiss)
         Spacer(Modifier.height(8.dp))
         BasicTextField(
             value = objective,
@@ -1950,8 +1954,8 @@ private fun GoalEditDialog(
     val parsedRounds = rounds.trim().toIntOrNull()
     val roundsValid = rounds.isBlank() || (parsedRounds != null && parsedRounds >= 1)
     val canSave = objective.isNotBlank() && roundsValid && !busy
-    CompactDialog(onDismiss = onDismiss) {
-        CompactDialogHeader("编辑目标", onDismiss)
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle("编辑目标", onDismiss = onDismiss)
         Spacer(Modifier.height(8.dp))
         BasicTextField(
             value = objective,
@@ -2614,6 +2618,7 @@ private fun ScheduleDetailDialog(
     onDelete: () -> Unit,
     onLoadMore: () -> Unit
 ) {
+    val scroll = rememberScrollState()
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Surface,
@@ -2634,10 +2639,14 @@ private fun ScheduleDetailDialog(
             }
         },
         text = {
+            ScrollEdgeFade(
+                canScrollForward = scroll.canScrollForward,
+                color = Surface
+            ) {
             Column(
                 Modifier
                     .heightIn(max = 440.dp)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scroll)
             ) {
                 Text(
                     scheduleRunMeta(schedule),
@@ -2745,6 +2754,7 @@ private fun ScheduleDetailDialog(
                         }
                     }
                 }
+            }
             }
         },
         confirmButton = {
@@ -3208,14 +3218,7 @@ private fun JobOutputDialog(
     LaunchedEffect(text.length) {
         if (text.isNotEmpty()) scroll.animateScrollTo(scroll.maxValue)
     }
-    Dialog(onDismissRequest = onDismiss) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(Surface)
-        ) {
-            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 6.dp)) {
+    KkDialog(onDismiss = onDismiss) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(
@@ -3329,11 +3332,9 @@ private fun JobOutputDialog(
                         Text("刷新", color = TextSecondary)
                     }
                     TextButton(onClick = onDismiss) {
-                        Text("关闭", color = Accent)
+                        Text("关闭", color = TextSecondary)
                     }
                 }
-            }
-        }
     }
 }
 
@@ -3400,14 +3401,7 @@ private fun ChangesDiffDialog(
         }
         else -> "逐行对比"
     }
-    Dialog(onDismissRequest = onDismiss) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(Surface)
-        ) {
-            Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 6.dp)) {
+    KkDialog(onDismiss = onDismiss) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(
@@ -3515,11 +3509,9 @@ private fun ChangesDiffDialog(
                         Text("刷新", color = TextSecondary)
                     }
                     TextButton(onClick = onDismiss) {
-                        Text("关闭", color = Accent)
+                        Text("关闭", color = TextSecondary)
                     }
                 }
-            }
-        }
     }
 }
 
@@ -4253,14 +4245,7 @@ private fun SubagentPanelDialog(
     onOpen: (AgentSubagent) -> Unit
 ) {
     val listState = rememberLazyListState()
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(Surface)
-                .padding(horizontal = 18.dp, vertical = 14.dp)
-        ) {
+    KkDialog(onDismiss = onDismiss) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "子 Agent",
@@ -4332,7 +4317,6 @@ private fun SubagentPanelDialog(
                     Text("关闭", color = TextSecondary)
                 }
             }
-        }
     }
 }
 
@@ -4729,10 +4713,16 @@ private fun EmptyState(
     onConfigureKey: () -> Unit,
     onSend: (String) -> Unit
 ) {
+    val scroll = rememberScrollState()
+    ScrollEdgeFade(
+        canScrollForward = scroll.canScrollForward,
+        color = Background,
+        modifier = Modifier.fillMaxSize()
+    ) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(scroll)
             .padding(horizontal = 22.dp)
             .padding(top = 40.dp, bottom = 24.dp)
     ) {
@@ -4776,6 +4766,15 @@ private fun EmptyState(
         SuggestionRow("列出 /root 下的文件并说明用途") { onSend(it) }
         Spacer(Modifier.height(8.dp))
         SuggestionRow("帮我在 Kali 里验证一个本地实验") { onSend(it) }
+
+        Spacer(Modifier.height(22.dp))
+        Text(
+            "第一次使用？打开左上角菜单里的「使用指南」，三步就能开始。",
+            color = TextMuted,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
+    }
     }
 }
 
@@ -5156,8 +5155,8 @@ private fun QueueActionsDialog(
     onSteer: () -> Unit,
     onRemove: () -> Unit
 ) {
-    CompactDialog(onDismiss = onDismiss) {
-        CompactDialogHeader("排队消息", onDismiss)
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle("排队消息", onDismiss = onDismiss)
         Text(
             item.displayText,
             modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
@@ -5185,51 +5184,6 @@ private fun QueueActionRow(label: String, color: Color, onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(horizontal = 4.dp, vertical = 10.dp)
     )
-}
-
-/**
- * A tightly packed dialog body for menus and small editors. Material's [AlertDialog]
- * reserves a full title block, a text gap and an action bar, which on a phone turns a
- * four-row menu into a tall sheet. These dialogs carry their own header and action row.
- */
-@Composable
-private fun CompactDialog(
-    onDismiss: () -> Unit,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(Surface)
-                .padding(horizontal = 18.dp, vertical = 14.dp),
-            content = content
-        )
-    }
-}
-
-/** The header shared by compact dialogs: a title on the left and a quiet × on the right. */
-@Composable
-private fun CompactDialogHeader(title: String, onDismiss: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-            title,
-            modifier = Modifier.weight(1f),
-            color = TextPrimary,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Medium
-        )
-        Text(
-            "×",
-            color = TextMuted,
-            fontSize = 17.sp,
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onDismiss)
-                .padding(horizontal = 8.dp, vertical = 2.dp)
-        )
-    }
 }
 
 /** A menu row with menu density: enough touch height, none of AlertDialog's extra air. */
@@ -5547,35 +5501,6 @@ private fun ActionCardView(
                     }
                 }
             }
-        }
-    }
-}
-
-/**
- * A scroll viewport with a soft bottom edge. When content continues below, the last rows
- * fade into [color] instead of stopping on a hard cut — the quietest way to say "there is
- * more under this". The overlay is drawn only while forward scrolling is possible, so a
- * list already at its end looks unchanged.
- */
-@Composable
-private fun ScrollEdgeFade(
-    canScrollForward: Boolean,
-    color: Color,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit
-) {
-    Box(modifier) {
-        content()
-        if (canScrollForward) {
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(28.dp)
-                    .background(
-                        Brush.verticalGradient(listOf(Color.Transparent, color))
-                    )
-            )
         }
     }
 }
@@ -6067,8 +5992,8 @@ private fun MessageActionsDialog(
     // A new rating opens the editor first, mirroring dsh-web: the judgment and its
     // explanation are one write. Retracting an existing rating stays a single tap.
     var composing by remember { mutableStateOf<String?>(null) }
-    CompactDialog(onDismiss = onDismiss) {
-        CompactDialogHeader("消息操作", onDismiss)
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle("消息操作", onDismiss = onDismiss)
         CompactMenuRow("复制", TextSecondary, onCopy)
         CompactMenuRow("引用到输入框", TextSecondary, onQuote)
         CompactMenuRow(
@@ -7787,14 +7712,7 @@ private fun ContextStatsDialog(
 ) {
     val fraction = pressure.fraction
     val scroll = rememberScrollState()
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(22.dp))
-                .background(Surface)
-                .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 16.dp)
-        ) {
+    KkDialog(onDismiss = onDismiss) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -7881,7 +7799,6 @@ private fun ContextStatsDialog(
                 }
             }
             }
-        }
     }
 }
 
@@ -8825,6 +8742,11 @@ private fun Composer(
                 onValueChange = { if (it.text.length <= 4000) input = it },
                 modifier = Modifier
                     .weight(1f)
+                    // The composer row is taller than one line because of its round
+                    // buttons. Let the text keep its own height and centre it in that
+                    // row; otherwise the caret starts at the row's top edge.
+                    .heightIn(min = 34.dp)
+                    .wrapContentHeight(Alignment.CenterVertically)
                     // Hardware up/down move the menu highlight; Enter/Tab settle it and
                     // Escape dismisses it for this draft, matching dsh-web's menu keys.
                     .onPreviewKeyEvent { event ->
@@ -8862,8 +8784,7 @@ private fun Composer(
                             else -> false
                         }
                     }
-                    .focusRequester(focusRequester)
-                    .padding(vertical = 7.dp),
+                    .focusRequester(focusRequester),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = TextPrimary,
                     fontSize = 15.sp,
@@ -8884,7 +8805,8 @@ private fun Composer(
                                 else -> "给 KingKang 发送消息…"
                             },
                             color = TextMuted,
-                            fontSize = 15.sp
+                            fontSize = 15.sp,
+                            lineHeight = 21.sp
                         )
                     }
                     inner()
@@ -9190,18 +9112,9 @@ private fun ModelPickerDialog(
     val pane = initialPane
     val currentModel = models?.current
 
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(22.dp))
-                .background(Surface)
-                .padding(vertical = 12.dp)
-        ) {
+    KkDialog(onDismiss = onDismiss) {
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 6.dp, end = 8.dp),
+                Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Spacer(Modifier.width(14.dp))
@@ -9239,7 +9152,7 @@ private fun ModelPickerDialog(
                     fontSize = 12.sp,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp)
                 )
-                return@Column
+                return@KkDialog
             }
             if (!models.routable) {
                 Text(
@@ -9362,7 +9275,6 @@ private fun ModelPickerDialog(
                     }
                 }
             }
-        }
     }
 }
 

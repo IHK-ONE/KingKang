@@ -83,6 +83,7 @@ import com.kingkang.app.agent.AgentFilePreview
 import com.kingkang.app.agent.AgentWorkspaceMatch
 import com.kingkang.app.agent.AgentWorkspaceSearch
 import com.kingkang.app.ui.theme.Accent
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Background
@@ -117,8 +118,9 @@ fun FilesScreen(
     var previewPath by rememberSaveable { mutableStateOf<String?>(null) }
     var actionsFor by remember { mutableStateOf<AgentFileEntry?>(null) }
     var showSheet by remember { mutableStateOf(false) }
-    var globalQuery by rememberSaveable { mutableStateOf("") }
+    var workspaceScope by rememberSaveable { mutableStateOf(false) }
     val workspaceSearch = state.workspaceSearch
+    val fileListState = rememberLazyListState()
     val sort = FileSort.entries.firstOrNull { it.name == sortName } ?: FileSort.Name
 
     LaunchedEffect(state.activeSessionId) { vm.browseFiles(null) }
@@ -155,49 +157,45 @@ fun FilesScreen(
             onBack = onBack,
             onRefresh = { vm.browseFiles(listing.path.ifBlank { null }) }
         )
-        FilesSearchField(value = query, onValueChange = { query = it.take(60) })
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+                .padding(horizontal = 12.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(SurfaceRaised)
-                    .padding(horizontal = 10.dp, vertical = 7.dp)
+            FilesSearchField(
+                value = query,
+                onValueChange = { query = it.take(60) },
+                placeholder = if (workspaceScope) {
+                    "输入关键词后点搜索"
+                } else {
+                    "筛选当前目录"
+                },
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(Modifier.width(6.dp))
+            FilterChip(
+                label = if (workspaceScope) "全工作区" else "本目录",
+                selected = workspaceScope
             ) {
-                if (globalQuery.isEmpty()) {
-                    Text("搜索整个工作区（文件名与内容）", color = TextMuted, fontSize = 11.sp)
-                }
-                BasicTextField(
-                    value = globalQuery,
-                    onValueChange = { globalQuery = it.take(120) },
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(
-                        color = TextPrimary,
-                        fontSize = 11.5.sp,
-                        fontFamily = FontFamily.Monospace
-                    ),
-                    cursorBrush = SolidColor(Accent),
-                    singleLine = true
+                workspaceScope = !workspaceScope
+                if (!workspaceScope) vm.clearWorkspaceSearch()
+            }
+            if (workspaceScope) {
+                Text(
+                    "搜索",
+                    color = if (query.isNotBlank()) Accent else TextMuted,
+                    fontSize = 11.5.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(enabled = query.isNotBlank()) {
+                            if (query.isNotBlank()) vm.searchWorkspace(query)
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
                 )
             }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "搜索",
-                color = if (globalQuery.isNotBlank()) Accent else TextMuted,
-                fontSize = 11.5.sp,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable(enabled = globalQuery.isNotBlank()) {
-                        vm.searchWorkspace(globalQuery)
-                    }
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
-            )
         }
+        if (!workspaceSearch.active) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -252,6 +250,7 @@ fun FilesScreen(
             }
         }
         HorizontalDivider(color = Border.copy(alpha = 0.7f))
+        }
 
         val visible = remember(listing, sort, ascending, showHidden, query) {
             sortFileEntries(listing.entries, sort, ascending, showHidden, query)
@@ -264,7 +263,7 @@ fun FilesScreen(
                         if (match.directory) {
                             vm.browseFiles(match.path)
                             vm.clearWorkspaceSearch()
-                            globalQuery = ""
+                            workspaceScope = false
                         } else {
                             previewPath = match.path
                             vm.openFilePreview(match.path)
@@ -272,7 +271,7 @@ fun FilesScreen(
                     },
                     onClose = {
                         vm.clearWorkspaceSearch()
-                        globalQuery = ""
+                        workspaceScope = false
                     }
                 )
                 root == null -> FileMessage("这个对话没有工作目录")
@@ -311,8 +310,14 @@ fun FilesScreen(
                 visible.isEmpty() -> FileMessage(
                     if (query.isNotBlank()) "没有匹配「$query」的文件" else "这个目录是空的"
                 )
-                else -> LazyColumn(
+                else -> ScrollEdgeFade(
+                    canScrollForward = fileListState.canScrollForward,
+                    color = Background,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                LazyColumn(
                     Modifier.fillMaxSize(),
+                    state = fileListState,
                     contentPadding = PaddingValues(bottom = 20.dp)
                 ) {
                     if (listing.truncated) {
@@ -344,6 +349,7 @@ fun FilesScreen(
                             }
                         )
                     }
+                }
                 }
             }
         }
@@ -392,7 +398,7 @@ private fun FilesTopBar(
     Row(
         Modifier
             .fillMaxWidth()
-            .height(56.dp)
+            .height(58.dp)
             .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -400,7 +406,7 @@ private fun FilesTopBar(
             Icon(Icons.Filled.ArrowBack, contentDescription = "返回", tint = TextSecondary)
         }
         Column(Modifier.weight(1f)) {
-            Text("文件", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text("文件", color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.Medium)
             Text(
                 if (path.isBlank()) root else path,
                 color = TextMuted,
@@ -423,11 +429,16 @@ private fun FilesTopBar(
 }
 
 @Composable
-private fun FilesSearchField(value: String, onValueChange: (String) -> Unit) {
+private fun FilesSearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String = "筛选当前目录",
+    modifier: Modifier = Modifier
+) {
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .padding(vertical = 2.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(SurfaceRaised)
             .padding(horizontal = 10.dp, vertical = 8.dp),
@@ -442,7 +453,7 @@ private fun FilesSearchField(value: String, onValueChange: (String) -> Unit) {
         Spacer(Modifier.width(8.dp))
         Box(Modifier.weight(1f)) {
             if (value.isEmpty()) {
-                Text("筛选当前目录", color = TextMuted, fontSize = 12.5.sp)
+                Text(placeholder, color = TextMuted, fontSize = 12.5.sp)
             }
             BasicTextField(
                 value = value,
@@ -540,6 +551,7 @@ private fun WorkspaceSearchResults(
     onOpen: (AgentWorkspaceMatch) -> Unit,
     onClose: () -> Unit
 ) {
+    val listState = rememberLazyListState()
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -588,10 +600,16 @@ private fun WorkspaceSearchResults(
                 )
             }
             search.matches.isEmpty() -> FileMessage("没有匹配「${search.query}」的文件")
-            else -> LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 20.dp)
+            else -> ScrollEdgeFade(
+                canScrollForward = listState.canScrollForward,
+                color = Background,
+                modifier = Modifier.weight(1f)
             ) {
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    state = listState,
+                    contentPadding = PaddingValues(bottom = 20.dp)
+                ) {
                 if (search.truncated || search.incomplete) {
                     item(key = "search-note") {
                         Text(
@@ -624,6 +642,7 @@ private fun WorkspaceSearchResults(
                             fontSize = 9.5.sp
                         )
                     }
+                }
                 }
             }
         }
@@ -860,6 +879,8 @@ private fun TextPreview(
         decodePreview(bytes, if (charsetChoice == "auto") null else charsetChoice)
     }
     val lines = remember(decoded.text) { decoded.text.split('\n') }
+    val wrapState = rememberLazyListState()
+    val noWrapScroll = rememberScrollState()
     Row(
         Modifier
             .fillMaxWidth()
@@ -881,10 +902,16 @@ private fun TextPreview(
     CharsetRow(choice = charsetChoice, onChange = onCharset)
     if (wrap) {
         val visible = if (lines.size > 5_000) lines.take(5_000) else lines
+        ScrollEdgeFade(
+            canScrollForward = wrapState.canScrollForward,
+            color = Background,
+            modifier = Modifier.fillMaxSize()
+        ) {
         LazyColumn(
             Modifier
                 .fillMaxSize()
                 .padding(horizontal = 12.dp),
+            state = wrapState,
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             if (lines.size > visible.size) {
@@ -919,14 +946,20 @@ private fun TextPreview(
                 }
             }
         }
+        }
     } else {
         val text = remember(decoded.text) {
             if (decoded.text.length > 200_000) decoded.text.take(200_000) else decoded.text
         }
+        ScrollEdgeFade(
+            canScrollForward = noWrapScroll.canScrollForward,
+            color = Background,
+            modifier = Modifier.fillMaxSize()
+        ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(noWrapScroll)
                 .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 12.dp)
         ) {
@@ -947,6 +980,7 @@ private fun TextPreview(
                 )
             }
         }
+        }
     }
 }
 
@@ -956,11 +990,18 @@ private fun MarkdownPreview(bytes: ByteArray, charsetChoice: String, onCharset: 
         decodePreview(bytes, if (charsetChoice == "auto") null else charsetChoice)
     }
     val blocks = remember(decoded.text) { fileMarkdownBlocks(decoded.text) }
+    val listState = rememberLazyListState()
     CharsetRow(choice = charsetChoice, onChange = onCharset)
+    ScrollEdgeFade(
+        canScrollForward = listState.canScrollForward,
+        color = Background,
+        modifier = Modifier.fillMaxSize()
+    ) {
     LazyColumn(
         Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp),
+        state = listState,
         contentPadding = PaddingValues(bottom = 24.dp)
     ) {
         items(blocks) { block ->
@@ -1036,6 +1077,7 @@ private fun MarkdownPreview(bytes: ByteArray, charsetChoice: String, onCharset: 
                 )
             }
         }
+    }
     }
 }
 

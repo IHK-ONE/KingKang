@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -91,6 +92,10 @@ import com.kingkang.app.agent.AgentPresetCopy
 import com.kingkang.app.agent.AgentState
 import com.kingkang.app.browser.BrowserActivity
 import com.kingkang.app.ui.components.Dot
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.AccentDim
@@ -131,6 +136,7 @@ fun SettingsScreen(
     val themeMode by vm.themeMode.collectAsState()
     val npmRegistry by vm.npmRegistry.collectAsState()
     val prereleaseUpdates by vm.prereleaseUpdates.collectAsState()
+    val settingsScroll = rememberScrollState()
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmUninstallHarness by remember { mutableStateOf(false) }
     var confirmSignOut by remember { mutableStateOf(false) }
@@ -285,10 +291,15 @@ fun SettingsScreen(
             }
         }
 
+        ScrollEdgeFade(
+            canScrollForward = settingsScroll.canScrollForward,
+            color = com.kingkang.app.ui.theme.Background,
+            modifier = Modifier.weight(1f)
+        ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(settingsScroll)
                 .navigationBarsPadding()
                 .padding(horizontal = 18.dp, vertical = 8.dp)
         ) {
@@ -524,6 +535,7 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(28.dp))
         }
+        }
     }
 
     if (confirmUninstallHarness) {
@@ -606,6 +618,7 @@ private fun SettingsSearchDialog(
     onDismiss: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
     val filtered = remember(query, entries) {
         val needle = query.trim()
         if (needle.isEmpty()) {
@@ -618,72 +631,76 @@ private fun SettingsSearchDialog(
             }
         }
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("搜索设置", fontWeight = FontWeight.Medium) },
-        text = {
-            Column {
-                BasicTextField(
-                    value = query,
-                    onValueChange = { query = it.take(60) },
-                    singleLine = true,
-                    textStyle = TextStyle(
-                        color = TextPrimary,
-                        fontSize = 13.sp
-                    ),
-                    cursorBrush = SolidColor(Accent),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(SurfaceVariant.copy(alpha = 0.6f))
-                        .padding(horizontal = 10.dp, vertical = 9.dp)
-                )
-                Spacer(Modifier.height(8.dp))
-                if (filtered.isEmpty()) {
-                    Text(
-                        "没有匹配的设置。dsh 的其余页面可以在 Harness 中找到。",
-                        color = TextMuted,
-                        fontSize = 11.5.sp,
-                        lineHeight = 16.sp
-                    )
-                } else {
-                    LazyColumn(Modifier.heightIn(max = 330.dp)) {
-                        items(filtered, key = { it.title }) { entry ->
-                            Column(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(9.dp))
-                                    .clickable(onClick = entry.action)
-                                    .padding(horizontal = 4.dp, vertical = 9.dp)
-                            ) {
-                                Text(
-                                    entry.title,
-                                    color = TextPrimary,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    entry.subtitle,
-                                    color = TextMuted,
-                                    fontSize = 10.sp,
-                                    lineHeight = 14.sp
-                                )
-                            }
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle("搜索设置", "输入关键词定位设置项", onDismiss)
+        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(9.dp))
+                .background(SurfaceVariant.copy(alpha = 0.6f))
+                .padding(horizontal = 10.dp, vertical = 9.dp)
+        ) {
+            if (query.isEmpty()) {
+                Text("搜索设置项", color = TextMuted, fontSize = 13.sp)
+            }
+            BasicTextField(
+                value = query,
+                onValueChange = { query = it.take(60) },
+                singleLine = true,
+                textStyle = TextStyle(
+                    color = TextPrimary,
+                    fontSize = 13.sp
+                ),
+                cursorBrush = SolidColor(Accent),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        if (filtered.isEmpty()) {
+            Text(
+                "没有匹配的设置。dsh 的其余页面可以在 Harness 中找到。",
+                color = TextMuted,
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp
+            )
+        } else {
+            ScrollEdgeFade(
+                canScrollForward = listState.canScrollForward,
+                color = Surface
+            ) {
+                LazyColumn(Modifier.heightIn(max = 330.dp), state = listState) {
+                    items(filtered, key = { it.title }) { entry ->
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(9.dp))
+                                .clickable(onClick = entry.action)
+                                .padding(horizontal = 4.dp, vertical = 9.dp)
+                        ) {
+                            Text(
+                                entry.title,
+                                color = TextPrimary,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                entry.subtitle,
+                                color = TextMuted,
+                                fontSize = 10.sp,
+                                lineHeight = 14.sp
+                            )
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
+        }
+        KkDialogActions {
             TextButton(onClick = onDismiss) {
-                Text("关闭", color = TextMuted)
+                Text("关闭", color = TextSecondary)
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -2966,8 +2983,10 @@ private fun ConfirmDialog(
         containerColor = Surface,
         titleContentColor = TextPrimary,
         textContentColor = TextSecondary,
-        shape = RoundedCornerShape(22.dp),
-        title = { Text(title, style = MaterialTheme.typography.titleLarge) },
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+        },
         text = { Text(text, style = MaterialTheme.typography.bodyMedium) },
         confirmButton = {
             TextButton(onClick = onConfirm) {

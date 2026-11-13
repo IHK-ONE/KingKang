@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kingkang.app.MainViewModel
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentSettingEdit
 import com.kingkang.app.agent.AgentSettingField
@@ -88,6 +89,7 @@ fun AgentSettingsScreen(
     val agent by vm.agentState.collectAsState()
     val settings = agent.agentSettings
     val ready = agent.connection == AgentConnection.Ready
+    val pageScroll = rememberScrollState()
     val scope = rememberCoroutineScope()
     val anchors = remember { mutableMapOf<String, BringIntoViewRequester>() }
     var savedNote by remember { mutableStateOf<String?>(null) }
@@ -138,10 +140,15 @@ fun AgentSettingsScreen(
             }
         }
 
+        ScrollEdgeFade(
+            canScrollForward = pageScroll.canScrollForward,
+            color = com.kingkang.app.ui.theme.Background,
+            modifier = Modifier.weight(1f)
+        ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(pageScroll)
                 .navigationBarsPadding()
                 .padding(horizontal = 18.dp, vertical = 8.dp)
         ) {
@@ -229,6 +236,7 @@ fun AgentSettingsScreen(
             }
 
             Spacer(Modifier.height(30.dp))
+        }
         }
     }
 }

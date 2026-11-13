@@ -69,6 +69,7 @@ import com.kingkang.app.agent.AgentProviderModel
 import com.kingkang.app.agent.AgentState
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
 import com.kingkang.app.ui.theme.OnAccent
@@ -190,10 +191,16 @@ private fun ProviderList(
     onOpenHarness: () -> Unit
 ) {
     val ready = agent.connection == AgentConnection.Ready
+    val pageScroll = rememberScrollState()
+    ScrollEdgeFade(
+        canScrollForward = pageScroll.canScrollForward,
+        color = Background,
+        modifier = Modifier.fillMaxSize()
+    ) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(pageScroll)
             .navigationBarsPadding()
             .padding(horizontal = 18.dp, vertical = 8.dp)
     ) {
@@ -330,6 +337,7 @@ private fun ProviderList(
                 }
             }
         }
+    }
     }
 }
 
@@ -497,10 +505,16 @@ private fun ProviderEditor(
     val discoveryLoading = discoveryMatches && discovery.loading
     val discoveryError = if (discoveryMatches) discovery.error else null
 
+    val editorScroll = rememberScrollState()
+    ScrollEdgeFade(
+        canScrollForward = editorScroll.canScrollForward,
+        color = Background,
+        modifier = Modifier.fillMaxSize()
+    ) {
     Column(
         Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(editorScroll)
             .navigationBarsPadding()
             .imePadding()
             .padding(horizontal = 18.dp, vertical = 8.dp)
@@ -871,6 +885,7 @@ private fun ProviderEditor(
             Text("取消", color = TextMuted, fontSize = 11.sp)
         }
         Spacer(Modifier.height(20.dp))
+    }
     }
 
     if (confirmDelete && existing != null) {

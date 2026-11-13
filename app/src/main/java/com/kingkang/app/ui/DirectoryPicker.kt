@@ -12,12 +12,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.sp
 import com.kingkang.app.agent.AgentDirectoryListing
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Red
+import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.Surface
 import com.kingkang.app.ui.theme.TextMuted
 import com.kingkang.app.ui.theme.TextPrimary
@@ -58,6 +61,7 @@ fun DirectoryPickerDialog(
     recentDirectories: List<String> = emptyList()
 ) {
     val current = listing.path.ifBlank { "/root" }
+    val listState = rememberLazyListState()
     var newFolder by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
     // Recent picks are a shortcut, not a second browser: tapping one selects it directly,
@@ -71,7 +75,13 @@ fun DirectoryPickerDialog(
         titleContentColor = TextPrimary,
         textContentColor = TextSecondary,
         shape = RoundedCornerShape(20.dp),
-        title = { Text("选择目录", fontWeight = FontWeight.Medium) },
+        title = {
+            Text(
+                "选择目录",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary
+            )
+        },
         text = {
             Column {
                 Row(
@@ -238,7 +248,12 @@ fun DirectoryPickerDialog(
                         fontSize = 12.sp
                     )
 
-                    else -> LazyColumn(Modifier.heightIn(max = 300.dp)) {
+                    else -> ScrollEdgeFade(
+                        canScrollForward = listState.canScrollForward,
+                        color = Surface,
+                        modifier = Modifier.heightIn(max = 300.dp)
+                    ) {
+                    LazyColumn(Modifier.fillMaxWidth(), state = listState) {
                         items(listing.entries, key = { it.path }) { entry ->
                             Row(
                                 Modifier
@@ -259,6 +274,7 @@ fun DirectoryPickerDialog(
                                 Text("›", color = TextMuted, fontSize = 14.sp)
                             }
                         }
+                    }
                     }
                 }
                 if (listing.truncated) {
