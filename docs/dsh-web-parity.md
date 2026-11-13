@@ -891,3 +891,4 @@ DSH-201 ~ DSH-206 ──> DSH-208
 | 2026-10-30 | M6：Harness 下载、外链、window.open、媒体权限/拍照、错误页与自动恢复完成；M0 基础设施状态回填，M7 记录剩余测试与发布缺口 |
 | 2026-10-30 | M0 收尾：投影/usage/工具视图解码抽到 `SessionProjections`，补 dsh fixtures 契约测试（`SessionProjectionsTest`、`ToolViewTest`），修复未知投影满额时淘汰方向相反的问题；新增 GitHub Actions 单测工作流 |
 | 2026-11-13 | 对照 dsh 0.2.2：定时任务改用 `schedule/edit`（0.2.2 已移除 `schedule/update`、`schedule/delete`），任务状态兼容 `active/paused/ended` 与 `rrule`；子 Agent 停止兼容 rc.2 的 `interruptByUser`；更新改为只替换 npm 包。未适配项另列于交付说明（动作卡片、MCP 管理、Office 工具图片、账户通知、消息引用、失败后继续等） |
+| 2026-11-13 | 补齐 0.2.2 能力：动作卡片投影与 `actionCards/act`、消息引用、`conversationContinuation` 继续、工具结果图片与附件完整引用、`workspaceFiles/search`、插件版本/README、MCP 设置命名空间、账号通知、团队开关、定时任务直接创建与 `schedule/run`；修复控制流投影帧（`changes` 列表）解析，使目标/用量/模型/卡片随事件实时刷新 |

@@ -2,9 +2,11 @@ package com.kingkang.app.files
 
 import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Base64
 import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import java.io.File
@@ -84,6 +86,61 @@ object FileActions {
             .setDataAndType(uri, "resource/folder")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         return launch(context, intent, directory)
+    }
+
+    /**
+     * Puts an image the app is showing on the clipboard as a PNG, the form other apps
+     * paste. The bytes come from the same `data:` URL the viewer already decoded; the
+     * file lives in the cache until the next copy replaces it.
+     */
+    fun copyImageToClipboard(context: Context, dataUrl: String): String? {
+        val decoded = decodeDataUrl(dataUrl) ?: return "图片数据无效"
+        val dir = File(context.cacheDir, "clipboard").apply { mkdirs() }
+        dir.listFiles()?.forEach { runCatching { it.delete() } }
+        val extension = when (decoded.first) {
+            "image/jpeg" -> "jpg"
+            "image/webp" -> "webp"
+            else -> "png"
+        }
+        val file = File(dir, "image.$extension")
+        return try {
+            file.writeBytes(decoded.second)
+            val uri = contentUri(context, file) ?: return "无法共享此图片"
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newUri(context.contentResolver, "image", uri))
+            null
+        } catch (_: Exception) {
+            "复制图片失败"
+        }
+    }
+
+    /** Writes the bytes behind a `data:` URL into the document the user picked. */
+    fun saveDataUrl(context: Context, dataUrl: String, target: Uri): String? {
+        val decoded = decodeDataUrl(dataUrl) ?: return "图片数据无效"
+        return try {
+            val output = context.contentResolver.openOutputStream(target)
+                ?: return "无法写入所选位置"
+            output.use { it.write(decoded.second) }
+            null
+        } catch (_: Exception) {
+            "保存失败，请重试"
+        }
+    }
+
+    /** Media type and bytes of a `data:<type>;base64,<payload>` URL. */
+    private fun decodeDataUrl(dataUrl: String): Pair<String, ByteArray>? {
+        if (!dataUrl.startsWith("data:")) return null
+        val comma = dataUrl.indexOf(',')
+        if (comma <= 0) return null
+        val header = dataUrl.substring(5, comma)
+        if (!header.contains(";base64", ignoreCase = true)) return null
+        val mediaType = header.substringBefore(';').ifBlank { "image/png" }
+        return try {
+            val bytes = Base64.decode(dataUrl.substring(comma + 1), Base64.DEFAULT)
+            if (bytes.isEmpty()) null else mediaType to bytes
+        } catch (_: IllegalArgumentException) {
+            null
+        }
     }
 
     /** See [FileNames.sanitize]; kept here for callers that already import this object. */

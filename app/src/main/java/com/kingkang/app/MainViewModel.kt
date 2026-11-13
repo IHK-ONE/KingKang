@@ -9,6 +9,7 @@ import com.kingkang.app.agent.AgentApproval
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentDraftFile
 import com.kingkang.app.agent.AgentDraftImage
+import com.kingkang.app.agent.AgentMcpServer
 import com.kingkang.app.agent.AgentEngine
 import com.kingkang.app.agent.AgentFileReference
 import com.kingkang.app.agent.AgentImage
@@ -1289,6 +1290,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun pauseGoal() = AgentEngine.pauseGoal()
 
+    fun actOnActionCard(callId: String, verb: String) =
+        AgentEngine.actOnActionCard(callId, verb)
+
+    fun continueConversation() = AgentEngine.continueConversation()
+
+    fun setAgentTeamEnabled(enabled: Boolean) = AgentEngine.setAgentTeamEnabled(enabled)
+
+    fun dismissAccountNotification(id: String) = AgentEngine.dismissAccountNotification(id)
+
+    fun refreshMcp() = AgentEngine.refreshMcp()
+
+    fun saveMcpServer(server: AgentMcpServer) = AgentEngine.saveMcpServer(server)
+
+    fun removeMcpServer(name: String) = AgentEngine.removeMcpServer(name)
+
     fun resumeGoal() = AgentEngine.resumeGoal()
 
     fun clearGoal() = AgentEngine.clearGoal()
@@ -1297,6 +1313,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AgentEngine.editGoal(objective, maxGoalRounds)
 
     fun loadSchedules() = AgentEngine.loadSchedules()
+
+    fun loadPluginVersions(name: String) = AgentEngine.loadPluginVersions(name)
+
+    fun loadPluginDetail(name: String) = AgentEngine.loadPluginDetail(name)
+
+    fun createSchedule(title: String, prompt: String, change: JSONObject?) =
+        AgentEngine.createSchedule(title, prompt, change)
+
+    fun runSchedule(id: String) = AgentEngine.runSchedule(id)
 
     fun updateSchedule(
         id: String,
@@ -1313,6 +1338,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun dismissScheduleHistory(id: String) = AgentEngine.dismissScheduleHistory(id)
 
     fun browseDirectory(path: String? = null) = AgentEngine.browseDirectory(path)
+
+    fun searchWorkspace(query: String) = AgentEngine.searchWorkspace(query)
+
+    fun clearWorkspaceSearch() = AgentEngine.clearWorkspaceSearch()
 
     fun createDirectory(name: String) = AgentEngine.createDirectory(name)
 

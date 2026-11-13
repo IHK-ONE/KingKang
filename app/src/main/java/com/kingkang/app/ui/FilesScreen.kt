@@ -80,6 +80,8 @@ import com.kingkang.app.MainViewModel
 import com.kingkang.app.agent.AgentFileEntry
 import com.kingkang.app.agent.AgentFileListing
 import com.kingkang.app.agent.AgentFilePreview
+import com.kingkang.app.agent.AgentWorkspaceMatch
+import com.kingkang.app.agent.AgentWorkspaceSearch
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
@@ -115,6 +117,8 @@ fun FilesScreen(
     var previewPath by rememberSaveable { mutableStateOf<String?>(null) }
     var actionsFor by remember { mutableStateOf<AgentFileEntry?>(null) }
     var showSheet by remember { mutableStateOf(false) }
+    var globalQuery by rememberSaveable { mutableStateOf("") }
+    val workspaceSearch = state.workspaceSearch
     val sort = FileSort.entries.firstOrNull { it.name == sortName } ?: FileSort.Name
 
     LaunchedEffect(state.activeSessionId) { vm.browseFiles(null) }
@@ -152,6 +156,48 @@ fun FilesScreen(
             onRefresh = { vm.browseFiles(listing.path.ifBlank { null }) }
         )
         FilesSearchField(value = query, onValueChange = { query = it.take(60) })
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SurfaceRaised)
+                    .padding(horizontal = 10.dp, vertical = 7.dp)
+            ) {
+                if (globalQuery.isEmpty()) {
+                    Text("搜索整个工作区（文件名与内容）", color = TextMuted, fontSize = 11.sp)
+                }
+                BasicTextField(
+                    value = globalQuery,
+                    onValueChange = { globalQuery = it.take(120) },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = TextStyle(
+                        color = TextPrimary,
+                        fontSize = 11.5.sp,
+                        fontFamily = FontFamily.Monospace
+                    ),
+                    cursorBrush = SolidColor(Accent),
+                    singleLine = true
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "搜索",
+                color = if (globalQuery.isNotBlank()) Accent else TextMuted,
+                fontSize = 11.5.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = globalQuery.isNotBlank()) {
+                        vm.searchWorkspace(globalQuery)
+                    }
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+            )
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -212,6 +258,23 @@ fun FilesScreen(
         }
         Box(Modifier.weight(1f)) {
             when {
+                workspaceSearch.active -> WorkspaceSearchResults(
+                    search = workspaceSearch,
+                    onOpen = { match ->
+                        if (match.directory) {
+                            vm.browseFiles(match.path)
+                            vm.clearWorkspaceSearch()
+                            globalQuery = ""
+                        } else {
+                            previewPath = match.path
+                            vm.openFilePreview(match.path)
+                        }
+                    },
+                    onClose = {
+                        vm.clearWorkspaceSearch()
+                        globalQuery = ""
+                    }
+                )
                 root == null -> FileMessage("这个对话没有工作目录")
                 listing.loading && listing.entries.isEmpty() -> Row(
                     Modifier
@@ -468,6 +531,103 @@ private fun FileMessage(text: String) {
         fontSize = 12.sp,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)
     )
+}
+
+/** Results of dsh's full-workspace search, replacing the directory list while active. */
+@Composable
+private fun WorkspaceSearchResults(
+    search: AgentWorkspaceSearch,
+    onOpen: (AgentWorkspaceMatch) -> Unit,
+    onClose: () -> Unit
+) {
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                if (search.loading) "正在搜索「${search.query}」…"
+                else "全工作区 · ${search.matches.size} 项",
+                modifier = Modifier.weight(1f),
+                color = TextSecondary,
+                fontSize = 11.sp
+            )
+            Text(
+                "关闭",
+                color = Accent,
+                fontSize = 11.5.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onClose)
+                    .padding(horizontal = 6.dp, vertical = 3.dp)
+            )
+        }
+        when {
+            search.loading -> Row(
+                Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(
+                    color = Accent,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("正在搜索…", color = TextMuted, fontSize = 11.5.sp)
+            }
+            search.error != null -> Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text(search.error, color = Red, fontSize = 11.5.sp, lineHeight = 16.sp)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "若当前 dsh 不支持全工作区搜索，请先在设置里更新 Agent 核心。",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+            }
+            search.matches.isEmpty() -> FileMessage("没有匹配「${search.query}」的文件")
+            else -> LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 20.dp)
+            ) {
+                if (search.truncated || search.incomplete) {
+                    item(key = "search-note") {
+                        Text(
+                            if (search.truncated) "结果较多，只显示前一部分。"
+                            else "部分目录无法读取，结果可能不完整。",
+                            color = Amber,
+                            fontSize = 10.5.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+                items(search.matches, key = { it.path }) { match ->
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpen(match) }
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            match.path,
+                            color = TextPrimary,
+                            fontSize = 11.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            if (match.directory) "目录" else "文件",
+                            color = TextMuted,
+                            fontSize = 9.5.sp
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

@@ -83,6 +83,8 @@ import com.kingkang.app.BuildConfig
 import com.kingkang.app.MainViewModel
 import com.kingkang.app.RootProbe
 import com.kingkang.app.agent.AgentAccountSnapshot
+import com.kingkang.app.agent.AgentMcpServer
+import com.kingkang.app.agent.AgentMcpSettings
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentLanguageSettings
 import com.kingkang.app.agent.AgentPresetCopy
@@ -233,6 +235,7 @@ fun SettingsScreen(
             vm.refreshModelProviders()
             vm.refreshAgentSettings()
             vm.refreshAccount()
+            vm.refreshMcp()
         }
     }
 
@@ -374,12 +377,23 @@ fun SettingsScreen(
                 DshSettingsEntryCard(onOpen = { onOpenAgentSettings(null) })
             }
 
+            if (agent.mcp.available) {
+                Spacer(Modifier.height(10.dp))
+                McpCard(
+                    settings = agent.mcp,
+                    onRefresh = vm::refreshMcp,
+                    onSave = vm::saveMcpServer,
+                    onRemove = vm::removeMcpServer
+                )
+            }
+
             Spacer(Modifier.height(10.dp))
             Box(Modifier.bringIntoViewRequester(accountAnchor)) {
                 AccountCard(
                     agent = agent,
                     onRefresh = vm::refreshAccount,
                     onSignOut = { confirmSignOut = true },
+                    onDismissNotification = vm::dismissAccountNotification,
                     onOpenHarness = onOpenHarness,
                     onOpenUrl = ::openExternal
                 )
@@ -805,11 +819,252 @@ private fun DshSettingsEntryCard(onOpen: () -> Unit) {
     }
 }
 
+/** MCP servers from dsh 0.2.2's `mcp` settings namespace. Hidden on older Hosts. */
+@Composable
+private fun McpCard(
+    settings: AgentMcpSettings,
+    onRefresh: () -> Unit,
+    onSave: (AgentMcpServer) -> Unit,
+    onRemove: (String) -> Unit
+) {
+    var editing by remember { mutableStateOf<AgentMcpServer?>(null) }
+    var creating by remember { mutableStateOf(false) }
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "MCP 服务器",
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.weight(1f))
+            if (settings.loading) {
+                CircularProgressIndicator(
+                    Modifier.size(13.dp),
+                    color = TextMuted,
+                    strokeWidth = 1.5.dp
+                )
+            } else {
+                Text(
+                    "${settings.servers.size} 个",
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onRefresh)
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Model Context Protocol 服务器由 Kali 内的 dsh 启动，保存后对新会话生效。",
+            color = TextMuted,
+            fontSize = 10.5.sp,
+            lineHeight = 15.sp
+        )
+        settings.error?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(it, color = Red, fontSize = 10.sp)
+        }
+        settings.servers.forEach { server ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        server.name,
+                        color = TextPrimary,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        if (server.transport == "stdio") server.command
+                        else server.url,
+                        color = TextMuted,
+                        fontSize = 9.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    "编辑",
+                    color = Accent,
+                    fontSize = 10.5.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { editing = server }
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                )
+                Text(
+                    "删除",
+                    color = Red,
+                    fontSize = 10.5.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onRemove(server.name) }
+                        .padding(horizontal = 6.dp, vertical = 3.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        TextButton(
+            onClick = { creating = true },
+            contentPadding = PaddingValues(0.dp)
+        ) {
+            Text("添加服务器", color = Accent, fontSize = 11.5.sp)
+        }
+    }
+    if (creating || editing != null) {
+        McpServerDialog(
+            initial = editing,
+            onDismiss = {
+                creating = false
+                editing = null
+            },
+            onSave = { server ->
+                creating = false
+                editing = null
+                onSave(server)
+            }
+        )
+    }
+}
+
+@Composable
+private fun McpServerDialog(
+    initial: AgentMcpServer?,
+    onDismiss: () -> Unit,
+    onSave: (AgentMcpServer) -> Unit
+) {
+    var name by remember { mutableStateOf(initial?.name.orEmpty()) }
+    var transport by remember { mutableStateOf(initial?.transport ?: "stdio") }
+    var command by remember { mutableStateOf(initial?.command.orEmpty()) }
+    var args by remember { mutableStateOf(initial?.args?.joinToString(" ").orEmpty()) }
+    var url by remember { mutableStateOf(initial?.url.orEmpty()) }
+    var enabled by remember { mutableStateOf(initial?.enabled ?: true) }
+    val valid = name.trim().isNotEmpty() &&
+        if (transport == "stdio") command.trim().isNotEmpty() else url.trim().isNotEmpty()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Surface,
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Text(
+                if (initial == null) "添加 MCP 服务器" else "编辑 MCP 服务器",
+                style = MaterialTheme.typography.titleMedium,
+                color = TextPrimary
+            )
+        },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                McpField("名称", name, enabledField = initial == null) { name = it.take(32) }
+                Spacer(Modifier.height(8.dp))
+                Row {
+                    McpTransportChip("stdio", transport == "stdio") { transport = "stdio" }
+                    Spacer(Modifier.width(6.dp))
+                    McpTransportChip("http", transport == "streamable-http") {
+                        transport = "streamable-http"
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (transport == "stdio") {
+                    McpField("命令", command) { command = it }
+                    Spacer(Modifier.height(8.dp))
+                    McpField("参数（空格分隔）", args) { args = it }
+                } else {
+                    McpField("URL", url) { url = it }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("启用", color = TextSecondary, fontSize = 11.5.sp)
+                    Spacer(Modifier.weight(1f))
+                    Switch(checked = enabled, onCheckedChange = { enabled = it })
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(
+                        AgentMcpServer(
+                            name = name.trim(),
+                            transport = transport,
+                            command = command.trim(),
+                            args = args.trim().split(Regex("\\s+"))
+                                .filter { it.isNotBlank() },
+                            url = url.trim(),
+                            enabled = enabled
+                        )
+                    )
+                },
+                enabled = valid
+            ) {
+                Text("保存", color = if (valid) Accent else TextMuted)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextSecondary)
+            }
+        }
+    )
+}
+
+@Composable
+private fun McpField(
+    label: String,
+    value: String,
+    enabledField: Boolean = true,
+    onChange: (String) -> Unit
+) {
+    Column {
+        Text(label, color = TextMuted, fontSize = 10.sp)
+        BasicTextField(
+            value = value,
+            onValueChange = onChange,
+            enabled = enabledField,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 3.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(SurfaceRaised)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            textStyle = TextStyle(
+                color = if (enabledField) TextPrimary else TextMuted,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace
+            ),
+            cursorBrush = SolidColor(Accent),
+            singleLine = true
+        )
+    }
+}
+
+@Composable
+private fun McpTransportChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        color = if (selected) OnAccent else TextSecondary,
+        fontSize = 11.sp,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) Accent else SurfaceRaised)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    )
+}
+
 @Composable
 private fun AccountCard(
     agent: AgentState,
     onRefresh: () -> Unit,
     onSignOut: () -> Unit,
+    onDismissNotification: (String) -> Unit,
     onOpenHarness: () -> Unit,
     onOpenUrl: (String?) -> Unit
 ) {
@@ -916,6 +1171,44 @@ private fun AccountCard(
                 } else if (account.balanceFailed) {
                     Spacer(Modifier.height(6.dp))
                     Text("余额暂时无法读取", color = Amber, fontSize = 10.5.sp)
+                }
+
+                account.notifications.forEach { note ->
+                    Spacer(Modifier.height(8.dp))
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(SurfaceVariant.copy(alpha = 0.6f))
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            note.title,
+                            color = TextPrimary,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (note.body.isNotBlank()) {
+                            Text(
+                                note.body,
+                                modifier = Modifier.padding(top = 2.dp),
+                                color = TextSecondary,
+                                fontSize = 10.5.sp,
+                                lineHeight = 15.sp
+                            )
+                        }
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = { onDismissNotification(note.id) },
+                                contentPadding = PaddingValues(horizontal = 8.dp)
+                            ) {
+                                Text("知道了", color = Accent, fontSize = 11.sp)
+                            }
+                        }
+                    }
                 }
 
                 account.attempt?.takeIf {

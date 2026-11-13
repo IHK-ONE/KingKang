@@ -91,6 +91,16 @@ internal object SessionProjections {
         )
     }
 
+    /**
+     * dsh 0.2.2's `conversationContinuation`: the seq of the latest failed turn that can
+     * be retried with an empty prompt, or null when the conversation is not continuable.
+     */
+    fun continuation(value: Any?): Long? = when (value) {
+        is Number -> value.toLong().takeIf { it > 0L }
+        is String -> value.toLongOrNull()?.takeIf { it > 0L }
+        else -> null
+    }
+
     /** The `{goal: {...}, roundsStarted}` wrapper carried by the `goal` projection. */
     fun goal(value: Any?): AgentGoal? {
         val json = value as? JSONObject ?: return null
@@ -195,9 +205,45 @@ internal object SessionProjections {
         val team = AgentTeam(
             members = members,
             tasks = tasks,
-            failure = json.optString("failure").takeIf { it.isNotBlank() }
+            failure = json.optString("failure").takeIf { it.isNotBlank() },
+            enabled = if (json.has("enabled")) json.optBoolean("enabled") else null
         )
         return if (team.hasData) team else null
+    }
+
+    /**
+     * `actionCards` is `{proposals: {callId: card}, decisions: {callId: decision}}`. The
+     * two records are joined here so the transcript can render one card per proposal.
+     */
+    fun actionCards(value: Any?): List<AgentActionCard> {
+        val json = value as? JSONObject ?: return emptyList()
+        val proposals = json.optJSONObject("proposals") ?: return emptyList()
+        val decisions = json.optJSONObject("decisions")
+        val cards = mutableListOf<AgentActionCard>()
+        val keys = proposals.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val item = proposals.optJSONObject(key) ?: continue
+            val callId = item.optString("callId").ifBlank { key }
+            if (callId.isBlank()) continue
+            val decision = decisions?.optJSONObject(key)?.let { recorded ->
+                AgentActionCardDecision(
+                    action = recorded.optString("action"),
+                    phase = recorded.optString("phase"),
+                    data = recorded.optJSONObject("data")?.toString().orEmpty()
+                )
+            }
+            cards += AgentActionCard(
+                callId = callId,
+                turn = item.optInt("turn"),
+                action = item.optString("action"),
+                title = item.optString("title"),
+                brief = item.optString("brief"),
+                details = item.optJSONObject("details")?.toString() ?: "{}",
+                decision = decision
+            )
+        }
+        return cards.sortedWith(compareBy({ it.turn }, { it.callId }))
     }
 
     /** `turnOutline` is an array of `{turn, seq, prompt, response}` entries. */

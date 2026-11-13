@@ -77,6 +77,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -142,6 +143,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.kingkang.app.EnvironmentUi
 import com.kingkang.app.MainViewModel
+import com.kingkang.app.agent.AgentActionCard
 import com.kingkang.app.agent.AgentAnswer
 import com.kingkang.app.agent.AgentApproval
 import com.kingkang.app.agent.AgentChangedFile
@@ -279,9 +281,7 @@ fun HomeScreen(
     var filePreview by remember { mutableStateOf<AgentFile?>(null) }
     var jobOutputFor by rememberSaveable { mutableStateOf<String?>(null) }
     var diffIndex by rememberSaveable { mutableStateOf<Int?>(null) }
-    // A reminder form hands its request to the composer: dsh has no create RPC, and the
-    // web's "New" starts a conversation too, so the agent's `schedule_create` stays the
-    // only writer.
+    // A quoted reply is handed to the composer as a Markdown blockquote.
     var composerSeed by remember { mutableStateOf<String?>(null) }
     // The workbench badge counts the work that is still moving or already went wrong: live
     // jobs from dsh's projection plus workflow runs folded from this transcript. A run that
@@ -491,6 +491,7 @@ fun HomeScreen(
                                 onOpenSettings = onOpenSettings,
                                 onConfigureKey = onConfigureKey,
                                 onPreviewFile = { filePreview = it },
+                                onQuoteText = { composerSeed = quoteMessageText(it) },
                                 modifier = Modifier.fillMaxSize()
                             )
                             HomeTab.Trajectory -> TrajectoryPane(
@@ -523,6 +524,7 @@ fun HomeScreen(
                         onOpenSettings = onOpenSettings,
                         onConfigureKey = onConfigureKey,
                         onPreviewFile = { filePreview = it },
+                        onQuoteText = { composerSeed = quoteMessageText(it) },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -807,10 +809,10 @@ fun HomeScreen(
                 vm.loadScheduleHistory(id, before)
             },
             onDismissScheduleHistory = vm::dismissScheduleHistory,
-            onComposeSchedule = { text ->
-                composerSeed = text
-                showWorkbench = false
+            onCreateSchedule = { title, prompt, change ->
+                vm.createSchedule(title, prompt, change)
             },
+            onRunSchedule = vm::runSchedule,
             onDismiss = { showWorkbench = false }
         )
     }
@@ -876,6 +878,7 @@ fun HomeScreen(
             depth = state.subagentDepth,
             onDismiss = { showSubagents = false },
             onRefresh = vm::refreshSubagents,
+            onToggleTeam = vm::setAgentTeamEnabled,
             onOpen = { subagent ->
                 showSubagents = false
                 vm.openSubagent(subagent.parentId, subagent)
@@ -924,6 +927,7 @@ private fun ConversationBody(
     onOpenSettings: () -> Unit,
     onConfigureKey: () -> Unit,
     onPreviewFile: (AgentFile) -> Unit,
+    onQuoteText: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -948,6 +952,7 @@ private fun ConversationBody(
                     clipboard.setText(AnnotatedString(text))
                     vm.notify("已复制")
                 },
+                onQuote = onQuoteText,
                 onLoadImage = { image ->
                     state.activeSessionId?.let { vm.loadAgentImage(it, image) }
                 },
@@ -956,7 +961,9 @@ private fun ConversationBody(
                     vm.rateMessage(id, rating, category, note)
                 },
                 onClearFeedback = vm::clearMessageFeedback,
-                onOpenFile = onPreviewFile
+                onOpenFile = onPreviewFile,
+                onActionCard = vm::actOnActionCard,
+                onContinue = vm::continueConversation
             )
         }
     }
@@ -1298,7 +1305,8 @@ private fun WorkbenchSheet(
     onOpenScheduleHistory: (String) -> Unit,
     onLoadMoreScheduleHistory: (String, String?) -> Unit,
     onDismissScheduleHistory: (String) -> Unit,
-    onComposeSchedule: (String) -> Unit,
+    onCreateSchedule: (String, String, JSONObject?) -> Unit,
+    onRunSchedule: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     // Elapsed time only moves on screen if something ticks; a running job earns that tick.
@@ -1455,7 +1463,7 @@ private fun WorkbenchSheet(
                     }
                     schedules.isEmpty() -> item(key = "schedules-empty") {
                         SectionHint(
-                            "还没有定时任务。点「新建」填写时间和内容，助手会用它来创建；" +
+                            "还没有定时任务。点「新建」填写时间和内容，保存后会直接写入 dsh；" +
                                 "也可以直接在对话里说，例如「每天 9 点提醒我看日志」。"
                         )
                     }
@@ -1679,7 +1687,7 @@ private fun WorkbenchSheet(
                     onDismiss = { creatingSchedule = false },
                     onSave = { draft ->
                         creatingSchedule = false
-                        onComposeSchedule(scheduleCreateMessage(draft))
+                        onCreateSchedule(draft.title, draft.prompt, scheduleChange(draft))
                     }
                 )
             }
@@ -1713,6 +1721,7 @@ private fun WorkbenchSheet(
                         onDismissScheduleHistory(schedule.id)
                         editingScheduleId = schedule.id
                     },
+                    onRun = { onRunSchedule(schedule.id) },
                     onDelete = {
                         detailScheduleId = null
                         onDismissScheduleHistory(schedule.id)
@@ -2066,14 +2075,6 @@ private fun scheduleWeekdays(days: List<Int>): String {
         .joinToString("、") { "周$it" }
 }
 
-/** The same weekdays without the per-day 周 prefix, for a running sentence. */
-private fun scheduleWeekdayNames(days: List<Int>): String {
-    if (days.isEmpty()) return "—"
-    val names = listOf("一", "二", "三", "四", "五", "六", "日")
-    return days.sorted().mapNotNull { day -> names.getOrNull(day - 1) }
-        .joinToString("、")
-}
-
 private fun scheduleZoneSuffix(schedule: AgentSchedule): String =
     schedule.timeZone?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
 
@@ -2220,30 +2221,6 @@ private data class ScheduleDraft(
 private val SCHEDULE_TIME = Regex("^([01]\\d|2[0-3]):[0-5]\\d$")
 private val SCHEDULE_CRON = Regex("^\\S+(\\s+\\S+){4}$")
 
-/**
- * A new reminder is composed as a request to the agent: dsh exposes no create RPC, and
- * `schedule_create` is a tool. An edit is a real `schedule/update`, so it never depends on
- * the model answering.
- */
-private fun scheduleCreateMessage(draft: ScheduleDraft): String {
-    val frequency = when (draft.kind) {
-        "after" -> "从现在起 ${draft.afterMinutes} 分钟后，只执行一次"
-        "every" -> "每 ${draft.everyHours} 小时"
-        "daily" -> "每天 ${draft.time}（时区 ${draft.timeZone}）"
-        "weekly" -> "每周 ${scheduleWeekdayNames(draft.weekdays)} ${draft.time}" +
-            "（时区 ${draft.timeZone}）"
-        "cron" -> "cron 表达式 ${draft.expression}（时区 ${draft.timeZone}）"
-        else -> draft.kind
-    }
-    return buildString {
-        append("请调用 schedule_create 创建定时任务。\n")
-        append("标题：").append(draft.title).append('\n')
-        append("任务内容：").append(draft.prompt).append('\n')
-        append("频率：").append(frequency).append('\n')
-        append("创建后请简要确认任务和时间。")
-    }
-}
-
 /** The `schedule/update` timing object for [draft], or null when timing stays as stored. */
 private fun scheduleChange(draft: ScheduleDraft): JSONObject? = when (draft.kind) {
     "after" -> JSONObject()
@@ -2261,15 +2238,16 @@ private fun scheduleChange(draft: ScheduleDraft): JSONObject? = when (draft.kind
         .put("kind", "daily")
         .put(
             "daily",
-            JSONObject().put("time", draft.time).put("time_zone", draft.timeZone)
+            JSONObject().put("time", scheduleTimeId(draft.time))
+                .put("time_zone", scheduleZoneId(draft.timeZone))
         )
     "weekly" -> JSONObject()
         .put("kind", "weekly")
         .put(
             "weekly",
             JSONObject()
-                .put("time", draft.time)
-                .put("time_zone", draft.timeZone)
+                .put("time", scheduleTimeId(draft.time))
+                .put("time_zone", scheduleZoneId(draft.timeZone))
                 .put("weekdays", org.json.JSONArray(draft.weekdays.sorted()))
         )
     "cron" -> JSONObject()
@@ -2278,9 +2256,42 @@ private fun scheduleChange(draft: ScheduleDraft): JSONObject? = when (draft.kind
             "cron",
             JSONObject()
                 .put("expression", draft.expression.trim())
-                .put("time_zone", draft.timeZone)
+                .put("time_zone", scheduleZoneId(draft.timeZone))
         )
     else -> null
+}
+
+/** dsh wants `HH:mm:ss`; the form's picker offers `HH:mm`. */
+private fun scheduleTimeId(value: String): String {
+    val time = value.trim()
+    return when {
+        Regex("^\\d{2}:\\d{2}$").matches(time) -> "$time:00"
+        else -> time
+    }
+}
+
+/**
+ * dsh's schedule schema wants `UTC` or an IANA Area/Location zone. Android reports fixed
+ * offsets as `GMT`, `GMT+08:00` or `Etc/GMT`, which the Host rejects; translate them to
+ * an equivalent IANA zone (Etc/GMT signs are inverted by convention).
+ */
+private fun scheduleZoneId(value: String): String {
+    val zone = value.trim()
+    if (zone.isEmpty()) return "UTC"
+    if (zone.equals("UTC", true) || zone.equals("Etc/UTC", true) ||
+        zone.equals("GMT", true) || zone.equals("Etc/GMT", true)
+    ) {
+        return "UTC"
+    }
+    if (zone.contains('/')) return zone
+    val match = Regex("^(?:GMT|UTC)([+-])(\\d{1,2})(?::?(\\d{2}))?$").find(zone)
+        ?: return "UTC"
+    val hours = match.groupValues[2].toIntOrNull() ?: 0
+    val minutes = match.groupValues[3].toIntOrNull() ?: 0
+    if (hours == 0 && minutes == 0) return "UTC"
+    if (minutes != 0 || hours > 14) return "UTC"
+    val sign = if (match.groupValues[1] == "+") "-" else "+"
+    return "Etc/GMT$sign$hours"
 }
 
 /**
@@ -2488,7 +2499,7 @@ private fun ScheduleFormDialog(
                 }
                 if (!edit) {
                     Text(
-                        "新建会交给助手调用 schedule_create 完成；填好点保存后，内容会出现在输入框里，发送即可。",
+                        "新建会直接写入 dsh 并投递到当前对话，不再经过助手；到点后触发的内容会出现在这里。",
                         modifier = Modifier.padding(top = 12.dp),
                         color = TextMuted,
                         fontSize = 10.sp,
@@ -2516,10 +2527,7 @@ private fun ScheduleFormDialog(
                 },
                 enabled = canSave
             ) {
-                Text(
-                    if (edit) "保存" else "填入输入框",
-                    color = if (canSave) Accent else TextMuted
-                )
+                Text("保存", color = if (canSave) Accent else TextMuted)
             }
         },
         dismissButton = {
@@ -2602,6 +2610,7 @@ private fun ScheduleDetailDialog(
     busy: Boolean,
     onDismiss: () -> Unit,
     onEdit: () -> Unit,
+    onRun: () -> Unit,
     onDelete: () -> Unit,
     onLoadMore: () -> Unit
 ) {
@@ -2745,6 +2754,11 @@ private fun ScheduleDetailDialog(
         },
         dismissButton = {
             Row {
+                if (schedule.active) {
+                    TextButton(onClick = onRun, enabled = !busy) {
+                        Text("立即运行", color = if (busy) TextMuted else TextSecondary)
+                    }
+                }
                 TextButton(onClick = onDelete, enabled = !busy) {
                     Text("删除", color = if (busy) TextMuted else Red)
                 }
@@ -4235,6 +4249,7 @@ private fun SubagentPanelDialog(
     depth: Int,
     onDismiss: () -> Unit,
     onRefresh: () -> Unit,
+    onToggleTeam: (Boolean) -> Unit,
     onOpen: (AgentSubagent) -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -4284,7 +4299,7 @@ private fun SubagentPanelDialog(
             }
             if (team != null && team.hasData) {
                 Spacer(Modifier.height(12.dp))
-                TeamSection(team)
+                TeamSection(team, onToggleTeam)
             }
             Spacer(Modifier.height(12.dp))
             if (subagents.isEmpty()) {
@@ -4326,7 +4341,7 @@ private fun SubagentPanelDialog(
  * non-team session has no such projection, so this block simply does not appear.
  */
 @Composable
-private fun TeamSection(team: AgentTeam) {
+private fun TeamSection(team: AgentTeam, onToggle: (Boolean) -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -4334,6 +4349,22 @@ private fun TeamSection(team: AgentTeam) {
             .background(SurfaceRaised)
             .padding(horizontal = 12.dp, vertical = 10.dp)
     ) {
+        if (team.enabled != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "团队协作",
+                    modifier = Modifier.weight(1f),
+                    color = TextPrimary,
+                    fontSize = 12.5.sp
+                )
+                Switch(
+                    checked = team.enabled,
+                    onCheckedChange = onToggle,
+                    modifier = Modifier.height(28.dp)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("团队", color = TextPrimary, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
             Spacer(Modifier.weight(1f))
@@ -5287,17 +5318,23 @@ private fun MessageList(
     listState: androidx.compose.foundation.lazy.LazyListState,
     onLoadOlder: () -> Unit,
     onCopy: (String) -> Unit,
+    onQuote: (String) -> Unit,
     onLoadImage: (AgentImage) -> Unit,
     onBranch: (AssistantItem) -> Unit,
     onRate: (String, String, String?, String?) -> Unit,
     onClearFeedback: (String) -> Unit,
-    onOpenFile: (AgentFile) -> Unit
+    onOpenFile: (AgentFile) -> Unit,
+    onActionCard: (String, String) -> Unit,
+    onContinue: () -> Unit
 ) {
     val sessionId = state.activeSessionId
     fun imageData(image: AgentImage): String? =
         image.localData ?: sessionId?.let { state.imageData["$it:${image.attachmentId}"] }
     val branchable = remember(state.items, state.running) {
         branchableMessageKeys(state.items, state.running)
+    }
+    val cardsByHost = remember(state.items, state.actionCards) {
+        actionCardsByHostKey(state.items, state.actionCards)
     }
     ScrollEdgeFade(
         canScrollForward = listState.canScrollForward,
@@ -5322,24 +5359,193 @@ private fun MessageList(
             items(state.items, key = { it.key }) { item ->
                 when (item) {
                     is UserItem -> UserMessageRow(item, onCopy, ::imageData, onLoadImage, onOpenFile)
-                    is AssistantItem -> AssistantMessageRow(
-                        message = item,
-                        onCopy = onCopy,
+                    is AssistantItem -> {
+                        AssistantMessageRow(
+                            message = item,
+                            onCopy = onCopy,
+                            onQuote = onQuote,
+                            imageData = ::imageData,
+                            onLoadImage = onLoadImage,
+                            feedback = item.messageId?.let { state.messageFeedback[it] },
+                            branchable = item.key in branchable,
+                            onBranch = { onBranch(item) },
+                            onRate = onRate,
+                            onClearFeedback = onClearFeedback
+                        )
+                        cardsByHost[item.key]?.forEach { card ->
+                            Spacer(Modifier.height(10.dp))
+                            ActionCardView(
+                                card = card,
+                                busy = state.actionCardBusy == card.callId,
+                                onAct = onActionCard
+                            )
+                        }
+                    }
+                    is ToolItem -> ToolCard(
+                        tool = item,
                         imageData = ::imageData,
-                        onLoadImage = onLoadImage,
-                        feedback = item.messageId?.let { state.messageFeedback[it] },
-                        branchable = item.key in branchable,
-                        onBranch = { onBranch(item) },
-                        onRate = onRate,
-                        onClearFeedback = onClearFeedback
+                        onLoadImage = onLoadImage
                     )
-                    is ToolItem -> ToolCard(item)
                     is WorkflowItem -> WorkflowRunCard(item)
                     is NoticeItem -> NoticeRow(item)
                 }
             }
+            if (state.continuation != null && !state.running) {
+                item(key = "continue") {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        TextButton(onClick = onContinue) {
+                            Text("继续上次回答", color = Accent, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
             if (state.running && state.items.none { it is AssistantItem && it.streaming }) {
                 item(key = "typing") { TypingRow() }
+            }
+        }
+    }
+}
+
+/**
+ * dsh-message-quotes encodes a quote as ordinary Markdown blockquote lines: one `> `
+ * prefix per line, then a blank line for the reply. The model sees nothing special.
+ */
+private fun quoteMessageText(text: String): String {
+    val quoted = text.trim().lines().joinToString("\n") { line -> "> $line" }
+    return "$quoted\n\n"
+}
+
+/** Picks the final, settled assistant reply of each turn that owns a visible card. */
+private fun actionCardsByHostKey(
+    items: List<AgentItem>,
+    cards: List<AgentActionCard>
+): Map<String, List<AgentActionCard>> {
+    val visible = cards.filterNot { it.settled }
+    if (visible.isEmpty()) return emptyMap()
+    val hosts = mutableMapOf<String, List<AgentActionCard>>()
+    visible.groupBy { it.turn }.forEach { (turn, list) ->
+        val host = items.lastOrNull {
+            it is AssistantItem && it.turn == turn && !it.streaming && it.text.isNotBlank()
+        } ?: return@forEach
+        hosts[host.key] = list
+    }
+    return hosts
+}
+
+private fun actionCardStatus(phase: String): String? = when (phase) {
+    "creating" -> "正在创建…"
+    "installing" -> "正在安装…"
+    "installed" -> "已安装"
+    "kept" -> "已保留"
+    "removed" -> "已移除"
+    "cancelled" -> "已取消"
+    "failed" -> "创建失败"
+    "interrupted" -> "已中断"
+    "unconfirmed" -> "结果未确认"
+    else -> null
+}
+
+/** The verbs a card offers in its current phase; only `create` needs kind details. */
+private fun actionCardVerbs(card: AgentActionCard, creation: Boolean): List<Triple<String, String, Boolean>> =
+    when (card.phase) {
+        "unstarted" -> buildList {
+            if (creation) add(Triple("create", "创建", true))
+            add(Triple("dismiss", "暂不需要", false))
+        }
+        "creating", "installing" -> listOf(Triple("cancel", "取消", false))
+        "installed" -> listOf(Triple("keep", "保留", false), Triple("undo", "撤销", false))
+        "kept" -> listOf(Triple("undo", "撤销", false))
+        "removed" -> listOf(Triple("restore", "恢复", true))
+        "cancelled", "failed", "interrupted", "unconfirmed" -> buildList {
+            if (creation) add(Triple("create", "重试创建", true))
+            add(Triple("dismiss", "暂不需要", false))
+        }
+        else -> emptyList()
+    }
+
+/**
+ * One optional action below a finished answer. Nothing runs until the user taps a verb;
+ * the card then reports the decision dsh records, including background progress.
+ */
+@Composable
+private fun ActionCardView(
+    card: AgentActionCard,
+    busy: Boolean,
+    onAct: (String, String) -> Unit
+) {
+    val creation = card.action == "create_personalized_page"
+    val status = actionCardStatus(card.phase)
+    val statusColor = when (card.phase) {
+        "installed", "kept" -> Success
+        "failed", "interrupted", "unconfirmed" -> Amber
+        else -> TextMuted
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Surface)
+            .border(1.dp, Accent.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                card.title.ifBlank { "建议操作" },
+                modifier = Modifier.weight(1f),
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (busy) {
+                CircularProgressIndicator(
+                    Modifier.size(13.dp),
+                    color = Accent,
+                    strokeWidth = 1.5.dp
+                )
+            } else if (status != null) {
+                Text(status, color = statusColor, fontSize = 10.sp)
+            }
+        }
+        if (card.brief.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                card.brief,
+                color = TextSecondary,
+                fontSize = 11.5.sp,
+                lineHeight = 17.sp,
+                maxLines = 6,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        val verbs = actionCardVerbs(card, creation)
+        if (verbs.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                verbs.forEach { (verb, label, primary) ->
+                    TextButton(
+                        onClick = { onAct(card.callId, verb) },
+                        enabled = !busy,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            label,
+                            color = when {
+                                busy -> TextMuted
+                                primary -> Accent
+                                else -> TextSecondary
+                            },
+                            fontSize = 12.sp
+                        )
+                    }
+                }
             }
         }
     }
@@ -5620,29 +5826,68 @@ private fun AgentThumb(
 
 @Composable
 private fun ImagePreviewDialog(dataUrl: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    var status by remember { mutableStateOf<String?>(null) }
+    val save = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("image/png")
+    ) { target ->
+        if (target != null) {
+            status = FileActions.saveDataUrl(context, dataUrl, target) ?: "图片已保存"
+        }
+    }
     val bitmap by produceState<ImageBitmap?>(initialValue = null, dataUrl) {
         value = withContext(Dispatchers.IO) { decodeImage(dataUrl, 1600) }
     }
     Dialog(onDismissRequest = onDismiss) {
-        Box(
+        Column(
             Modifier
                 .fillMaxWidth()
-                .heightIn(max = 560.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(SurfaceRaised)
-                .clickable(onClick = onDismiss),
-            contentAlignment = Alignment.Center
         ) {
-            val current = bitmap
-            if (current != null) {
-                Image(
-                    bitmap = current,
-                    contentDescription = null,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxWidth()
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center
+            ) {
+                val current = bitmap
+                if (current != null) {
+                    Image(
+                        bitmap = current,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    CircularProgressIndicator(color = TextMuted, strokeWidth = 2.dp)
+                }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 14.dp, end = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    status.orEmpty(),
+                    modifier = Modifier.weight(1f),
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-            } else {
-                CircularProgressIndicator(color = TextMuted, strokeWidth = 2.dp)
+                TextButton(
+                    onClick = {
+                        status = FileActions.copyImageToClipboard(context, dataUrl) ?: "图片已复制"
+                    }
+                ) {
+                    Text("复制图片", color = TextSecondary, fontSize = 12.sp)
+                }
+                TextButton(onClick = { save.launch("kingkang-image.png") }) {
+                    Text("保存", color = Accent, fontSize = 12.sp)
+                }
             }
         }
     }
@@ -5718,6 +5963,7 @@ private fun displayNameOf(context: Context, uri: Uri): String? = try {
 private fun AssistantMessageRow(
     message: AssistantItem,
     onCopy: (String) -> Unit,
+    onQuote: (String) -> Unit,
     imageData: (AgentImage) -> String?,
     onLoadImage: (AgentImage) -> Unit,
     feedback: AgentMessageFeedback?,
@@ -5789,6 +6035,10 @@ private fun AssistantMessageRow(
                 onCopy(message.text)
                 menu = false
             },
+            onQuote = {
+                onQuote(message.text)
+                menu = false
+            },
             onBranch = {
                 onBranch()
                 menu = false
@@ -5807,6 +6057,7 @@ private fun MessageActionsDialog(
     feedback: AgentMessageFeedback?,
     branchable: Boolean,
     onCopy: () -> Unit,
+    onQuote: () -> Unit,
     onBranch: () -> Unit,
     onRate: (String, String, String?, String?) -> Unit,
     onClearFeedback: (String) -> Unit,
@@ -5819,6 +6070,7 @@ private fun MessageActionsDialog(
     CompactDialog(onDismiss = onDismiss) {
         CompactDialogHeader("消息操作", onDismiss)
         CompactMenuRow("复制", TextSecondary, onCopy)
+        CompactMenuRow("引用到输入框", TextSecondary, onQuote)
         CompactMenuRow(
             if (branchable) "从这里分支" else "从这里分支（不可用）",
             if (branchable) TextSecondary else TextMuted,
@@ -6251,6 +6503,16 @@ private fun TableRow(cells: List<String>, columns: Int, header: Boolean) {
 
 @Composable
 private fun MarkdownCodeBlock(language: String?, code: String) {
+    when (language?.lowercase()) {
+        "diff", "patch" -> {
+            MarkdownDiffBlock(code)
+            return
+        }
+        "math", "latex", "tex" -> {
+            MarkdownMathBlock(code)
+            return
+        }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -6274,6 +6536,66 @@ private fun MarkdownCodeBlock(language: String?, code: String) {
             fontFamily = FontFamily.Monospace,
             fontSize = 11.5.sp,
             lineHeight = 17.sp
+        )
+    }
+}
+
+/** A ```diff fence: additions, removals and hunk headers keep their diff colors. */
+@Composable
+private fun MarkdownDiffBlock(code: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(SurfaceVariant)
+            .padding(horizontal = 11.dp, vertical = 9.dp)
+            .horizontalScroll(rememberScrollState())
+    ) {
+        code.lines().take(200).forEach { line ->
+            Text(
+                line,
+                color = when {
+                    line.startsWith("+++") || line.startsWith("---") -> TextMuted
+                    line.startsWith("+") -> Success
+                    line.startsWith("-") -> Red
+                    line.startsWith("@@") -> Accent
+                    else -> TextSecondary
+                },
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
+                softWrap = false
+            )
+        }
+        if (code.lines().size > 200) {
+            Text("（已截断）", color = TextMuted, fontSize = 10.sp)
+        }
+    }
+}
+
+/**
+ * ```math fence. Native Compose has no TeX layout engine, so the formula is shown as a
+ * quiet centered block in the source notation rather than pretending to typeset it.
+ */
+@Composable
+private fun MarkdownMathBlock(code: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(SurfaceVariant)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text("公式", color = TextMuted, fontSize = 9.5.sp)
+        Spacer(Modifier.height(5.dp))
+        Text(
+            code,
+            modifier = Modifier.fillMaxWidth(),
+            color = TextPrimary,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 12.5.sp,
+            lineHeight = 20.sp,
+            textAlign = TextAlign.Center
         )
     }
 }
@@ -6482,8 +6804,16 @@ private fun workflowStatusColor(status: String): Color = when (status) {
 }
 
 @Composable
-private fun ToolCard(tool: ToolItem) {
+private fun ToolCard(
+    tool: ToolItem,
+    imageData: (AgentImage) -> String? = { null },
+    onLoadImage: (AgentImage) -> Unit = {}
+) {
     var expanded by rememberSaveable(tool.key) { mutableStateOf(false) }
+    var preview by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(tool.images) {
+        tool.images.forEach { if (imageData(it) == null) onLoadImage(it) }
+    }
     val dotColor = when {
         tool.running -> Amber
         tool.isError -> Red
@@ -6534,10 +6864,28 @@ private fun ToolCard(tool: ToolItem) {
                 fontSize = 10.sp
             )
         }
+        if (tool.images.isNotEmpty()) {
+            Row(
+                Modifier
+                    .padding(top = 8.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                tool.images.take(4).forEach { image ->
+                    val url = imageData(image)
+                    AgentThumb(
+                        dataUrl = url,
+                        size = 132.dp,
+                        onClick = url?.let { { preview = it } }
+                    )
+                }
+            }
+        }
         if (expanded) {
             ToolDetailBody(tool)
         }
     }
+    preview?.let { ImagePreviewDialog(it) { preview = null } }
 }
 
 /** Expanded tool content: structured cards where dsh's data supports them, else raw I/O. */
@@ -7925,12 +8273,14 @@ private fun Composer(
         )
     }
 
-    // A reminder form placed a request here; adopt it once so it lands in the composer
-    // the moment the workbench closes, ready to send.
+    // A quote lands here as a Markdown blockquote; keep whatever the user already typed
+    // and append the quote below it, ready for the reply.
     LaunchedEffect(seed) {
         val text = seed ?: return@LaunchedEffect
         if (text.isBlank()) return@LaunchedEffect
-        input = TextFieldValue(text, selection = TextRange(text.length))
+        val existing = input.text.trimEnd()
+        val combined = if (existing.isEmpty()) text else "$existing\n\n$text"
+        input = TextFieldValue(combined, selection = TextRange(combined.length))
         onSeedConsumed()
         runCatching { focusRequester.requestFocus() }
     }

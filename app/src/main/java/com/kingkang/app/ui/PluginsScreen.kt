@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -58,9 +59,11 @@ import com.kingkang.app.MainViewModel
 import com.kingkang.app.PluginInstallNote
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentPlugin
+import com.kingkang.app.agent.AgentPluginDetail
 import com.kingkang.app.agent.AgentPluginInspection
 import com.kingkang.app.agent.AgentPluginOffer
 import com.kingkang.app.agent.AgentPluginMarketResult
+import com.kingkang.app.agent.AgentPluginVersions
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Background
@@ -493,9 +496,16 @@ fun PluginsScreen(
     }
 
     detailPlugin?.let { plugin ->
+        LaunchedEffect(plugin.name) {
+            vm.loadPluginVersions(plugin.name)
+            vm.loadPluginDetail(plugin.name)
+        }
         PluginDetailDialog(
             plugin = plugin,
+            versions = agent.pluginVersions[plugin.name],
+            detail = agent.pluginDetails[plugin.name],
             removing = agent.pluginRemoving == plugin.name,
+            onUpdate = { version -> vm.updatePlugin(plugin.name, version) },
             onDismiss = { detailPlugin = null },
             onOpenHarness = {
                 detailPlugin = null
@@ -546,7 +556,10 @@ fun PluginsScreen(
 @Composable
 private fun PluginDetailDialog(
     plugin: AgentPlugin,
+    versions: AgentPluginVersions?,
+    detail: AgentPluginDetail?,
     removing: Boolean,
+    onUpdate: (String) -> Unit,
     onDismiss: () -> Unit,
     onOpenHarness: () -> Unit,
     onUninstall: () -> Unit
@@ -580,7 +593,11 @@ private fun PluginDetailDialog(
             }
         },
         text = {
-            Column {
+            Column(
+                Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Text(
                     plugin.name,
                     color = TextMuted,
@@ -595,6 +612,84 @@ private fun PluginDetailDialog(
                         fontSize = 11.5.sp,
                         lineHeight = 16.sp
                     )
+                }
+                versions?.let { list ->
+                    Spacer(Modifier.height(12.dp))
+                    Text("可用版本", color = TextSecondary, fontSize = 11.sp)
+                    Spacer(Modifier.height(4.dp))
+                    when {
+                        list.loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                Modifier.size(12.dp),
+                                color = TextMuted,
+                                strokeWidth = 1.5.dp
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("正在读取版本…", color = TextMuted, fontSize = 10.5.sp)
+                        }
+                        list.problem != null -> Text(
+                            "读取版本失败：${list.reason ?: list.problem}",
+                            color = Amber,
+                            fontSize = 10.5.sp,
+                            lineHeight = 15.sp
+                        )
+                        list.versions.isEmpty() -> Text(
+                            "没有可用的版本信息。",
+                            color = TextMuted,
+                            fontSize = 10.5.sp
+                        )
+                        else -> list.versions.take(12).forEach { version ->
+                            val current = version.version == (list.installed ?: plugin.version)
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(enabled = !current) { onUpdate(version.version) }
+                                    .padding(horizontal = 2.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    version.version,
+                                    modifier = Modifier.weight(1f),
+                                    color = if (current) TextMuted else TextPrimary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp
+                                )
+                                if (version.deprecated != null) {
+                                    Text("已弃用", color = Amber, fontSize = 9.sp)
+                                    Spacer(Modifier.width(6.dp))
+                                }
+                                if (version.prerelease) {
+                                    Text("预览", color = TextMuted, fontSize = 9.sp)
+                                    Spacer(Modifier.width(6.dp))
+                                }
+                                Text(
+                                    if (current) "当前" else "更新",
+                                    color = if (current) TextMuted else Accent,
+                                    fontSize = 9.5.sp
+                                )
+                            }
+                        }
+                    }
+                }
+                detail?.let { readme ->
+                    Spacer(Modifier.height(12.dp))
+                    Text("说明", color = TextSecondary, fontSize = 11.sp)
+                    Spacer(Modifier.height(4.dp))
+                    when {
+                        readme.loading -> Text("正在读取说明…", color = TextMuted, fontSize = 10.5.sp)
+                        readme.markdown.isNotBlank() -> {
+                            Text(
+                                readme.markdown.take(6000),
+                                color = TextSecondary,
+                                fontSize = 10.5.sp,
+                                lineHeight = 15.sp
+                            )
+                            if (readme.markdown.length > 6000) {
+                                Text("（已截断）", color = TextMuted, fontSize = 9.5.sp)
+                            }
+                        }
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
                 Column(

@@ -323,4 +323,74 @@ class SessionProjectionsTest {
         assertEquals("completed", team.tasks.single().status)
         assertEquals("Scan", team.tasks.single().subject)
     }
+
+    @Test
+    fun `action cards join proposals with their decisions`() {
+        val view = JSONObject(
+            """
+            {
+              "proposals": {
+                "call-a": {
+                  "callId": "call-a",
+                  "turn": 2,
+                  "action": "create_personalized_page",
+                  "title": "Build a log viewer",
+                  "brief": "A page that follows the Kali log.",
+                  "details": { "slot": "page" }
+                },
+                "call-b": {
+                  "callId": "call-b",
+                  "turn": 3,
+                  "action": "create_personalized_page",
+                  "title": "Build a port scanner",
+                  "brief": "Scan the local ports.",
+                  "details": { "slot": "sidebar-right" }
+                }
+              },
+              "decisions": {
+                "call-a": { "callId": "call-a", "action": "create", "phase": "installed" }
+              }
+            }
+            """
+        )
+
+        val cards = SessionProjections.actionCards(view)
+
+        assertEquals(2, cards.size)
+        assertEquals("call-a", cards[0].callId)
+        assertEquals("installed", cards[0].phase)
+        assertEquals("page", cards[0].slot)
+        assertEquals("call-b", cards[1].callId)
+        assertEquals("unstarted", cards[1].phase)
+        assertEquals("sidebar-right", cards[1].slot)
+        assertFalse(cards[0].settled)
+    }
+
+    @Test
+    fun `dismissed action cards settle and leave the transcript`() {
+        val view = JSONObject(
+            """
+            {
+              "proposals": {
+                "call-a": {
+                  "callId": "call-a",
+                  "turn": 1,
+                  "action": "other_kind",
+                  "title": "Try something",
+                  "brief": "Brief",
+                  "details": {}
+                }
+              },
+              "decisions": {
+                "call-a": { "callId": "call-a", "action": "dismiss", "phase": "dismissed" }
+              }
+            }
+            """
+        )
+
+        val card = SessionProjections.actionCards(view).single()
+        assertEquals("dismissed", card.phase)
+        assertTrue(card.settled)
+        assertNull(card.slot)
+    }
 }

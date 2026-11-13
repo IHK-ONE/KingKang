@@ -119,7 +119,9 @@ data class ToolItem(
     val metaJson: String? = null,
     /** dsh event times for the call and its result, used to show elapsed time. */
     val startedAt: Long? = null,
-    val finishedAt: Long? = null
+    val finishedAt: Long? = null,
+    /** Images returned by the tool (for example `office_render` pages). */
+    val images: List<AgentImage> = emptyList()
 ) : AgentItem {
     /** Call duration, once both ends were stamped. */
     val elapsedMs: Long?
@@ -576,13 +578,51 @@ data class AgentTeamTask(
 data class AgentTeam(
     val members: List<AgentTeamMember> = emptyList(),
     val tasks: List<AgentTeamTask> = emptyList(),
-    val failure: String? = null
+    val failure: String? = null,
+    /** 0.2.2 reports whether teamwork is enabled; older hosts omit it. */
+    val enabled: Boolean? = null
 ) {
     val hasData: Boolean
         get() = members.isNotEmpty() || tasks.isNotEmpty() || !failure.isNullOrBlank()
 
     val lead: AgentTeamMember?
         get() = members.firstOrNull { it.role == "lead" }
+}
+
+/** The recorded choice on one action card, from `plugin:action-cards/decision`. */
+data class AgentActionCardDecision(
+    /** The kind verb that produced this decision (`create`, `keep`, `undo`, `dismiss`…). */
+    val action: String = "",
+    /** unstarted | creating | installing | installed | kept | removed | cancelled | failed | interrupted | unconfirmed | dismissed | replaced */
+    val phase: String = "",
+    /** Kind-defined JSON object recorded with the decision. */
+    val data: String = ""
+)
+
+/**
+ * One optional action offered below a finished answer. dsh's `actionCards` projection
+ * pairs the model's `propose_action` call with the user's recorded decision; no work
+ * starts until the user picks an action.
+ */
+data class AgentActionCard(
+    val callId: String,
+    val turn: Int = 0,
+    val action: String = "",
+    val title: String = "",
+    val brief: String = "",
+    /** Kind-defined JSON object; kinds are open-ended, so this stays text. */
+    val details: String = "{}",
+    val decision: AgentActionCardDecision? = null
+) {
+    val phase: String get() = decision?.phase?.takeIf { it.isNotBlank() } ?: "unstarted"
+
+    /** Dismissed and replaced cards accept no further action and leave the transcript. */
+    val settled: Boolean get() = phase == "dismissed" || phase == "replaced"
+
+    /** The placement the creation kind proposed, used as the default Create payload. */
+    val slot: String?
+        get() = runCatching { org.json.JSONObject(details).optString("slot") }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
 }
 
 /** One row of dsh's `turnOutline` projection: a prompt and its reply, keyed by turn. */
@@ -643,6 +683,27 @@ data class AgentFileEntry(
     val modified: Long = 0L
 ) {
     val directory: Boolean get() = type == "directory"
+}
+
+/** One path dsh's full-workspace search matched. */
+data class AgentWorkspaceMatch(
+    val path: String,
+    /** file | directory | other */
+    val type: String = "file"
+) {
+    val directory: Boolean get() = type == "directory"
+}
+
+/** dsh 0.2.2's `workspaceFiles/search` answer, or a readable failure. */
+data class AgentWorkspaceSearch(
+    val query: String = "",
+    val matches: List<AgentWorkspaceMatch> = emptyList(),
+    val truncated: Boolean = false,
+    val incomplete: Boolean = false,
+    val loading: Boolean = false,
+    val error: String? = null
+) {
+    val active: Boolean get() = query.isNotBlank() || loading || error != null
 }
 
 /** The workspace directory the file sidebar is showing. */
@@ -1104,6 +1165,35 @@ data class AgentPluginOffer(
         get() = title.ifBlank { name }
 }
 
+/** One published version of a plugin package, from `pluginManager/listVersions`. */
+data class AgentPluginVersion(
+    val version: String,
+    val publishedAt: String? = null,
+    val tags: List<String> = emptyList(),
+    val prerelease: Boolean = false,
+    val deprecated: String? = null,
+    val incompatible: Boolean = false
+)
+
+/** The version list for one installed plugin bundle. */
+data class AgentPluginVersions(
+    val name: String = "",
+    val status: String = "",
+    val installed: String? = null,
+    val versions: List<AgentPluginVersion> = emptyList(),
+    val problem: String? = null,
+    val reason: String? = null,
+    val loading: Boolean = false
+)
+
+/** The bundle README dsh serves for one plugin. */
+data class AgentPluginDetail(
+    val markdown: String = "",
+    val status: String = "",
+    val path: String? = null,
+    val loading: Boolean = false
+)
+
 /** What dsh answered when asked what a package spec names, before anything installs. */
 data class AgentPluginInspection(
     val accepted: Boolean,
@@ -1309,6 +1399,37 @@ data class AgentAccountWallet(
  * flow needs a browser callback origin, and the app must never collect a platform
  * password. Sign-out, profile and balances are safe to show natively.
  */
+/** One MCP server from the `mcp` settings namespace (dsh 0.2.2's manager). */
+data class AgentMcpServer(
+    val name: String,
+    /** stdio | streamable-http */
+    val transport: String = "stdio",
+    val command: String = "",
+    val args: List<String> = emptyList(),
+    val url: String = "",
+    val enabled: Boolean = true
+)
+
+/** dsh's MCP configuration namespace, absent before the manager ships. */
+data class AgentMcpSettings(
+    val available: Boolean = false,
+    val loading: Boolean = false,
+    val revision: Long = 0L,
+    val servers: List<AgentMcpServer> = emptyList(),
+    val error: String? = null
+)
+
+/** One server-pushed account notice (dsh 0.2.2 `account/getNotifications`). */
+data class AgentAccountNotification(
+    val id: String,
+    val title: String = "",
+    val body: String = "",
+    /** account | dismiss */
+    val actionTarget: String = "",
+    val actionLabel: String = "",
+    val createdAt: String? = null
+)
+
 data class AgentAccountSnapshot(
     val loaded: Boolean = false,
     val loading: Boolean = false,
@@ -1323,6 +1444,7 @@ data class AgentAccountSnapshot(
     val bonusWallets: List<AgentAccountWallet> = emptyList(),
     val balanceFailed: Boolean = false,
     val signingOut: Boolean = false,
+    val notifications: List<AgentAccountNotification> = emptyList(),
     val error: String? = null
 )
 
@@ -1420,6 +1542,20 @@ data class AgentState(
     val subagentTiming: AgentSubagentTiming? = null,
     /** Live team roster and task board, when this is a team session. */
     val agentTeam: AgentTeam? = null,
+    /** Full-workspace search result, empty while the browser filters locally. */
+    val workspaceSearch: AgentWorkspaceSearch = AgentWorkspaceSearch(),
+    /** MCP servers configured in dsh's `mcp` settings namespace. */
+    val mcp: AgentMcpSettings = AgentMcpSettings(),
+    /** Published versions loaded on demand, keyed by plugin name. */
+    val pluginVersions: Map<String, AgentPluginVersions> = emptyMap(),
+    /** Bundle README loaded on demand, keyed by plugin name. */
+    val pluginDetails: Map<String, AgentPluginDetail> = emptyMap(),
+    /** Optional action cards the model proposed, newest turn last. */
+    val actionCards: List<AgentActionCard> = emptyList(),
+    /** Seq of a failed turn dsh can retry with an empty prompt (0.2.2), else null. */
+    val continuation: Long? = null,
+    /** Call id of the card whose action is in flight. */
+    val actionCardBusy: String? = null,
     /** dsh's `turnOutline`: prompt/response per turn for the navigator. */
     val turnOutline: List<AgentTurnOutlineEntry> = emptyList(),
     /** dsh's `sessionStats`: timing totals for the stats panel. */

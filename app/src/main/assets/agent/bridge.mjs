@@ -83,6 +83,7 @@ const CAPABILITIES = [
   "file.share",
   "session.prompt",
   "session.cancel",
+  "session.continue",
   "session.updateQueue",
   "session.attachment",
   "session.models",
@@ -99,9 +100,14 @@ const CAPABILITIES = [
   "goal.resume",
   "goal.clear",
   "goal.edit",
+  "actionCards.act",
+  "agentTeam.setEnabled",
+  "goal.create",
   "schedule.catalog",
+  "schedule.create",
   "schedule.update",
   "schedule.delete",
+  "schedule.run",
   "schedule.history",
   "subagent.list",
   "subagent.history",
@@ -126,6 +132,7 @@ const CAPABILITIES = [
   "workspace.readFile",
   "workspace.mkdir",
   "workspace.browse",
+  "workspace.search",
   "workspace.archiveSession",
   "workspace.unarchiveSession",
   "workspace.pinSession",
@@ -135,6 +142,8 @@ const CAPABILITIES = [
   "plugin.inspect",
   "plugin.install",
   "plugin.update",
+  "plugin.versions",
+  "plugin.detail",
   "plugin.registry.get",
   "plugin.registry.set",
   "plugin.uninstall",
@@ -142,6 +151,9 @@ const CAPABILITIES = [
   "account.state",
   "account.profile",
   "account.balance",
+  "account.notifications",
+  "account.notificationContent",
+  "account.notificationEvent",
   "account.signOut",
   "approval.respond",
   "question.respond",
@@ -538,6 +550,8 @@ function normalizeEvent(sessionId, event, view) {
         // dsh-web derives diff/file/search cards from result meta; forward it unchanged
         // so the app can render the same structured views.
         meta: data.meta ?? null,
+        // Tools such as office_render return image blocks beside their summary text.
+        images: imagesOf(content),
       };
     }
     case "turn/start":
@@ -1642,7 +1656,19 @@ function openControlStream() {
           return;
         }
         if (value?.type === "projection") {
-          applyProjection(String(value.sessionId ?? ""), String(value.key ?? ""), value.value);
+          // dsh 0.2.2 sends one frame per committed event: `changes` lists every
+          // client-visible key whose view changed, each as `{key, val}`. Older builds
+          // sent a single `key`/`value` pair; accept both.
+          const sessionId = String(value.sessionId ?? "");
+          const changes = Array.isArray(value.changes) ? value.changes : null;
+          if (changes) {
+            for (const change of changes) {
+              if (!change || typeof change !== "object") continue;
+              applyProjection(sessionId, String(change.key ?? ""), change.val);
+            }
+          } else if (value.key !== undefined) {
+            applyProjection(sessionId, String(value.key ?? ""), value.value);
+          }
         }
       },
       onEnd() {
@@ -3292,6 +3318,21 @@ async function dispatch(method, params) {
       });
       return value ?? { accepted: true };
     }
+    case "session.continue": {
+      // An empty retry prompt is dsh's own continuation wire shape: `source.kind` becomes
+      // "retry" and the Host re-asks after the failed turn. There is no separate RPC.
+      const sessionId = String(payload.sessionId || "");
+      if (sessionId === "") throw badRequest("session.continue needs a sessionId");
+      const value = await callDsh("session/prompt", {
+        request: {
+          requestId: randomUUID(),
+          sessionId,
+          mode: "queue",
+          content: [],
+        },
+      });
+      return value ?? { accepted: true };
+    }
     case "session.cancel":
       return callDsh("session/cancel", {
         request: { sessionId: String(payload.sessionId || "") },
@@ -3308,10 +3349,16 @@ async function dispatch(method, params) {
         },
       });
     case "session.attachment": {
+      // dsh checks the whole reference (id, media type, bytes, dimensions) against the
+      // logged image, so the app must send the object it received, not a bare id.
+      const attachment =
+        payload.attachment && typeof payload.attachment === "object"
+          ? payload.attachment
+          : { attachmentId: String(payload.attachmentId || "") };
       const value = await callDsh("session/attachment", {
         request: {
           sessionId: String(payload.sessionId || ""),
-          attachmentId: String(payload.attachmentId || ""),
+          attachment,
         },
       });
       return {
@@ -3493,6 +3540,63 @@ async function dispatch(method, params) {
         request,
       }, 30_000);
       return { goal: value ?? null };
+    }
+    case "agentTeam.setEnabled": {
+      const sessionId = String(payload.sessionId || "");
+      if (sessionId === "") throw badRequest("agentTeam.setEnabled needs a sessionId");
+      return callDsh("agentTeams/setEnabled", {
+        agentId: sessionId,
+        enabled: payload.enabled === true,
+      }, 30_000);
+    }
+    case "actionCards.act": {
+      const sessionId = String(payload.sessionId || "");
+      const callId = String(payload.callId || "");
+      const verb = String(payload.verb || "");
+      if (sessionId === "") throw badRequest("actionCards.act needs a sessionId");
+      if (callId === "") throw badRequest("actionCards.act needs a callId");
+      if (verb === "") throw badRequest("actionCards.act needs a verb");
+      const args = { agentId: sessionId, callId, verb };
+      if (payload.payload !== undefined && payload.payload !== null) {
+        args.payload = payload.payload;
+      }
+      return callDsh("actionCards/act", args, 60_000);
+    }
+    case "goal.create": {
+      const sessionId = String(payload.sessionId || "");
+      const objective = String(payload.objective || "").trim();
+      if (sessionId === "") throw badRequest("goal.create needs a sessionId");
+      if (objective === "") throw badRequest("goal.create needs an objective");
+      const request = { objective };
+      const rounds = Number(payload.maxGoalRounds);
+      if (Number.isInteger(rounds) && rounds >= 1) request.maxGoalRounds = rounds;
+      const value = await callDsh("goals/create", {
+        agentId: sessionId,
+        request,
+      }, 30_000);
+      return { ref: value?.ref ?? null };
+    }
+    case "schedule.create": {
+      const sessionId = String(payload.sessionId || "");
+      const title = String(payload.title || "").trim();
+      const prompt = String(payload.prompt || "").trim();
+      const timing = payload.change;
+      if (title === "") throw badRequest("schedule.create needs a title");
+      if (prompt === "") throw badRequest("schedule.create needs a prompt");
+      if (!timing || typeof timing !== "object") {
+        throw badRequest("schedule.create needs a timing object");
+      }
+      const request = { title, prompt, timing };
+      // Deliver into the conversation the form was opened from, like the old
+      // message-based path did; otherwise dsh would create a new Session.
+      if (sessionId !== "") request.target = { kind: "session", sessionId };
+      const value = await callDsh("schedule/create", { request }, 60_000);
+      return { record: value ?? null };
+    }
+    case "schedule.run": {
+      const id = String(payload.id || "");
+      if (id === "") throw badRequest("schedule.run needs an id");
+      return callDsh("schedule/run", { request: { id } }, 30_000);
     }
     case "schedule.catalog": {
       // Host-wide roster, including the reminders whose one-shot time already passed.
@@ -3732,6 +3836,23 @@ async function dispatch(method, params) {
           : [],
       };
     }
+    case "workspace.search": {
+      const sessionId = String(payload.sessionId || "");
+      const query = String(payload.query || "").trim();
+      if (sessionId === "") throw badRequest("workspace.search needs a sessionId");
+      if (query === "") throw badRequest("workspace.search needs a query");
+      // dsh 0.2.2-rc.2 adds full-workspace search; the scope id is the Session id that
+      // owns the workspace root.
+      return callDsh("workspaceFiles/search", {
+        workspaceFileScopeId: sessionId,
+        request: {
+          query,
+          excludedPaths: [],
+          includeHidden: false,
+          respectGitignore: true,
+        },
+      }, 60_000);
+    }
     case "workspace.files":
       return listWorkspaceFiles(payload.root, payload.path);
     case "workspace.readFile":
@@ -3885,6 +4006,21 @@ async function dispatch(method, params) {
         bundle: change?.bundle ? String(change.bundle) : null,
         version: change?.version ? String(change.version) : null,
       };
+    }
+    case "plugin.versions": {
+      const name = String(payload.name || "").trim();
+      if (!name) throw codedError("invalid-argument", "缺少插件名称");
+      return callDsh("pluginManager/listVersions", { name }, 60_000);
+    }
+    case "plugin.detail": {
+      const name = String(payload.name || "").trim();
+      const language = String(payload.language || "zh");
+      if (!name) throw codedError("invalid-argument", "缺少插件名称");
+      return callDsh(
+        "pluginManager/readBundleDetail",
+        { name, language },
+        60_000,
+      );
     }
     case "plugin.update": {
       // dsh refuses to install a package its profile already records, so a plugin pinned
@@ -4084,6 +4220,32 @@ async function dispatch(method, params) {
           .map(wallet)
           .filter(Boolean),
       };
+    }
+    case "account.notifications": {
+      const value = await callDsh("account/getNotifications", {
+        client: accountClient(payload),
+      }, 30_000);
+      return value ?? { notifications: [], nextPollAfterSeconds: 0 };
+    }
+    case "account.notificationContent": {
+      const id = String(payload.id || "");
+      if (id === "") throw badRequest("account.notificationContent needs an id");
+      return callDsh("account/getNotificationContent", {
+        id,
+        client: accountClient(payload),
+      }, 30_000);
+    }
+    case "account.notificationEvent": {
+      const id = String(payload.id || "");
+      const event = String(payload.event || "");
+      if (id === "" || event === "") {
+        throw badRequest("account.notificationEvent needs an id and an event");
+      }
+      return callDsh("account/reportNotificationEvent", {
+        id,
+        event,
+        client: accountClient(payload),
+      }, 30_000);
     }
     case "account.signOut": {
       const state = await callDsh("account/signOut", accountClient(payload));

@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -81,6 +82,8 @@ object AgentEngine {
     private const val STANDARD_PRESET_ID = "standard"
     /** npm mirror used when the user has not picked a source. */
     private const val DEFAULT_NPM_REGISTRY = "https://registry.npmmirror.com/"
+    /** The kind whose Create verb needs the proposed placement as its payload. */
+    private const val CREATION_CARD_ACTION = "create_personalized_page"
 
     /**
      * Credential references dsh exposes for the DeepSeek provider. The name is the env var
@@ -1473,18 +1476,46 @@ object AgentEngine {
     }
 
     /**
-     * Creates a goal through dsh's own `/goal <objective>` command. dsh exposes no
-     * create RPC — the command owns the first revision and its default round cap —
-     * so the workbench form submits the same line a typed command would.
+     * Creates a goal with dsh's `goals/create`. The workbench form used to submit a
+     * `/goal` command because dsh 0.2.1 exposed no create RPC; 0.2.2 does, so creation
+     * no longer depends on the model reading the command.
      */
     fun createGoal(objective: String) {
+        val client = bridge ?: return
         val clean = objective.trim().replace(Regex("\\s+"), " ")
         if (clean.isEmpty()) return
         if (clean.length > 4_000) {
             addNotice("目标过长，请控制在 4000 字以内", isError = true)
             return
         }
-        runCommand("/goal $clean")
+        val sessionId = _state.value.activeSessionId ?: return
+        if (_state.value.goalBusy) return
+        _state.update { it.copy(goalBusy = true, goalError = null) }
+        scope.launch {
+            try {
+                client.callObject(
+                    "goal.create",
+                    JSONObject().put("sessionId", sessionId).put("objective", clean),
+                    30_000
+                )
+                eventMutex.withLock { addNotice("长期目标已创建", isError = false) }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                val failure = readableError(t)
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(goalBusy = false, goalError = failure)
+                }
+                eventMutex.withLock { addNotice("创建目标失败：$failure", isError = true) }
+                return@launch
+            }
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else current.copy(goalBusy = false)
+            }
+            loadGoal()
+        }
     }
 
     fun pauseGoal() = mutateGoal("goal.pause")
@@ -1574,6 +1605,88 @@ object AgentEngine {
                     schedulesLoaded = true,
                     schedulesError = null
                 )
+            }
+        }
+    }
+
+    /**
+     * Creates a reminder with dsh's `schedule/create`, delivering into the open Session.
+     * The form used to hand the request to the model because 0.2.1 exposed no create RPC.
+     */
+    fun createSchedule(title: String, prompt: String, change: JSONObject?) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        if (state.scheduleBusy) return
+        val cleanTitle = title.trim()
+        val cleanPrompt = prompt.trim()
+        if (cleanTitle.isEmpty() || cleanPrompt.isEmpty() || change == null) {
+            scope.launch {
+                eventMutex.withLock { addNotice("请填写标题、内容和频率", isError = true) }
+            }
+            return
+        }
+        _state.update { it.copy(scheduleBusy = true) }
+        scope.launch {
+            val result = try {
+                client.callObject(
+                    "schedule.create",
+                    JSONObject()
+                        .put("sessionId", sessionId)
+                        .put("title", cleanTitle)
+                        .put("prompt", cleanPrompt)
+                        .put("change", change),
+                    60_000
+                )
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(scheduleBusy = false)
+                }
+                eventMutex.withLock {
+                    addNotice("创建定时任务失败：${readableError(t)}", isError = true)
+                }
+                return@launch
+            }
+            val recordJson = result.optJSONObject("record")
+            val record = parseSchedule(
+                recordJson,
+                sessionId,
+                recordJson?.optString("status").orEmpty()
+            )
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else current.copy(
+                    schedules = if (record == null) current.schedules
+                    else current.schedules + record,
+                    scheduleBusy = false,
+                    schedulesError = null
+                )
+            }
+            eventMutex.withLock { addNotice("定时任务已创建", isError = false) }
+            loadSchedules(sessionId)
+        }
+    }
+
+    /** Runs one reminder now without changing its rule. */
+    fun runSchedule(id: String) {
+        val client = bridge ?: return
+        if (_state.value.scheduleBusy) return
+        _state.update { it.copy(scheduleBusy = true) }
+        scope.launch {
+            try {
+                client.callObject("schedule.run", JSONObject().put("id", id), 30_000)
+                eventMutex.withLock { addNotice("已触发一次运行", isError = false) }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                eventMutex.withLock {
+                    addNotice("触发定时任务失败：${readableError(t)}", isError = true)
+                }
+            } finally {
+                _state.update { it.copy(scheduleBusy = false) }
             }
         }
     }
@@ -2019,6 +2132,64 @@ object AgentEngine {
                     )
                 )
             }
+        }
+    }
+
+    /**
+     * Searches the whole workspace through dsh's `workspaceFiles/search` (0.2.2-rc.2).
+     * An older Host answers with 404/unknown-method; the panel then says the feature
+     * needs a newer dsh instead of pretending the workspace is empty.
+     */
+    fun searchWorkspace(query: String) {
+        val clean = query.trim()
+        if (clean.isEmpty()) {
+            clearWorkspaceSearch()
+            return
+        }
+        val client = bridge ?: return
+        val sessionId = _state.value.activeSessionId ?: return
+        _state.update {
+            it.copy(workspaceSearch = AgentWorkspaceSearch(query = clean, loading = true))
+        }
+        scope.launch {
+            val search = try {
+                val value = client.callObject(
+                    "workspace.search",
+                    JSONObject().put("sessionId", sessionId).put("query", clean),
+                    60_000
+                )
+                val matches = mutableListOf<AgentWorkspaceMatch>()
+                value.optJSONArray("matches")?.let { array ->
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        val path = item.optString("path")
+                        if (path.isBlank()) continue
+                        matches += AgentWorkspaceMatch(
+                            path = path,
+                            type = item.optString("type").ifBlank { "file" }
+                        )
+                    }
+                }
+                AgentWorkspaceSearch(
+                    query = clean,
+                    matches = matches,
+                    truncated = value.optBoolean("truncated"),
+                    incomplete = value.optBoolean("incomplete")
+                )
+            } catch (t: Throwable) {
+                AgentWorkspaceSearch(query = clean, error = readableError(t))
+            }
+            _state.update { current ->
+                if (current.activeSessionId != sessionId) current
+                else current.copy(workspaceSearch = search)
+            }
+        }
+    }
+
+    fun clearWorkspaceSearch() {
+        _state.update {
+            if (!it.workspaceSearch.active) it
+            else it.copy(workspaceSearch = AgentWorkspaceSearch())
         }
     }
 
@@ -2643,7 +2814,8 @@ object AgentEngine {
                         seq = seq ?: item.seq,
                         viewJson = event.optJSONObject("view")?.toString() ?: item.viewJson,
                         metaJson = event.optJSONObject("meta")?.toString() ?: item.metaJson,
-                        finishedAt = timeOf(event) ?: item.finishedAt
+                        finishedAt = timeOf(event) ?: item.finishedAt,
+                        images = parseImages(event.optJSONArray("images")).ifEmpty { item.images }
                     )
                 } else {
                     items += ToolItem(
@@ -2656,7 +2828,8 @@ object AgentEngine {
                         seq = seq,
                         viewJson = event.optJSONObject("view")?.toString(),
                         metaJson = event.optJSONObject("meta")?.toString(),
-                        finishedAt = timeOf(event)
+                        finishedAt = timeOf(event),
+                        images = parseImages(event.optJSONArray("images"))
                     )
                 }
             }
@@ -4177,6 +4350,130 @@ object AgentEngine {
         scope.launch { loadAgentSettingsNow(client) }
     }
 
+    /**
+     * Reads dsh 0.2.2's `mcp` settings namespace. The namespace is absent on older Hosts,
+     * so the card simply disappears instead of showing an empty editor.
+     */
+    fun refreshMcp() {
+        val client = bridge ?: return
+        if (_state.value.connection != AgentConnection.Ready) return
+        if (_state.value.mcp.loading) return
+        _state.update { it.copy(mcp = it.mcp.copy(loading = true, error = null)) }
+        scope.launch {
+            val describe = try {
+                client.callObject("settings.describe", timeoutMs = 25_000)
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(mcp = it.mcp.copy(loading = false, error = readableError(t)))
+                }
+                return@launch
+            }
+            val namespaces = describe.optJSONArray("namespaces") ?: JSONArray()
+            var namespace: JSONObject? = null
+            for (index in 0 until namespaces.length()) {
+                val item = namespaces.optJSONObject(index) ?: continue
+                if (item.optString("ns") == "mcp") {
+                    namespace = item
+                    break
+                }
+            }
+            if (namespace == null) {
+                _state.update { it.copy(mcp = AgentMcpSettings(available = false)) }
+                return@launch
+            }
+            val value = namespace.optJSONObject("value") ?: JSONObject()
+            val serversJson = value.optJSONObject("servers") ?: JSONObject()
+            val servers = mutableListOf<AgentMcpServer>()
+            val keys = serversJson.keys()
+            while (keys.hasNext()) {
+                val name = keys.next()
+                val item = serversJson.optJSONObject(name) ?: continue
+                servers += AgentMcpServer(
+                    name = name,
+                    transport = item.optString("transport").ifBlank { "stdio" },
+                    command = item.optString("command"),
+                    args = item.optJSONArray("args").stringList(),
+                    url = item.optString("url"),
+                    enabled = item.optBoolean("enabled", true)
+                )
+            }
+            _state.update {
+                it.copy(
+                    mcp = AgentMcpSettings(
+                        available = true,
+                        loading = false,
+                        revision = namespace.optLong("revision"),
+                        servers = servers.sortedBy { server -> server.name }
+                    )
+                )
+            }
+        }
+    }
+
+    /** Adds or replaces one MCP server in the `mcp` settings namespace. */
+    fun saveMcpServer(server: AgentMcpServer) {
+        val client = bridge ?: return
+        val name = server.name.trim()
+        if (name.isEmpty()) {
+            notifyState("请输入服务器名称")
+            return
+        }
+        val current = _state.value.mcp
+        scope.launch {
+            val config = JSONObject()
+                .put("transport", server.transport)
+                .put("enabled", server.enabled)
+                .put("args", JSONArray(server.args))
+                .put("env", JSONObject())
+                .put("headers", JSONObject())
+                .put("cwd", "")
+            if (server.transport == "stdio") {
+                config.put("command", server.command.trim())
+                config.put("url", "")
+            } else {
+                config.put("command", "")
+                config.put("url", server.url.trim())
+            }
+            val op = JSONObject()
+                .put("op", "set")
+                .put("path", JSONArray().put("servers").put(name))
+                .put("value", config)
+            val params = JSONObject()
+                .put("ns", "mcp")
+                .put("ops", JSONArray().put(op))
+            if (current.revision > 0) params.put("expectedRevision", current.revision)
+            try {
+                client.callObject("settings.mutate", params, 30_000)
+                notifyState("MCP 服务器已保存")
+            } catch (t: Throwable) {
+                notifyState("保存 MCP 服务器失败：${readableError(t)}")
+            }
+            refreshMcp()
+        }
+    }
+
+    /** Removes one MCP server from the `mcp` settings namespace. */
+    fun removeMcpServer(name: String) {
+        val client = bridge ?: return
+        val current = _state.value.mcp
+        scope.launch {
+            val op = JSONObject()
+                .put("op", "unset")
+                .put("path", JSONArray().put("servers").put(name))
+            val params = JSONObject()
+                .put("ns", "mcp")
+                .put("ops", JSONArray().put(op))
+            if (current.revision > 0) params.put("expectedRevision", current.revision)
+            try {
+                client.callObject("settings.mutate", params, 30_000)
+                notifyState("MCP 服务器已移除")
+            } catch (t: Throwable) {
+                notifyState("移除 MCP 服务器失败：${readableError(t)}")
+            }
+            refreshMcp()
+        }
+    }
+
     private suspend fun loadAgentSettingsNow(client: BridgeClient) {
         _state.update {
             it.copy(
@@ -4364,6 +4661,7 @@ object AgentEngine {
             var profileFailed = false
             var wallets = emptyList<AgentAccountWallet>()
             var bonusWallets = emptyList<AgentAccountWallet>()
+            var notifications = emptyList<AgentAccountNotification>()
             var balanceFailed = false
             if (stored) {
                 try {
@@ -4397,6 +4695,13 @@ object AgentEngine {
                     balanceFailed = true
                     appendLog("读取账号余额失败：${readableError(t)}")
                 }
+                try {
+                    val result = client.callObject("account.notifications", accountClient(), 30_000)
+                    notifications = parseAccountNotifications(result.optJSONArray("notifications"))
+                } catch (t: Throwable) {
+                    // Older Hosts have no notification route; that is not an account error.
+                    appendLog("读取账号通知失败：${readableError(t)}")
+                }
             }
             _state.update {
                 it.copy(
@@ -4413,11 +4718,54 @@ object AgentEngine {
                         profileFailed = profileFailed,
                         wallets = wallets,
                         bonusWallets = bonusWallets,
-                        balanceFailed = balanceFailed
+                        balanceFailed = balanceFailed,
+                        notifications = notifications
                     )
                 )
             }
         }
+    }
+
+    /** Reports one account notice as dismissed and removes it from the card. */
+    fun dismissAccountNotification(id: String) {
+        val client = bridge ?: return
+        scope.launch {
+            runCatching {
+                client.callObject(
+                    "account.notificationEvent",
+                    JSONObject().put("id", id).put("event", "dismissed"),
+                    20_000
+                )
+            }
+            _state.update { current ->
+                current.copy(
+                    account = current.account.copy(
+                        notifications = current.account.notifications.filterNot { it.id == id }
+                    )
+                )
+            }
+        }
+    }
+
+    private fun parseAccountNotifications(array: JSONArray?): List<AgentAccountNotification> {
+        if (array == null) return emptyList()
+        val result = mutableListOf<AgentAccountNotification>()
+        for (index in 0 until array.length()) {
+            val item = array.optJSONObject(index) ?: continue
+            val id = item.optString("id")
+            if (id.isBlank()) continue
+            val action = item.optJSONArray("actions")?.optJSONObject(0)
+            val target = action?.optJSONObject("target")
+            result += AgentAccountNotification(
+                id = id,
+                title = item.optString("title"),
+                body = item.optString("body"),
+                actionTarget = target?.optString("type").orEmpty(),
+                actionLabel = action?.optString("label").orEmpty(),
+                createdAt = item.optString("createdAt").takeIf { it.isNotBlank() }
+            )
+        }
+        return result
     }
 
     /** Removes dsh's local account grant; remote revocation continues in the background. */
@@ -5511,7 +5859,17 @@ object AgentEngine {
                     "session.attachment",
                     JSONObject()
                         .put("sessionId", sessionId)
-                        .put("attachmentId", image.attachmentId),
+                        // dsh authorizes the exact reference it logged, not a bare id.
+                        .put(
+                            "attachment",
+                            JSONObject()
+                                .put("attachmentId", image.attachmentId)
+                                .put("mediaType", image.mediaType)
+                                .put("bytes", image.bytes)
+                                .put("width", image.width)
+                                .put("height", image.height)
+                                .apply { image.name?.let { put("name", it) } }
+                        ),
                     30_000
                 )
                 val data = result.optString("data")
@@ -6257,6 +6615,94 @@ object AgentEngine {
         return update
     }
 
+    /** Loads the published version list for one plugin, keeping failures on the entry. */
+    fun loadPluginVersions(name: String) {
+        val client = bridge ?: return
+        if (name.isBlank()) return
+        val previous = _state.value.pluginVersions[name]
+        if (previous?.loading == true) return
+        _state.update {
+            it.copy(
+                pluginVersions = it.pluginVersions + (name to
+                    (previous ?: AgentPluginVersions(name = name)).copy(loading = true))
+            )
+        }
+        scope.launch {
+            val entry = try {
+                val value = client.callObject(
+                    "plugin.versions",
+                    JSONObject().put("name", name),
+                    60_000
+                )
+                val versions = mutableListOf<AgentPluginVersion>()
+                value.optJSONArray("versions")?.let { array ->
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        val version = item.optString("version")
+                        if (version.isBlank()) continue
+                        versions += AgentPluginVersion(
+                            version = version,
+                            publishedAt = item.optString("publishedAt")
+                                .takeIf { it.isNotBlank() },
+                            tags = item.optJSONArray("tags").stringList(),
+                            prerelease = item.optBoolean("prerelease"),
+                            deprecated = item.optString("deprecated")
+                                .takeIf { it.isNotBlank() },
+                            incompatible = item.optBoolean("incompatible")
+                        )
+                    }
+                }
+                AgentPluginVersions(
+                    name = name,
+                    status = value.optString("status"),
+                    installed = value.optString("installed").takeIf { it.isNotBlank() },
+                    versions = versions,
+                    problem = value.optString("problem").takeIf { it.isNotBlank() },
+                    reason = value.optString("reason").takeIf { it.isNotBlank() }
+                )
+            } catch (t: Throwable) {
+                AgentPluginVersions(
+                    name = name,
+                    status = "refused",
+                    problem = "network",
+                    reason = readableError(t)
+                )
+            }
+            _state.update { it.copy(pluginVersions = it.pluginVersions + (name to entry)) }
+        }
+    }
+
+    /** Loads the bundle README dsh serves for one plugin. */
+    fun loadPluginDetail(name: String) {
+        val client = bridge ?: return
+        if (name.isBlank()) return
+        val previous = _state.value.pluginDetails[name]
+        if (previous?.loading == true) return
+        _state.update {
+            it.copy(
+                pluginDetails = it.pluginDetails + (name to
+                    (previous ?: AgentPluginDetail()).copy(loading = true))
+            )
+        }
+        scope.launch {
+            val entry = try {
+                val value = client.callObject(
+                    "plugin.detail",
+                    JSONObject().put("name", name).put("language", "zh"),
+                    60_000
+                )
+                AgentPluginDetail(
+                    markdown = value.optString("markdown"),
+                    status = value.optString("status"),
+                    path = value.optString("path").takeIf { it.isNotBlank() }
+                )
+            } catch (t: Throwable) {
+                AgentPluginDetail(status = "none", path = readableError(t))
+            }
+            _state.update { it.copy(pluginDetails = it.pluginDetails + (name to entry)) }
+        }
+    }
+
     /**
      * Resolves the live dsh web application URL, launch token included. The token is
      * ephemeral and only useful on this device's loopback, so it is never logged.
@@ -6510,6 +6956,128 @@ object AgentEngine {
     }
 
     /**
+     * Retries the failed turn dsh flagged in `conversationContinuation`. The wire call is
+     * an ordinary prompt with empty content; dsh records it as a retry source, so the
+     * transcript does not gain an empty user bubble.
+     */
+    fun continueConversation() {
+        val client = bridge ?: return
+        val sessionId = _state.value.activeSessionId ?: return
+        if (_state.value.running || _state.value.continuation == null) return
+        scope.launch {
+            try {
+                client.callObject(
+                    "session.continue",
+                    JSONObject().put("sessionId", sessionId),
+                    30_000
+                )
+                _state.update {
+                    if (it.activeSessionId == sessionId) it.copy(continuation = null) else it
+                }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                eventMutex.withLock {
+                    addNotice("继续失败：${readableError(t)}", isError = true)
+                }
+            }
+        }
+    }
+
+    /** Turns teamwork on or off for the open Session (dsh 0.2.2). */
+    fun setAgentTeamEnabled(enabled: Boolean) {
+        val client = bridge ?: return
+        val sessionId = _state.value.activeSessionId ?: return
+        scope.launch {
+            try {
+                client.callObject(
+                    "agentTeam.setEnabled",
+                    JSONObject().put("sessionId", sessionId).put("enabled", enabled),
+                    30_000
+                )
+                _state.update { current ->
+                    if (current.activeSessionId != sessionId) current
+                    else current.copy(
+                        agentTeam = current.agentTeam?.copy(enabled = enabled)
+                            ?: AgentTeam(enabled = enabled)
+                    )
+                }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                eventMutex.withLock {
+                    addNotice(
+                        "切换团队协作失败：${readableError(t)}",
+                        isError = true
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Applies one user action to a proposed card. dsh validates the card, its kind and the
+     * Session's write access; `accepted` means the background work started and the
+     * projection reports progress as it happens.
+     */
+    fun actOnActionCard(callId: String, verb: String) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        if (state.actionCardBusy != null) return
+        val card = state.actionCards.firstOrNull { it.callId == callId } ?: return
+        val payload = JSONObject()
+            .put("sessionId", sessionId)
+            .put("callId", callId)
+            .put("verb", verb)
+        if (verb == "create" && card.action == CREATION_CARD_ACTION) {
+            // The creation kind wants an explicit placement; the proposal carries its
+            // recommendation, which the user may accept by pressing Create.
+            payload.put("payload", JSONObject().put("slot", card.slot ?: "page"))
+        }
+        _state.update { it.copy(actionCardBusy = callId) }
+        scope.launch {
+            try {
+                val result = client.callObject("actionCards.act", payload, 60_000)
+                val status = result.optString("status")
+                val reason = result.optString("reason")
+                val notice = when (status) {
+                    "refused" -> reason.ifBlank { "卡片操作未被接受" }
+                    "unconfirmed" -> reason.ifBlank { "操作结果未确认，请刷新后重试" }
+                    else -> null
+                }
+                if (notice != null) {
+                    eventMutex.withLock { addNotice("操作卡片失败：$notice", isError = true) }
+                }
+                // The decision normally arrives on the control stream; a one-shot read
+                // makes a settled receipt visible even if that stream is quiet.
+                runCatching {
+                    val value = client.callObject(
+                        "session.projections",
+                        JSONObject().put("sessionId", sessionId),
+                        20_000
+                    )
+                    eventMutex.withLock {
+                        if (_state.value.activeSessionId == sessionId) {
+                            applyProjectionsLocked(sessionId, value)
+                        }
+                    }
+                }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                eventMutex.withLock {
+                    addNotice("操作卡片失败：${readableError(t)}", isError = true)
+                }
+            } finally {
+                _state.update {
+                    if (it.actionCardBusy == callId) it.copy(actionCardBusy = null) else it
+                }
+            }
+        }
+    }
+
+    /**
      * Re-reads every projection for the active session. The stats panel calls this after
      * a reconnect or when the reader wants to confirm the live numbers.
      */
@@ -6625,6 +7193,16 @@ object AgentEngine {
             }
             "agentTeam" -> if (active) {
                 state.copy(agentTeam = parseAgentTeam(value))
+            } else {
+                state
+            }
+            "actionCards" -> if (active) {
+                state.copy(actionCards = SessionProjections.actionCards(value))
+            } else {
+                state
+            }
+            "conversationContinuation" -> if (active) {
+                state.copy(continuation = SessionProjections.continuation(value))
             } else {
                 state
             }
