@@ -484,6 +484,7 @@ private fun TextSettingField(
         textStyle = TextStyle(
             color = if (enabled) TextPrimary else TextMuted,
             fontSize = 12.5.sp,
+            lineHeight = 12.5.sp,
             fontFamily = FontFamily.Monospace
         ),
         cursorBrush = SolidColor(Accent),
@@ -540,6 +541,7 @@ private fun SecretField(
         textStyle = TextStyle(
             color = if (enabled) TextPrimary else TextMuted,
             fontSize = 12.5.sp,
+            lineHeight = 12.5.sp,
             fontFamily = FontFamily.Monospace
         ),
         cursorBrush = SolidColor(Accent),

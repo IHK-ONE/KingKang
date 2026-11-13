@@ -146,7 +146,6 @@ fun SettingsScreen(
     val context = LocalContext.current
     val credentialsAnchor = remember { BringIntoViewRequester() }
     val appearanceAnchor = remember { BringIntoViewRequester() }
-    val languageAnchor = remember { BringIntoViewRequester() }
     val accountAnchor = remember { BringIntoViewRequester() }
     val connectionAnchor = remember { BringIntoViewRequester() }
     val presetAnchor = remember { BringIntoViewRequester() }
@@ -175,9 +174,6 @@ fun SettingsScreen(
     val searchEntries = listOf(
         SettingsSearchEntry("外观与主题", "跟随系统、浅色、深色", "theme dark light 主题 暗色") {
             jumpTo(appearanceAnchor)
-        },
-        SettingsSearchEntry("Harness 语言", "中文、English、跟随 dsh", "locale language 语言 英文") {
-            jumpTo(languageAnchor)
         },
         SettingsSearchEntry("DeepSeek 账号", "登录状态、资料与余额", "account 账号 余额 登录 退出") {
             jumpTo(accountAnchor)
@@ -311,16 +307,6 @@ fun SettingsScreen(
                 themeMode = themeMode,
                 onSelect = vm::setThemeMode
             )
-
-            Spacer(Modifier.height(14.dp))
-            Box(Modifier.bringIntoViewRequester(languageAnchor)) {
-                HarnessLanguageCard(
-                    agent = agent,
-                    settings = agent.languageSettings,
-                    onSelect = vm::setHarnessLocale,
-                    onOpenHarness = onOpenHarness
-                )
-            }
 
             Spacer(Modifier.height(24.dp))
             Box(Modifier.bringIntoViewRequester(environmentAnchor)) {
@@ -650,7 +636,8 @@ private fun SettingsSearchDialog(
                 singleLine = true,
                 textStyle = TextStyle(
                     color = TextPrimary,
-                    fontSize = 13.sp
+                    fontSize = 13.sp,
+                    lineHeight = 13.sp,
                 ),
                 cursorBrush = SolidColor(Accent),
                 modifier = Modifier.fillMaxWidth()
@@ -731,77 +718,6 @@ private fun AppearanceCard(
             ),
             selected = themeMode
         ) { onSelect(it) }
-    }
-}
-
-@Composable
-private fun HarnessLanguageCard(
-    agent: AgentState,
-    settings: AgentLanguageSettings,
-    onSelect: (String?) -> Unit,
-    onOpenHarness: () -> Unit
-) {
-    val ready = agent.connection == AgentConnection.Ready
-    SettingsCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "Harness 语言",
-                color = TextPrimary,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Medium
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                when {
-                    !ready -> "等待连接"
-                    settings.saving -> "保存中…"
-                    !settings.loaded -> "读取中"
-                    settings.value == null -> "跟随 dsh"
-                    settings.value == "zh" -> "中文"
-                    settings.value == "en" -> "English"
-                    else -> settings.value ?: "—"
-                },
-                color = if (ready && settings.loaded) Success else TextMuted,
-                fontSize = 11.sp
-            )
-        }
-        Spacer(Modifier.height(2.dp))
-        Text(
-            "只影响 Harness 页面。App 的原生界面目前仅提供中文。",
-            color = TextMuted,
-            fontSize = 10.5.sp,
-            lineHeight = 15.sp
-        )
-        Spacer(Modifier.height(10.dp))
-        ChoiceSegmented(
-            options = listOf(
-                "" to "跟随 dsh",
-                "zh" to "中文",
-                "en" to "English"
-            ),
-            selected = settings.value ?: ""
-        ) { value ->
-            if (ready && settings.writable && !settings.saving) {
-                onSelect(value.ifBlank { null })
-            }
-        }
-        if (ready && settings.loaded && !settings.writable) {
-            Spacer(Modifier.height(6.dp))
-            Text("当前 dsh 配置不可写", color = Amber, fontSize = 9.5.sp)
-        }
-        if (settings.error != null) {
-            Spacer(Modifier.height(6.dp))
-            Text(settings.error, color = Red, fontSize = 10.sp)
-        }
-        if (!ready) {
-            Spacer(Modifier.height(6.dp))
-            TextButton(
-                onClick = onOpenHarness,
-                contentPadding = PaddingValues(0.dp)
-            ) {
-                Text("打开 Harness", color = Accent, fontSize = 11.sp)
-            }
-        }
     }
 }
 
@@ -1057,6 +973,7 @@ private fun McpField(
             textStyle = TextStyle(
                 color = if (enabledField) TextPrimary else TextMuted,
                 fontSize = 12.sp,
+                lineHeight = 12.sp,
                 fontFamily = FontFamily.Monospace
             ),
             cursorBrush = SolidColor(Accent),
@@ -2367,7 +2284,8 @@ private fun NpmSourceDialog(
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = MaterialTheme.typography.bodySmall.copy(
                             color = TextPrimary,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            lineHeight = 12.sp,
                         ),
                         cursorBrush = SolidColor(Accent),
                         singleLine = true,
@@ -2718,7 +2636,8 @@ private fun AgentCredentialsCard(
                     modifier = Modifier.weight(1f),
                     textStyle = MaterialTheme.typography.bodySmall.copy(
                         color = TextPrimary,
-                        fontSize = 12.sp
+                        fontSize = 12.sp,
+                        lineHeight = 12.sp,
                     ),
                     cursorBrush = SolidColor(Accent),
                     singleLine = true,

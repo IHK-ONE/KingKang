@@ -318,7 +318,8 @@ fun PluginsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             textStyle = MaterialTheme.typography.bodySmall.copy(
                                 color = TextPrimary,
-                                fontSize = 11.5.sp
+                                fontSize = 11.5.sp,
+                                lineHeight = 11.5.sp,
                             ),
                             cursorBrush = SolidColor(Accent),
                             singleLine = true,
@@ -1141,7 +1142,8 @@ private fun InstallPluginDialog(
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = MaterialTheme.typography.bodySmall.copy(
                             color = TextPrimary,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            lineHeight = 12.sp,
                         ),
                         cursorBrush = SolidColor(Accent),
                         singleLine = true,

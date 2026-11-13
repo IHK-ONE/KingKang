@@ -1988,7 +1988,8 @@ private fun GoalEditDialog(
                 .padding(horizontal = 12.dp, vertical = 9.dp),
             textStyle = MaterialTheme.typography.bodyMedium.copy(
                 color = TextPrimary,
-                fontSize = 13.sp
+                fontSize = 13.sp,
+                lineHeight = 13.sp,
             ),
             cursorBrush = SolidColor(Accent),
             singleLine = true,
@@ -3740,7 +3741,8 @@ private fun TrajectoryFilterBar(
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = TextPrimary,
-                    fontSize = 12.5.sp
+                    fontSize = 12.5.sp,
+                    lineHeight = 12.5.sp,
                 ),
                 cursorBrush = SolidColor(Accent),
                 decorationBox = { inner ->
@@ -4766,14 +4768,6 @@ private fun EmptyState(
         SuggestionRow("列出 /root 下的文件并说明用途") { onSend(it) }
         Spacer(Modifier.height(8.dp))
         SuggestionRow("帮我在 Kali 里验证一个本地实验") { onSend(it) }
-
-        Spacer(Modifier.height(22.dp))
-        Text(
-            "第一次使用？打开左上角菜单里的「使用指南」，三步就能开始。",
-            color = TextMuted,
-            fontSize = 11.sp,
-            lineHeight = 16.sp
-        )
     }
     }
 }

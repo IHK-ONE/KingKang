@@ -31,7 +31,6 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
@@ -201,10 +200,6 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                         onOpenPlugins = {
                             navigate(AppScreen.Plugins)
                             scope.launch { drawerState.close() }
-                        },
-                        onOpenGuide = {
-                            scope.launch { drawerState.close() }
-                            showGuide = true
                         },
                         onOpenSettings = {
                             settingsFocus = null
@@ -438,7 +433,6 @@ private fun KingKangDrawer(
     onOpenFiles: () -> Unit,
     onOpenHarness: () -> Unit,
     onOpenPlugins: () -> Unit,
-    onOpenGuide: () -> Unit,
     onOpenSettings: () -> Unit,
     onSessionLongPress: (AgentSession, Boolean) -> Unit,
     onWorkspaceLongPress: (AgentWorkspace) -> Unit
@@ -806,18 +800,6 @@ private fun KingKangDrawer(
                 onClick = onOpenPlugins
             )
             DrawerAction(
-                title = "使用指南",
-                icon = { tint ->
-                    Icon(
-                        Icons.Filled.Info,
-                        contentDescription = null,
-                        tint = tint,
-                        modifier = Modifier.size(20.dp)
-                    )
-                },
-                onClick = onOpenGuide
-            )
-            DrawerAction(
                 title = "设置",
                 icon = { tint ->
                     Icon(
@@ -860,7 +842,8 @@ private fun KingKangDrawer(
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(
                             color = TextPrimary,
-                            fontSize = 13.5.sp
+                            fontSize = 13.5.sp,
+                            lineHeight = 13.5.sp,
                         ),
                         cursorBrush = SolidColor(Accent),
                         singleLine = true
@@ -946,7 +929,8 @@ private fun DrawerSearchField(value: String, onValueChange: (String) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(
                     color = TextPrimary,
-                    fontSize = 12.5.sp
+                    fontSize = 12.5.sp,
+                    lineHeight = 12.5.sp,
                 ),
                 cursorBrush = SolidColor(Accent),
                 singleLine = true
@@ -1128,7 +1112,8 @@ private fun WorkspaceActionsSheet(
                         .padding(horizontal = 12.dp, vertical = 11.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = TextPrimary,
-                        fontSize = 14.sp
+                        fontSize = 14.sp,
+                        lineHeight = 14.sp,
                     ),
                     cursorBrush = SolidColor(Accent),
                     singleLine = true
@@ -1232,7 +1217,8 @@ private fun SessionActionsSheet(
                         .padding(horizontal = 12.dp, vertical = 11.dp),
                     textStyle = MaterialTheme.typography.bodyMedium.copy(
                         color = TextPrimary,
-                        fontSize = 14.sp
+                        fontSize = 14.sp,
+                        lineHeight = 14.sp,
                     ),
                     cursorBrush = SolidColor(Accent),
                     singleLine = true

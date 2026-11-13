@@ -459,7 +459,8 @@ private fun FilesSearchField(
                 value = value,
                 onValueChange = onValueChange,
                 modifier = Modifier.fillMaxWidth(),
-                textStyle = TextStyle(color = TextPrimary, fontSize = 12.5.sp),
+                textStyle = TextStyle(color = TextPrimary, fontSize = 12.5.sp,
+                lineHeight = 12.5.sp,),
                 cursorBrush = SolidColor(Accent),
                 singleLine = true
             )

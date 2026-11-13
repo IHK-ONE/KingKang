@@ -964,6 +964,7 @@ private fun ProviderField(
                 textStyle = MaterialTheme.typography.bodySmall.copy(
                     color = if (enabled) TextPrimary else TextMuted,
                     fontSize = 12.5.sp,
+                    lineHeight = 12.5.sp,
                     fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default
                 ),
                 cursorBrush = SolidColor(Accent),
