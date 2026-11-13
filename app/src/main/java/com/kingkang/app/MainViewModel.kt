@@ -645,6 +645,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         cancelHarnessWork()
+        // Remember the version the check proposed before clearing updateAvailable; the
+        // script installs exactly that version instead of resolving `latest` again.
+        val targetVersion = if (update) {
+            _harness.value.latestVersion?.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
         harnessJob = viewModelScope.launch {
             _harness.update {
                 it.copy(
@@ -680,7 +687,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         },
                         resetCancel = false,
-                        extraEnv = harnessNpmEnv()
+                        extraEnv = harnessNpmEnv() + buildMap {
+                            if (update) put("KINGKANG_DSH_UPDATE", "1")
+                            targetVersion?.let { put("KINGKANG_DSH_VERSION", it) }
+                        }
                     )
                 }
                 applyHarnessOutput(output)
@@ -693,7 +703,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     // instead of leaving the user to reconnect by hand.
                     _harness.update { it.copy(step = "正在重新连接 Agent…", progress = null) }
                     AgentEngine.restart()
-                    _harness.update { it.copy(step = "安装完成", progress = null) }
+                    _harness.update { it.copy(step = if (update) "更新完成" else "安装完成", progress = null) }
                 }
             } catch (c: CancellationException) {
                 _harness.update { it.copy(busy = false, step = null, progress = null, error = null) }

@@ -481,9 +481,9 @@ data class AgentGoal(
  * One reminder from dsh's schedule catalog. dsh has no create RPC: the agent's
  * `schedule_create` tool is the only writer, so this app reads, edits and deletes.
  *
- * [status] is `active` until a one-shot fires or a recurrence has no next occurrence;
- * `inactive` therefore means ended, not paused. [raw] is the catalog record as dsh sent
- * it, kept so an edit can name the exact revision it expects.
+ * dsh 0.2.2 reports `active`, `paused` or `ended` (`inactive` in older catalogs) — only an
+ * active task still has a timer obligation. [raw] is the catalog record as dsh sent it,
+ * kept so an edit can name the exact revision it expects.
  */
 data class AgentSchedule(
     val id: String,
@@ -494,7 +494,7 @@ data class AgentSchedule(
     val prompt: String = "",
     /** Next occurrence, epoch milliseconds; null when dsh's stamp could not be parsed. */
     val scheduledAt: Long? = null,
-    /** active | inactive */
+    /** active | paused | ended（旧目录可能给 inactive） */
     val status: String = "active",
     val afterSeconds: Long? = null,
     val everySeconds: Long? = null,
@@ -508,7 +508,7 @@ data class AgentSchedule(
     val raw: String = ""
 ) {
     val active: Boolean
-        get() = status != "inactive"
+        get() = status == "active"
 }
 
 /** One saved inbox delivery of a reminder. */

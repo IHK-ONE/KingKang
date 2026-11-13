@@ -26,6 +26,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -957,19 +958,6 @@ private fun ConversationBody(
                 onClearFeedback = vm::clearMessageFeedback,
                 onOpenFile = onPreviewFile
             )
-            // A short fade into the composer hints that the transcript continues below
-            // without drawing a divider between two surfaces that should read as one.
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(26.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(Color.Transparent, Background)
-                        )
-                    )
-            )
         }
     }
 }
@@ -1149,6 +1137,7 @@ private fun TurnOutlineSheet(
     onJump: (TurnEntry) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val listState = rememberLazyListState()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = Surface,
@@ -1175,8 +1164,14 @@ private fun TurnOutlineSheet(
                 )
                 Text("${turns.size} 轮", color = TextMuted, fontSize = 10.5.sp)
             }
+            ScrollEdgeFade(
+                canScrollForward = listState.canScrollForward,
+                color = Surface,
+                modifier = Modifier.heightIn(max = 460.dp)
+            ) {
             LazyColumn(
-                Modifier.heightIn(max = 460.dp),
+                Modifier.fillMaxWidth(),
+                state = listState,
                 contentPadding = PaddingValues(bottom = 18.dp)
             ) {
                 items(turns, key = { it.number }) { turn ->
@@ -1247,6 +1242,7 @@ private fun TurnOutlineSheet(
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -1392,8 +1388,13 @@ private fun WorkbenchSheet(
                     )
                 }
             }
+            ScrollEdgeFade(
+                canScrollForward = listState.canScrollForward,
+                color = Surface,
+                modifier = Modifier.heightIn(max = 480.dp)
+            ) {
             LazyColumn(
-                Modifier.heightIn(max = 480.dp),
+                Modifier.fillMaxWidth(),
                 state = listState,
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
@@ -1639,6 +1640,7 @@ private fun WorkbenchSheet(
                     }
                 }
             }
+            }
             if (creatingGoal) {
                 GoalCreateDialog(
                     onDismiss = { creatingGoal = false },
@@ -1870,67 +1872,58 @@ private fun GoalCreateDialog(
 ) {
     var objective by rememberSaveable { mutableStateOf("") }
     val canCreate = objective.isNotBlank()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                "新建长期目标",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary
-            )
-        },
-        text = {
-            Column {
-                BasicTextField(
-                    value = objective,
-                    onValueChange = { if (it.length <= 4000) objective = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(SurfaceRaised)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        color = TextPrimary,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp
-                    ),
-                    cursorBrush = SolidColor(Accent),
-                    maxLines = 6,
-                    decorationBox = { inner ->
-                        if (objective.isEmpty()) {
-                            Text(
-                                "例如：完成本地服务的漏洞排查并给出修复建议",
-                                color = TextMuted,
-                                fontSize = 13.sp
-                            )
-                        }
-                        inner()
-                    }
-                )
-                Text(
-                    "创建后可在目标卡片里调整轮次上限或暂停。",
-                    modifier = Modifier.padding(top = 8.dp, start = 2.dp),
-                    color = TextMuted,
-                    fontSize = 10.5.sp
-                )
+    CompactDialog(onDismiss = onDismiss) {
+        CompactDialogHeader("新建长期目标", onDismiss)
+        Spacer(Modifier.height(8.dp))
+        BasicTextField(
+            value = objective,
+            onValueChange = { if (it.length <= 4000) objective = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(SurfaceRaised)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                color = TextPrimary,
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            ),
+            cursorBrush = SolidColor(Accent),
+            maxLines = 6,
+            decorationBox = { inner ->
+                if (objective.isEmpty()) {
+                    Text(
+                        "例如：完成本地服务的漏洞排查并给出修复建议",
+                        color = TextMuted,
+                        fontSize = 13.sp
+                    )
+                }
+                inner()
             }
-        },
-        confirmButton = {
+        )
+        Text(
+            "创建后可在目标卡片里调整轮次上限或暂停。",
+            modifier = Modifier.padding(top = 8.dp, start = 2.dp),
+            color = TextMuted,
+            fontSize = 10.5.sp
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextSecondary)
+            }
             TextButton(
                 onClick = { onCreate(objective.trim()) },
                 enabled = canCreate
             ) {
                 Text("创建", color = if (canCreate) Accent else TextMuted)
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
-            }
         }
-    )
+    }
 }
 
 /** Replaces the objective and/or the round cap; dsh increments the revision on save. */
@@ -1948,86 +1941,77 @@ private fun GoalEditDialog(
     val parsedRounds = rounds.trim().toIntOrNull()
     val roundsValid = rounds.isBlank() || (parsedRounds != null && parsedRounds >= 1)
     val canSave = objective.isNotBlank() && roundsValid && !busy
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                "编辑目标",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary
-            )
-        },
-        text = {
-            Column {
-                BasicTextField(
-                    value = objective,
-                    onValueChange = { if (it.length <= 4000) objective = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(SurfaceRaised)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        color = TextPrimary,
-                        fontSize = 14.sp,
-                        lineHeight = 20.sp
-                    ),
-                    cursorBrush = SolidColor(Accent),
-                    maxLines = 6
-                )
-                Spacer(Modifier.height(12.dp))
-                Text("最大轮次", color = TextMuted, fontSize = 10.5.sp)
-                BasicTextField(
-                    value = rounds,
-                    onValueChange = { value ->
-                        rounds = value.filter(Char::isDigit).take(4)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 5.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(SurfaceRaised)
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        color = TextPrimary,
-                        fontSize = 13.sp
-                    ),
-                    cursorBrush = SolidColor(Accent),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    decorationBox = { inner ->
-                        if (rounds.isEmpty()) {
-                            Text("留空则保持当前轮次上限", color = TextMuted, fontSize = 12.sp)
-                        }
-                        inner()
-                    }
-                )
-                if (!roundsValid) {
-                    Text(
-                        "轮次需为 1 以上的整数",
-                        modifier = Modifier.padding(top = 4.dp, start = 2.dp),
-                        color = Red,
-                        fontSize = 10.sp
-                    )
+    CompactDialog(onDismiss = onDismiss) {
+        CompactDialogHeader("编辑目标", onDismiss)
+        Spacer(Modifier.height(8.dp))
+        BasicTextField(
+            value = objective,
+            onValueChange = { if (it.length <= 4000) objective = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(SurfaceRaised)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                color = TextPrimary,
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            ),
+            cursorBrush = SolidColor(Accent),
+            maxLines = 6
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("最大轮次", color = TextMuted, fontSize = 10.5.sp)
+        BasicTextField(
+            value = rounds,
+            onValueChange = { value ->
+                rounds = value.filter(Char::isDigit).take(4)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 5.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceRaised)
+                .padding(horizontal = 12.dp, vertical = 9.dp),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                color = TextPrimary,
+                fontSize = 13.sp
+            ),
+            cursorBrush = SolidColor(Accent),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            decorationBox = { inner ->
+                if (rounds.isEmpty()) {
+                    Text("留空则保持当前轮次上限", color = TextMuted, fontSize = 12.sp)
                 }
+                inner()
             }
-        },
-        confirmButton = {
+        )
+        if (!roundsValid) {
+            Text(
+                "轮次需为 1 以上的整数",
+                modifier = Modifier.padding(top = 4.dp, start = 2.dp),
+                color = Red,
+                fontSize = 10.sp
+            )
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextSecondary)
+            }
             TextButton(
                 onClick = { onSave(objective.trim(), parsedRounds) },
                 enabled = canSave
             ) {
                 Text("保存", color = if (canSave) Accent else TextMuted)
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
-            }
         }
-    )
+    }
 }
 
 /** Clearing leaves a tombstone in dsh's log, but the card disappears; confirm first. */
@@ -2102,13 +2086,27 @@ private fun scheduleFrequency(schedule: AgentSchedule): String = when (schedule.
     "weekly" -> "每周 ${scheduleWeekdays(schedule.weekdays)} " +
         "${schedule.time ?: "—"}${scheduleZoneSuffix(schedule)}"
     "cron" -> "cron ${schedule.expression ?: "—"}${scheduleZoneSuffix(schedule)}"
+    "rrule" -> {
+        // dsh stores the whole RFC 5545 line; the rule after RRULE: is the readable part.
+        val raw = schedule.expression
+        val rule = if (raw == null) null else raw.substringAfter("RRULE:", raw)
+        "重复规则 · ${rule?.takeIf { it.isNotBlank() } ?: "自定义"}"
+    }
     else -> schedule.kind
+}
+
+/** The row label for a task that no longer runs; `null` while it is active. */
+private fun scheduleStateLabel(schedule: AgentSchedule): String? = when (schedule.status) {
+    "paused" -> "已暂停"
+    "ended", "inactive" -> "已结束"
+    else -> null
 }
 
 private fun scheduleRunMeta(schedule: AgentSchedule): String {
     if (!schedule.active) {
-        return schedule.lastDeliveredAt?.let { "已结束 · 上次投递 ${formatScheduledAt(it)}" }
-            ?: "已结束"
+        val label = scheduleStateLabel(schedule) ?: "已结束"
+        return schedule.lastDeliveredAt?.let { "$label · 上次投递 ${formatScheduledAt(it)}" }
+            ?: label
     }
     val next = schedule.scheduledAt
         ?: return schedule.lastDeliveredAt?.let { "上次投递 ${formatScheduledAt(it)}" } ?: ""
@@ -2140,7 +2138,11 @@ private fun ScheduleRow(schedule: AgentSchedule, onClick: () -> Unit) {
             )
             if (!schedule.active) {
                 Spacer(Modifier.width(6.dp))
-                Text("已结束", color = TextMuted, fontSize = 9.5.sp)
+                Text(
+                    scheduleStateLabel(schedule) ?: "已结束",
+                    color = TextMuted,
+                    fontSize = 9.5.sp
+                )
             }
         }
         Text(
@@ -3259,17 +3261,23 @@ private fun JobOutputDialog(
                                 fontSize = 11.5.sp
                             )
                         }
-                        else -> SelectionContainer {
-                            Text(
-                                text,
-                                modifier = Modifier
-                                    .verticalScroll(scroll)
-                                    .padding(12.dp),
-                                color = TextSecondary,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                lineHeight = 16.sp
-                            )
+                        else -> ScrollEdgeFade(
+                            canScrollForward = scroll.canScrollForward,
+                            color = Background,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            SelectionContainer {
+                                Text(
+                                    text,
+                                    modifier = Modifier
+                                        .verticalScroll(scroll)
+                                        .padding(12.dp),
+                                    color = TextSecondary,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    lineHeight = 16.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -3344,6 +3352,7 @@ private fun ChangesDiffDialog(
     onDismiss: () -> Unit
 ) {
     val hunks = diff?.hunks.orEmpty()
+    val diffListState = rememberLazyListState()
     val rows = remember(hunks) {
         buildList {
             hunks.forEach { hunk ->
@@ -3433,23 +3442,29 @@ private fun ChangesDiffDialog(
                         diff.kind == "binary" -> CenteredHint("二进制文件，无法显示逐行对比。")
                         diff.kind == "oversized" -> CenteredHint("文件改动过大，dsh 没有生成逐行对比。")
                         rows.isEmpty() -> CenteredHint("没有可显示的差异。")
-                        else -> LazyColumn(Modifier.fillMaxWidth()) {
-                            itemsIndexed(rows, key = { index, _ -> index }) { _, row ->
-                                Text(
-                                    row.text,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 10.dp, vertical = 1.dp),
-                                    color = when (row.kind) {
-                                        DiffRowKind.Added -> Success
-                                        DiffRowKind.Removed -> Red
-                                        DiffRowKind.Header -> TextMuted
-                                        DiffRowKind.Context -> TextSecondary
-                                    },
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 10.5.sp,
-                                    lineHeight = 15.sp
-                                )
+                        else -> ScrollEdgeFade(
+                            canScrollForward = diffListState.canScrollForward,
+                            color = Background,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            LazyColumn(Modifier.fillMaxWidth(), state = diffListState) {
+                                itemsIndexed(rows, key = { index, _ -> index }) { _, row ->
+                                    Text(
+                                        row.text,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 1.dp),
+                                        color = when (row.kind) {
+                                            DiffRowKind.Added -> Success
+                                            DiffRowKind.Removed -> Red
+                                            DiffRowKind.Header -> TextMuted
+                                            DiffRowKind.Context -> TextSecondary
+                                        },
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.5.sp,
+                                        lineHeight = 15.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -3537,6 +3552,7 @@ private fun TrajectoryPane(
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(TrajectoryFilter.All) }
+    val listState = rememberLazyListState()
     val allRows = remember(state.items) { trajectoryRows(state.items) }
     val needle = query.trim()
     val rows = remember(allRows, needle, filter) {
@@ -3618,8 +3634,14 @@ private fun TrajectoryPane(
             }
             return@Column
         }
+        ScrollEdgeFade(
+            canScrollForward = listState.canScrollForward,
+            color = Background,
+            modifier = Modifier.fillMaxWidth().weight(1f)
+        ) {
         LazyColumn(
-            modifier = Modifier.fillMaxWidth().weight(1f),
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 24.dp)
         ) {
             item(key = "trajectory:summary") {
@@ -3645,6 +3667,7 @@ private fun TrajectoryPane(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -4214,6 +4237,7 @@ private fun SubagentPanelDialog(
     onRefresh: () -> Unit,
     onOpen: (AgentSubagent) -> Unit
 ) {
+    val listState = rememberLazyListState()
     Dialog(onDismissRequest = onDismiss) {
         Column(
             Modifier
@@ -4271,12 +4295,19 @@ private fun SubagentPanelDialog(
                     lineHeight = 18.sp
                 )
             } else {
-                LazyColumn(
-                    Modifier.heightIn(max = 460.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ScrollEdgeFade(
+                    canScrollForward = listState.canScrollForward,
+                    color = Surface,
+                    modifier = Modifier.heightIn(max = 460.dp)
                 ) {
-                    items(subagents, key = { it.id }) { subagent ->
-                        SubagentRow(subagent) { onOpen(subagent) }
+                    LazyColumn(
+                        Modifier.fillMaxWidth(),
+                        state = listState,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(subagents, key = { it.id }) { subagent ->
+                            SubagentRow(subagent) { onOpen(subagent) }
+                        }
                     }
                 }
             }
@@ -5094,31 +5125,21 @@ private fun QueueActionsDialog(
     onSteer: () -> Unit,
     onRemove: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("排队消息", style = MaterialTheme.typography.titleMedium, color = TextPrimary) },
-        text = {
-            Column {
-                Text(
-                    item.displayText,
-                    color = TextSecondary,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp
-                )
-                Spacer(Modifier.height(14.dp))
-                QueueActionRow("编辑内容", TextSecondary, onEdit)
-                QueueActionRow("转为立即引导", Amber, onSteer)
-                QueueActionRow("移除", Red, onRemove)
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭", color = TextSecondary)
-            }
-        }
-    )
+    CompactDialog(onDismiss = onDismiss) {
+        CompactDialogHeader("排队消息", onDismiss)
+        Text(
+            item.displayText,
+            modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
+            color = TextSecondary,
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
+            maxLines = 4,
+            overflow = TextOverflow.Ellipsis
+        )
+        CompactMenuRow("编辑内容", TextSecondary, onEdit)
+        CompactMenuRow("转为立即引导", Amber, onSteer)
+        CompactMenuRow("移除", Red, onRemove)
+    }
 }
 
 @Composable
@@ -5132,6 +5153,66 @@ private fun QueueActionRow(label: String, color: Color, onClick: () -> Unit) {
             .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 4.dp, vertical = 10.dp)
+    )
+}
+
+/**
+ * A tightly packed dialog body for menus and small editors. Material's [AlertDialog]
+ * reserves a full title block, a text gap and an action bar, which on a phone turns a
+ * four-row menu into a tall sheet. These dialogs carry their own header and action row.
+ */
+@Composable
+private fun CompactDialog(
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(Surface)
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            content = content
+        )
+    }
+}
+
+/** The header shared by compact dialogs: a title on the left and a quiet × on the right. */
+@Composable
+private fun CompactDialogHeader(title: String, onDismiss: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            title,
+            modifier = Modifier.weight(1f),
+            color = TextPrimary,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            "×",
+            color = TextMuted,
+            fontSize = 17.sp,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable(onClick = onDismiss)
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+        )
+    }
+}
+
+/** A menu row with menu density: enough touch height, none of AlertDialog's extra air. */
+@Composable
+private fun CompactMenuRow(label: String, color: Color, onClick: () -> Unit) {
+    Text(
+        label,
+        color = color,
+        fontSize = 13.sp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 8.dp)
     )
 }
 
@@ -5218,42 +5299,77 @@ private fun MessageList(
     val branchable = remember(state.items, state.running) {
         branchableMessageKeys(state.items, state.running)
     }
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ScrollEdgeFade(
+        canScrollForward = listState.canScrollForward,
+        color = Background,
+        modifier = Modifier.fillMaxSize()
     ) {
-        if (state.hasMoreHistory) {
-            item(key = "older") {
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    TextButton(onClick = onLoadOlder) {
-                        Text("加载更早的消息", color = TextMuted, fontSize = 11.5.sp)
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            if (state.hasMoreHistory) {
+                item(key = "older") {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        TextButton(onClick = onLoadOlder) {
+                            Text("加载更早的消息", color = TextMuted, fontSize = 11.5.sp)
+                        }
                     }
                 }
             }
-        }
-        items(state.items, key = { it.key }) { item ->
-            when (item) {
-                is UserItem -> UserMessageRow(item, onCopy, ::imageData, onLoadImage, onOpenFile)
-                is AssistantItem -> AssistantMessageRow(
-                    message = item,
-                    onCopy = onCopy,
-                    imageData = ::imageData,
-                    onLoadImage = onLoadImage,
-                    feedback = item.messageId?.let { state.messageFeedback[it] },
-                    branchable = item.key in branchable,
-                    onBranch = { onBranch(item) },
-                    onRate = onRate,
-                    onClearFeedback = onClearFeedback
-                )
-                is ToolItem -> ToolCard(item)
-                is WorkflowItem -> WorkflowRunCard(item)
-                is NoticeItem -> NoticeRow(item)
+            items(state.items, key = { it.key }) { item ->
+                when (item) {
+                    is UserItem -> UserMessageRow(item, onCopy, ::imageData, onLoadImage, onOpenFile)
+                    is AssistantItem -> AssistantMessageRow(
+                        message = item,
+                        onCopy = onCopy,
+                        imageData = ::imageData,
+                        onLoadImage = onLoadImage,
+                        feedback = item.messageId?.let { state.messageFeedback[it] },
+                        branchable = item.key in branchable,
+                        onBranch = { onBranch(item) },
+                        onRate = onRate,
+                        onClearFeedback = onClearFeedback
+                    )
+                    is ToolItem -> ToolCard(item)
+                    is WorkflowItem -> WorkflowRunCard(item)
+                    is NoticeItem -> NoticeRow(item)
+                }
+            }
+            if (state.running && state.items.none { it is AssistantItem && it.streaming }) {
+                item(key = "typing") { TypingRow() }
             }
         }
-        if (state.running && state.items.none { it is AssistantItem && it.streaming }) {
-            item(key = "typing") { TypingRow() }
+    }
+}
+
+/**
+ * A scroll viewport with a soft bottom edge. When content continues below, the last rows
+ * fade into [color] instead of stopping on a hard cut — the quietest way to say "there is
+ * more under this". The overlay is drawn only while forward scrolling is possible, so a
+ * list already at its end looks unchanged.
+ */
+@Composable
+private fun ScrollEdgeFade(
+    canScrollForward: Boolean,
+    color: Color,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Box(modifier) {
+        content()
+        if (canScrollForward) {
+            Box(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .background(
+                        Brush.verticalGradient(listOf(Color.Transparent, color))
+                    )
+            )
         }
     }
 }
@@ -5700,70 +5816,57 @@ private fun MessageActionsDialog(
     // A new rating opens the editor first, mirroring dsh-web: the judgment and its
     // explanation are one write. Retracting an existing rating stays a single tap.
     var composing by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("消息操作", style = MaterialTheme.typography.titleMedium, color = TextPrimary) },
-        text = {
-            Column {
-                QueueActionRow("复制", TextSecondary, onCopy)
-                QueueActionRow(
-                    if (branchable) "从这里分支" else "从这里分支（不可用）",
-                    if (branchable) TextSecondary else TextMuted,
-                    if (branchable) onBranch else ({})
-                )
-                if (!branchable) {
-                    Text(
-                        branchHint(message),
-                        color = TextMuted,
-                        fontSize = 10.5.sp,
-                        lineHeight = 15.sp,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                    )
-                }
-                Spacer(Modifier.height(6.dp))
-                if (messageId == null) {
-                    Text(
-                        "这条回复还没有最终消息 ID，暂时不能评价。",
-                        color = TextMuted,
-                        fontSize = 10.5.sp,
-                        lineHeight = 15.sp,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                    )
+    CompactDialog(onDismiss = onDismiss) {
+        CompactDialogHeader("消息操作", onDismiss)
+        CompactMenuRow("复制", TextSecondary, onCopy)
+        CompactMenuRow(
+            if (branchable) "从这里分支" else "从这里分支（不可用）",
+            if (branchable) TextSecondary else TextMuted,
+            if (branchable) onBranch else ({})
+        )
+        if (!branchable) {
+            Text(
+                branchHint(message),
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
+                modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 4.dp)
+            )
+        }
+        if (messageId == null) {
+            Text(
+                "这条回复还没有最终消息 ID，暂时不能评价。",
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp,
+                modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 2.dp)
+            )
+        } else {
+            val positive = feedback?.rating == "positive"
+            val negative = feedback?.rating == "negative"
+            CompactMenuRow(if (positive) "取消好评" else "好评", TextSecondary) {
+                if (positive) {
+                    onClearFeedback(messageId)
+                    onDismiss()
                 } else {
-                    val positive = feedback?.rating == "positive"
-                    val negative = feedback?.rating == "negative"
-                    QueueActionRow(if (positive) "取消好评" else "好评", TextSecondary) {
-                        if (positive) {
-                            onClearFeedback(messageId)
-                            onDismiss()
-                        } else {
-                            composing = "positive"
-                        }
-                    }
-                    QueueActionRow(if (negative) "取消差评" else "差评", TextSecondary) {
-                        if (negative) {
-                            onClearFeedback(messageId)
-                            onDismiss()
-                        } else {
-                            composing = "negative"
-                        }
-                    }
-                    if (feedback != null) {
-                        QueueActionRow("修改反馈原因", TextMuted) {
-                            composing = feedback.rating
-                        }
-                    }
+                    composing = "positive"
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭", color = TextSecondary)
+            CompactMenuRow(if (negative) "取消差评" else "差评", TextSecondary) {
+                if (negative) {
+                    onClearFeedback(messageId)
+                    onDismiss()
+                } else {
+                    composing = "negative"
+                }
+            }
+            if (feedback != null) {
+                CompactMenuRow("修改反馈原因", TextMuted) {
+                    composing = feedback.rating
+                }
             }
         }
-    )
+    }
     val rating = composing
     if (messageId != null && rating != null) {
         FeedbackEditorDialog(
@@ -6222,7 +6325,6 @@ private fun WorkflowRunCard(item: WorkflowItem) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(start = 37.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Surface)
             .border(1.dp, Border.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
@@ -6387,10 +6489,11 @@ private fun ToolCard(tool: ToolItem) {
         tool.isError -> Red
         else -> Success
     }
+    // The card shares the transcript's left edge. An indent here reads as a right-side
+    // bubble, the same shape as the user's own messages.
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(start = 37.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Surface)
             .border(1.dp, Border.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
@@ -6747,6 +6850,7 @@ private fun builtinToolName(name: String): String = when (name) {
     "todo" -> "待办"
     "question" -> "提问"
     "read_image" -> "读取图片"
+    "run_code" -> "执行代码"
     else -> name
 }
 
@@ -7334,40 +7438,38 @@ private fun ContextStatsDialog(
     onDismiss: () -> Unit
 ) {
     val fraction = pressure.fraction
+    val scroll = rememberScrollState()
     Dialog(onDismissRequest = onDismiss) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(22.dp))
                 .background(Surface)
-                .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 16.dp)
+                .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 8.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "上下文与用量",
-                        color = TextPrimary,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Text(
-                        "dsh 最近一次上报的数值，缺失项显示 —",
-                        color = TextMuted,
-                        fontSize = 10.5.sp
-                    )
-                }
-                TextButton(onClick = onRefresh) {
-                    Text("刷新", color = TextSecondary)
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("关闭", color = TextSecondary)
-                }
+            Column {
+                Text(
+                    "上下文与用量",
+                    color = TextPrimary,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    "dsh 最近一次上报的数值，缺失项显示 —",
+                    color = TextMuted,
+                    fontSize = 10.5.sp
+                )
             }
+            Spacer(Modifier.height(4.dp))
+            ScrollEdgeFade(
+                canScrollForward = scroll.canScrollForward,
+                color = Surface,
+                modifier = Modifier.fillMaxWidth()
+            ) {
             Column(
                 Modifier
                     .heightIn(max = 430.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(end = 8.dp)
+                    .verticalScroll(scroll)
             ) {
                 StatSection("模型")
                 StatRow("当前模型", modelSelectionLabel(selection))
@@ -7420,6 +7522,20 @@ private fun ContextStatsDialog(
                             String.format(java.util.Locale.US, "%.1f tok/s", it)
                         } ?: "—"
                     )
+                }
+            }
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(onClick = onRefresh) {
+                    Text("刷新", color = TextSecondary)
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("关闭", color = Accent)
                 }
             }
         }
@@ -8831,19 +8947,14 @@ private fun ModelPickerDialog(
                                     modifier = Modifier.width(18.dp)
                                 )
                                 Column(Modifier.weight(1f)) {
+                                    // Name only: dsh's catalog description is a marketing
+                                    // sentence ("Stronger agentic coding…") that adds
+                                    // height without helping the choice.
                                     Text(
                                         model.name,
                                         color = if (selected) TextPrimary else TextSecondary,
                                         fontSize = 13.sp
                                     )
-                                    if (!model.description.isNullOrBlank()) {
-                                        Text(
-                                            model.description,
-                                            color = TextMuted,
-                                            fontSize = 10.5.sp,
-                                            lineHeight = 15.sp
-                                        )
-                                    }
                                 }
                             }
                         }

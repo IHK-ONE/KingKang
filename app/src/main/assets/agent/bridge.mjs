@@ -2217,6 +2217,46 @@ async function sessionHistory(payload) {
   };
 }
 
+/** True when dsh reports that a Remote method no longer exists (404 or a named withdrawal). */
+function isMissingRemoteMethod(error, method) {
+  if (!error) return false;
+  if (error.code === "transport") return error.details?.status === 404;
+  if (error.code !== "dsh-error") return false;
+  const text = String(error.message || "");
+  return (
+    text.includes(method) &&
+    /unknown|not found|no such|does not exist|missing|unsupported|withdrawn|absent|不存在|未定义|不支持/i.test(
+      text,
+    )
+  );
+}
+
+/**
+ * The revision an edit was derived from, taken from the catalog record the app holds.
+ * dsh compares it with the stored `updatedAt`, so a stale editor cannot overwrite a
+ * concurrent change.
+ */
+function expectedUpdatedAt(record) {
+  if (!record || typeof record !== "object") return null;
+  const value = record.updatedAt;
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+/**
+ * `schedule/edit` answers with the updated record, a coded miss/conflict, or a deletion
+ * receipt. The app's update path reads `updated` and `record`; keep that contract.
+ */
+function scheduleEditOutcome(value) {
+  if (value && typeof value === "object") {
+    if (value.deleted === true) return { updated: false, code: "schedule_not_found" };
+    if (typeof value.code === "string") return { updated: false, code: value.code };
+    if (typeof value.id === "string" && typeof value.kind === "string") {
+      return { updated: true, record: value };
+    }
+  }
+  return { updated: false };
+}
+
 function subagentAddress(payload) {
   const parentSessionId = String(payload?.parentSessionId || "").trim();
   const childSessionId = String(payload?.childSessionId || "").trim();
@@ -3461,31 +3501,37 @@ async function dispatch(method, params) {
       return { schedules: Array.isArray(value) ? value : [] };
     }
     case "schedule.update": {
-      const sessionId = String(payload.sessionId || "");
       const id = String(payload.id || "");
-      if (sessionId === "") throw badRequest("schedule.update needs a sessionId");
       if (id === "") throw badRequest("schedule.update needs an id");
-      const expected = payload.expected;
-      if (expected === null || typeof expected !== "object") {
-        throw badRequest("schedule.update needs the record it expects to change");
-      }
-      const request = { id, sessionId, expected };
+      // dsh 0.2.2 replaced schedule/update with schedule/edit: one request names the
+      // action and, for an edit, only the fields that change. `change` was the timing
+      // object, which is `patch.timing` on the new shape.
+      const patch = {};
       if (payload.change !== undefined && payload.change !== null) {
-        request.change = payload.change;
+        patch.timing = payload.change;
       }
-      if (payload.title !== undefined) request.title = String(payload.title);
-      if (payload.prompt !== undefined) request.prompt = String(payload.prompt);
-      if (request.change === undefined && request.title === undefined && request.prompt === undefined) {
+      if (payload.title !== undefined) patch.title = String(payload.title);
+      if (payload.prompt !== undefined) patch.prompt = String(payload.prompt);
+      if (Object.keys(patch).length === 0) {
         throw badRequest("schedule.update needs a change, title or prompt");
       }
-      return callDsh("schedule/update", { request }, 30_000);
+      const request = { id, action: "update", patch };
+      const updatedAt = expectedUpdatedAt(payload.expected);
+      if (updatedAt !== null) request.expectedUpdatedAt = updatedAt;
+      const value = await callDsh("schedule/edit", { request }, 30_000);
+      return scheduleEditOutcome(value);
     }
     case "schedule.delete": {
-      const sessionId = String(payload.sessionId || "");
       const id = String(payload.id || "");
-      if (sessionId === "") throw badRequest("schedule.delete needs a sessionId");
       if (id === "") throw badRequest("schedule.delete needs an id");
-      return callDsh("schedule/delete", { request: { id, sessionId } }, 30_000);
+      const request = { id, action: "delete" };
+      const updatedAt = expectedUpdatedAt(payload.expected);
+      if (updatedAt !== null) request.expectedUpdatedAt = updatedAt;
+      const value = await callDsh("schedule/edit", { request }, 30_000);
+      return {
+        deleted: value?.deleted === true,
+        code: typeof value?.code === "string" ? value.code : null,
+      };
     }
     case "schedule.history": {
       const sessionId = String(payload.sessionId || "");
@@ -3525,10 +3571,21 @@ async function dispatch(method, params) {
     }
     case "subagent.interrupt": {
       const address = subagentAddress(payload);
-      const value = await callDsh("subagents/interruptByParent", {
-        ...address,
-        mode: "continuable",
-      });
+      // 0.2.2-rc.1 has interruptByParent; rc.2 dropped it for the user-authorized
+      // interruptByUser, which takes only the child id. Ask the older method first
+      // (what this app ships against), then fall back when the host says it is gone.
+      let value;
+      try {
+        value = await callDsh("subagents/interruptByParent", {
+          ...address,
+          mode: "continuable",
+        });
+      } catch (error) {
+        if (!isMissingRemoteMethod(error, "interruptByParent")) throw error;
+        value = await callDsh("subagents/interruptByUser", {
+          childSessionId: address.childSessionId,
+        });
+      }
       return { accepted: value?.accepted !== false };
     }
     case "command.list":

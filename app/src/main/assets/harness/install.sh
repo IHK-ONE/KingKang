@@ -32,11 +32,29 @@ ln -sf /opt/kingkang/node/bin/node /usr/local/bin/node
 ln -sf /opt/kingkang/node/bin/npm /usr/local/bin/npm
 ln -sf /opt/kingkang/node/bin/npx /usr/local/bin/npx
 
+# An update replaces the npm package only: the tree is the same prefix, npm reuses the
+# cache, and the profile under /root/.dsh (sessions, plugins, credentials) is untouched.
+UPDATE=0
+if [ "${KINGKANG_DSH_UPDATE:-0}" = "1" ]; then
+  UPDATE=1
+fi
+TARGET="${KINGKANG_DSH_VERSION:-latest}"
+
 install_dsh() {
-  npm install -g --prefix /opt/kingkang/dsh @deepseek-ai/dsh@latest --no-audit --no-fund
+  if [ "$UPDATE" = "1" ]; then
+    npm install -g --prefix /opt/kingkang/dsh "@deepseek-ai/dsh@$TARGET" \
+      --no-audit --no-fund --prefer-offline
+  else
+    npm install -g --prefix /opt/kingkang/dsh @deepseek-ai/dsh@latest --no-audit --no-fund
+  fi
 }
 
-step "正在安装 dsh 依赖（约 1.2 GB，首次需要 20–40 分钟）…"
+if [ "$UPDATE" = "1" ]; then
+  echo "KK_MODE=update"
+  step "正在更新 dsh（复用缓存，保留现有配置与插件）…"
+else
+  step "正在安装 dsh 依赖（约 1.2 GB，首次需要 20–40 分钟）…"
+fi
 mkdir -p /opt/kingkang/dsh
 # npm moves every downloaded packument and tarball into place with rename(2); Android's
 # app sandbox rejects that syscall, so the app preloads the shim from compat.sh.

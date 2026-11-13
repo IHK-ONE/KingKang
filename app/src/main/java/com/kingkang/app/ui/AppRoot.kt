@@ -1,6 +1,5 @@
 package com.kingkang.app.ui
 
-import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -69,7 +68,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -85,7 +83,6 @@ import com.kingkang.app.MainViewModel
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentSession
 import com.kingkang.app.agent.AgentWorkspace
-import com.kingkang.app.browser.BrowserActivity
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
@@ -117,7 +114,6 @@ private enum class AppScreen {
 fun KingKangApp(vm: MainViewModel = viewModel()) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
     var screenName by rememberSaveable { mutableStateOf(AppScreen.Home.name) }
     val screen = AppScreen.valueOf(screenName)
     // Sub-screens opened from Settings/Plugins/Terminal return to their origin rather than
@@ -194,10 +190,6 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                         onOpenFiles = {
                             navigate(AppScreen.Files)
                             scope.launch { drawerState.close() }
-                        },
-                        onOpenBrowser = {
-                            scope.launch { drawerState.close() }
-                            context.startActivity(Intent(context, BrowserActivity::class.java))
                         },
                         onOpenHarness = {
                             navigate(AppScreen.Harness)
@@ -437,7 +429,6 @@ private fun KingKangDrawer(
     onDismiss: () -> Unit,
     onOpenTerminal: () -> Unit,
     onOpenFiles: () -> Unit,
-    onOpenBrowser: () -> Unit,
     onOpenHarness: () -> Unit,
     onOpenPlugins: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -779,18 +770,6 @@ private fun KingKangDrawer(
                 },
                 enabled = harnessAvailable,
                 onClick = onOpenFiles
-            )
-            DrawerAction(
-                title = "本地浏览器",
-                icon = { tint ->
-                    Icon(
-                        Icons.Filled.Search,
-                        contentDescription = null,
-                        tint = tint,
-                        modifier = Modifier.size(19.dp)
-                    )
-                },
-                onClick = onOpenBrowser
             )
             DrawerAction(
                 title = "DeepSeek Harness",

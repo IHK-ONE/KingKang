@@ -1861,7 +1861,8 @@ private fun HarnessCard(
                 }
                 Spacer(Modifier.height(7.dp))
                 Text(
-                    "检查更新会比对所选 NPM 源上的最新版本，发现新版本时自动更新并重启本地桥接。",
+                    "检查更新会比对所选 NPM 源上的最新版本，发现新版本时只替换 dsh 包并重启本地桥接；" +
+                        "Node.js、插件和已有对话都会保留，不会重装。",
                     color = TextMuted,
                     fontSize = 9.5.sp,
                     lineHeight = 14.sp

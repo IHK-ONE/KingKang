@@ -1636,7 +1636,12 @@ object AgentEngine {
                 loadSchedules(sessionId)
                 return@launch
             }
-            val record = parseSchedule(result.optJSONObject("record"), sessionId, "active")
+            val recordJson = result.optJSONObject("record")
+            val record = parseSchedule(
+                recordJson,
+                sessionId,
+                recordJson?.optString("status").orEmpty()
+            )
             _state.update { current ->
                 if (current.activeSessionId != sessionId) current
                 else current.copy(
@@ -1657,14 +1662,15 @@ object AgentEngine {
         val state = _state.value
         val sessionId = state.activeSessionId ?: return
         if (state.scheduleBusy) return
+        val payload = JSONObject().put("sessionId", sessionId).put("id", id)
+        // Deleting with the revision last read lets dsh refuse a stale removal.
+        runCatching { JSONObject(state.schedules.firstOrNull { it.id == id }?.raw.orEmpty()) }
+            .getOrNull()
+            ?.let { payload.put("expected", it) }
         _state.update { it.copy(scheduleBusy = true) }
         scope.launch {
             val result = try {
-                client.callObject(
-                    "schedule.delete",
-                    JSONObject().put("sessionId", sessionId).put("id", id),
-                    30_000
-                )
+                client.callObject("schedule.delete", payload, 30_000)
             } catch (t: Throwable) {
                 val failure = readableError(t)
                 _state.update { current ->
@@ -6742,7 +6748,9 @@ object AgentEngine {
             time = item.optString("time").takeIf { it.isNotBlank() },
             timeZone = item.optString("timeZone").takeIf { it.isNotBlank() },
             weekdays = weekdays,
-            expression = item.optString("expression").takeIf { it.isNotBlank() },
+            expression = item.optString("expression").takeIf { it.isNotBlank() }
+                // 0.2.2 reports model-created rules as an RFC 5545 `rrule` string.
+                ?: item.optString("rrule").takeIf { it.isNotBlank() },
             lastDeliveredAt = parseInstant(lastDelivery?.optString("deliveredAt")),
             raw = item.toString()
         )
