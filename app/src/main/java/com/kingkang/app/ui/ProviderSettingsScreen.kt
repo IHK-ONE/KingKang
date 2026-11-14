@@ -70,6 +70,7 @@ import com.kingkang.app.agent.AgentState
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.components.ScrollEdgeFade
+import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
 import com.kingkang.app.ui.theme.OnAccent
@@ -507,14 +508,13 @@ private fun ProviderEditor(
     val editorScroll = rememberScrollState()
     ScrollEdgeFade(
         canScrollForward = editorScroll.canScrollForward,
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize().imePadding()
     ) {
     Column(
         Modifier
             .fillMaxSize()
             .verticalScroll(editorScroll)
             .navigationBarsPadding()
-            .imePadding()
             .padding(horizontal = 18.dp, vertical = 8.dp)
     ) {
         if (existing != null && existing.error != null) {
@@ -958,7 +958,7 @@ private fun ProviderField(
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).keyboardLift(),
                 textStyle = MaterialTheme.typography.bodySmall.copy(
                     color = if (enabled) TextPrimary else TextMuted,
                     fontSize = 12.5.sp,

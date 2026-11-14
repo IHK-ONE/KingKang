@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -96,6 +97,7 @@ import com.kingkang.app.ui.components.KkDialog
 import com.kingkang.app.ui.components.KkDialogActions
 import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
+import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.AccentDim
@@ -146,6 +148,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val credentialsAnchor = remember { BringIntoViewRequester() }
     val appearanceAnchor = remember { BringIntoViewRequester() }
+    val languageAnchor = remember { BringIntoViewRequester() }
     val accountAnchor = remember { BringIntoViewRequester() }
     val connectionAnchor = remember { BringIntoViewRequester() }
     val presetAnchor = remember { BringIntoViewRequester() }
@@ -174,6 +177,9 @@ fun SettingsScreen(
     val searchEntries = listOf(
         SettingsSearchEntry("外观与主题", "跟随系统、浅色、深色", "theme dark light 主题 暗色") {
             jumpTo(appearanceAnchor)
+        },
+        SettingsSearchEntry("Harness 语言", "中文、English、跟随 dsh", "locale language 语言 英文") {
+            jumpTo(languageAnchor)
         },
         SettingsSearchEntry("DeepSeek 账号", "登录状态、资料与余额", "account 账号 余额 登录 退出") {
             jumpTo(accountAnchor)
@@ -289,7 +295,9 @@ fun SettingsScreen(
 
         ScrollEdgeFade(
             canScrollForward = settingsScroll.canScrollForward,
-            modifier = Modifier.weight(1f)
+            // Shrink the viewport while the IME is open: padding inside the scroll content
+            // would only add empty space below it, leaving the focused card under the keys.
+            modifier = Modifier.weight(1f).imePadding()
         ) {
         Column(
             Modifier
@@ -306,6 +314,16 @@ fun SettingsScreen(
                 themeMode = themeMode,
                 onSelect = vm::setThemeMode
             )
+
+            Spacer(Modifier.height(10.dp))
+            Box(Modifier.bringIntoViewRequester(languageAnchor)) {
+                HarnessLanguageCard(
+                    agent = agent,
+                    settings = agent.languageSettings,
+                    onSelect = vm::setHarnessLocale,
+                    onOpenHarness = onOpenHarness
+                )
+            }
 
             Spacer(Modifier.height(24.dp))
             Box(Modifier.bringIntoViewRequester(environmentAnchor)) {
@@ -326,9 +344,33 @@ fun SettingsScreen(
             Spacer(Modifier.height(24.dp))
             SectionLabel("Agent 核心")
             Spacer(Modifier.height(8.dp))
-            // The order follows first use: the DeepSeek key is what makes the agent answer,
-            // then the providers it can route to, then the account and the web-search /
-            // sandbox switches. Installing or updating dsh itself comes after those.
+            // dsh itself leads: its npm source and install state are the foundation the
+            // rest of this section operates on, followed by the key, providers, account
+            // and the remaining switches.
+            NpmSourceCard(
+                registry = npmRegistry,
+                onSelect = vm::setNpmRegistry,
+                onCustom = { showNpmSource = true }
+            )
+
+            Spacer(Modifier.height(10.dp))
+            HarnessCard(
+                harness = harness,
+                // A stopped bridge no longer proves dsh is present. After an uninstall its
+                // last version would otherwise survive in the card as a fake "已安装".
+                liveVersion = agent.dshVersion
+                    ?.takeIf { agent.connection == AgentConnection.Ready },
+                kaliInstalled = environment.installed,
+                prerelease = prereleaseUpdates,
+                onPrereleaseChange = vm::setPrereleaseUpdates,
+                onInstall = vm::installHarness,
+                onCheckUpdate = vm::checkHarnessUpdate,
+                onUninstall = { confirmUninstallHarness = true },
+                onCancel = vm::cancelHarnessTask,
+                onDismissError = vm::dismissHarnessError
+            )
+
+            Spacer(Modifier.height(10.dp))
             Box(Modifier.bringIntoViewRequester(credentialsAnchor)) {
                 AgentCredentialsCard(
                     agent = agent,
@@ -370,31 +412,6 @@ fun SettingsScreen(
                     onRemove = vm::removeMcpServer
                 )
             }
-
-            // dsh itself: installed from this npm source, and updated from these cards.
-            Spacer(Modifier.height(10.dp))
-            NpmSourceCard(
-                registry = npmRegistry,
-                onSelect = vm::setNpmRegistry,
-                onCustom = { showNpmSource = true }
-            )
-
-            Spacer(Modifier.height(10.dp))
-            HarnessCard(
-                harness = harness,
-                // A stopped bridge no longer proves dsh is present. After an uninstall its
-                // last version would otherwise survive in the card as a fake "已安装".
-                liveVersion = agent.dshVersion
-                    ?.takeIf { agent.connection == AgentConnection.Ready },
-                kaliInstalled = environment.installed,
-                prerelease = prereleaseUpdates,
-                onPrereleaseChange = vm::setPrereleaseUpdates,
-                onInstall = vm::installHarness,
-                onCheckUpdate = vm::checkHarnessUpdate,
-                onUninstall = { confirmUninstallHarness = true },
-                onCancel = vm::cancelHarnessTask,
-                onDismissError = vm::dismissHarnessError
-            )
 
             Spacer(Modifier.height(24.dp))
             Box(Modifier.bringIntoViewRequester(connectionAnchor)) {
@@ -630,6 +647,7 @@ private fun SettingsSearchDialog(
             BasicTextField(
                 value = query,
                 onValueChange = { query = it.take(60) },
+                modifier = Modifier.fillMaxWidth().keyboardLift(),
                 singleLine = true,
                 textStyle = TextStyle(
                     color = TextPrimary,
@@ -637,8 +655,7 @@ private fun SettingsSearchDialog(
                     platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
                     lineHeight = 13.sp,
                 ),
-                cursorBrush = SolidColor(Accent),
-                modifier = Modifier.fillMaxWidth()
+                cursorBrush = SolidColor(Accent)
             )
         }
         Spacer(Modifier.height(8.dp))
@@ -715,6 +732,81 @@ private fun AppearanceCard(
             ),
             selected = themeMode
         ) { onSelect(it) }
+    }
+}
+
+/**
+ * Harness's own page language. It is separate from the native UI, which is Chinese only;
+ * "跟随 dsh" leaves whatever the Harness profile already uses.
+ */
+@Composable
+private fun HarnessLanguageCard(
+    agent: AgentState,
+    settings: AgentLanguageSettings,
+    onSelect: (String?) -> Unit,
+    onOpenHarness: () -> Unit
+) {
+    val ready = agent.connection == AgentConnection.Ready
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Harness 语言",
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                when {
+                    !ready -> "等待连接"
+                    settings.saving -> "保存中…"
+                    !settings.loaded -> "读取中"
+                    settings.value == null -> "跟随 dsh"
+                    settings.value == "zh" -> "中文"
+                    settings.value == "en" -> "English"
+                    else -> settings.value ?: "—"
+                },
+                color = if (ready && settings.loaded) Success else TextMuted,
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "只影响 Harness 页面。App 的原生界面目前仅提供中文。",
+            color = TextMuted,
+            fontSize = 10.5.sp,
+            lineHeight = 15.sp
+        )
+        Spacer(Modifier.height(10.dp))
+        ChoiceSegmented(
+            options = listOf(
+                "" to "跟随 dsh",
+                "zh" to "中文",
+                "en" to "English"
+            ),
+            selected = settings.value ?: ""
+        ) { value ->
+            if (ready && settings.writable && !settings.saving) {
+                onSelect(value.ifBlank { null })
+            }
+        }
+        if (ready && settings.loaded && !settings.writable) {
+            Spacer(Modifier.height(6.dp))
+            Text("当前 dsh 配置不可写", color = Amber, fontSize = 9.5.sp)
+        }
+        if (settings.error != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(settings.error, color = Red, fontSize = 10.sp)
+        }
+        if (!ready) {
+            Spacer(Modifier.height(6.dp))
+            TextButton(
+                onClick = onOpenHarness,
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                Text("打开 Harness", color = Accent, fontSize = 11.sp)
+            }
+        }
     }
 }
 
@@ -963,6 +1055,7 @@ private fun McpField(
             enabled = enabledField,
             modifier = Modifier
                 .fillMaxWidth()
+                .keyboardLift()
                 .padding(top = 3.dp)
                 .clip(RoundedCornerShape(9.dp))
                 .background(SurfaceRaised)
@@ -2279,7 +2372,7 @@ private fun NpmSourceDialog(
                             input = it.take(200)
                             error = null
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().keyboardLift(),
                         textStyle = MaterialTheme.typography.bodySmall.copy(
                             color = TextPrimary,
                             fontSize = 12.sp,
@@ -2632,7 +2725,7 @@ private fun AgentCredentialsCard(
                 BasicTextField(
                     value = keyInput,
                     onValueChange = { keyInput = it.take(200) },
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).keyboardLift(),
                     textStyle = MaterialTheme.typography.bodySmall.copy(
                         color = TextPrimary,
                         fontSize = 12.sp,

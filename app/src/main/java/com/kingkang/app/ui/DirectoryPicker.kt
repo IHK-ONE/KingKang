@@ -45,6 +45,7 @@ import com.kingkang.app.ui.components.KkDialog
 import com.kingkang.app.ui.components.KkDialogActions
 import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
+import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Border
 import com.kingkang.app.ui.theme.OnAccent
@@ -69,17 +70,13 @@ fun DirectoryPickerDialog(
     onBrowse: (String) -> Unit,
     onPick: (String) -> Unit,
     onCreate: (String) -> Unit,
-    onDismiss: () -> Unit,
-    recentDirectories: List<String> = emptyList()
+    onDismiss: () -> Unit
 ) {
     val current = listing.path.ifBlank { "/root" }
     val listState = rememberLazyListState()
     var newFolder by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
     val parent = listing.parent
-    val recents = remember(recentDirectories, current) {
-        recentDirectories.filter { it != current }.take(3)
-    }
     val canPick = listing.path.isNotBlank() && !listing.loading && listing.error == null
 
     KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
@@ -125,34 +122,7 @@ fun DirectoryPickerDialog(
             }
         }
 
-        if (recents.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Text("最近使用", color = TextMuted, fontSize = 9.5.sp)
-            recents.forEach { path ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { onPick(path) }
-                        .padding(horizontal = 6.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        path,
-                        modifier = Modifier.weight(1f),
-                        color = TextSecondary,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("使用", color = Accent, fontSize = 10.5.sp)
-                }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 if (newFolder) "取消新建" else "＋ 新建文件夹",
@@ -206,7 +176,8 @@ fun DirectoryPickerDialog(
                         cursorBrush = SolidColor(Accent),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(17.dp),
+                            .height(17.dp)
+                            .keyboardLift(),
                         decorationBox = { inner ->
                             if (folderName.isEmpty()) {
                                 Text(

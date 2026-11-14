@@ -6140,6 +6140,19 @@ object AgentEngine {
     fun selectModel(provider: String, model: String, effort: String?) {
         val sessionId = _state.value.activeSessionId ?: return
         val client = bridge ?: return
+        // Reflect the pick immediately. The catalog already holds every model and its
+        // effort list, so no round-trip is needed to redraw the chip or the slider; waiting
+        // for one made rapid slider changes snap back and model switches feel stuck.
+        _state.update { state ->
+            val models = state.models ?: return@update state
+            state.copy(
+                models = models.copy(
+                    provider = provider,
+                    model = model,
+                    reasoningEffort = effort
+                )
+            )
+        }
         scope.launch {
             try {
                 val params = JSONObject()
@@ -6148,8 +6161,10 @@ object AgentEngine {
                     .put("model", model)
                 if (!effort.isNullOrBlank()) params.put("reasoningEffort", effort)
                 client.callObject("session.selectModel", params, 45_000)
-                loadModels(sessionId)
             } catch (t: Throwable) {
+                // Put the authoritative state back; the optimistic value must not survive
+                // a rejected change.
+                loadModels(sessionId)
                 eventMutex.withLock {
                     addNotice("切换模型失败：${readableError(t)}", isError = true)
                 }

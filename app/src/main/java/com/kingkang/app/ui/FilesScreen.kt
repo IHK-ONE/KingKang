@@ -2,10 +2,12 @@ package com.kingkang.app.ui
 
 import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -124,6 +126,44 @@ fun FilesScreen(
     val workspaceSearch = state.workspaceSearch
     val fileListState = rememberLazyListState()
     val sort = FileSort.entries.firstOrNull { it.name == sortName } ?: FileSort.Name
+    // The workspace root is the floor of the browser: back/right-swipe climb one directory
+    // at a time and only leave for the home screen once this floor is reached.
+    val workspaceRoot = (root ?: listing.root).trimEnd('/').ifBlank { "/" }
+    val currentPath = listing.path.trimEnd('/').ifBlank { workspaceRoot }
+    val insideWorkspace = workspaceRoot == "/" || currentPath == workspaceRoot ||
+        currentPath.startsWith("$workspaceRoot/")
+    val upPath = if (insideWorkspace && currentPath != workspaceRoot) {
+        currentPath.substringBeforeLast('/').ifBlank { "/" }.let { parent ->
+            if (workspaceRoot == "/" || parent == workspaceRoot ||
+                parent.startsWith("$workspaceRoot/")
+            ) {
+                parent
+            } else {
+                workspaceRoot
+            }
+        }
+    } else {
+        null
+    }
+    var swipeDistance by remember { mutableStateOf(0f) }
+
+    BackHandler {
+        when {
+            previewPath != null -> {
+                previewPath = null
+                vm.closeFilePreview()
+            }
+            workspaceSearch.active -> {
+                vm.clearWorkspaceSearch()
+                workspaceScope = false
+            }
+            upPath != null -> vm.browseFiles(upPath)
+            else -> onBack()
+        }
+    }
+    LaunchedEffect(listing.path) {
+        if (fileListState.firstVisibleItemIndex > 0) fileListState.scrollToItem(0)
+    }
 
     LaunchedEffect(state.activeSessionId) { vm.browseFiles(null) }
     // dsh announces file changes during a turn; reload what is on screen so agent edits
@@ -156,7 +196,16 @@ fun FilesScreen(
         FilesTopBar(
             root = root ?: listing.root,
             path = listing.path,
-            onBack = onBack,
+            onBack = {
+                when {
+                    workspaceSearch.active -> {
+                        vm.clearWorkspaceSearch()
+                        workspaceScope = false
+                    }
+                    upPath != null -> vm.browseFiles(upPath)
+                    else -> onBack()
+                }
+            },
             onRefresh = { vm.browseFiles(listing.path.ifBlank { null }) }
         )
         Row(
@@ -257,7 +306,28 @@ fun FilesScreen(
         val visible = remember(listing, sort, ascending, showHidden, query) {
             sortFileEntries(listing.entries, sort, ascending, showHidden, query)
         }
-        Box(Modifier.weight(1f)) {
+        Box(
+            Modifier
+                .weight(1f)
+                .pointerInput(upPath) {
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { change, dragAmount ->
+                            if (dragAmount > 0 || swipeDistance > 0f) {
+                                swipeDistance = (swipeDistance + dragAmount).coerceAtLeast(0f)
+                                change.consume()
+                            }
+                        },
+                        onDragEnd = {
+                            // A right swipe is the touch equivalent of the back button.
+                            if (swipeDistance > 90.dp.toPx() && upPath != null) {
+                                vm.browseFiles(upPath)
+                            }
+                            swipeDistance = 0f
+                        },
+                        onDragCancel = { swipeDistance = 0f }
+                    )
+                }
+        ) {
             when {
                 workspaceSearch.active -> WorkspaceSearchResults(
                     search = workspaceSearch,
@@ -309,7 +379,7 @@ fun FilesScreen(
                             .padding(horizontal = 16.dp, vertical = 6.dp)
                     )
                 }
-                visible.isEmpty() -> FileMessage(
+                visible.isEmpty() && upPath == null -> FileMessage(
                     if (query.isNotBlank()) "没有匹配「$query」的文件" else "这个目录是空的"
                 )
                 else -> ScrollEdgeFade(
@@ -321,6 +391,45 @@ fun FilesScreen(
                     state = fileListState,
                     contentPadding = PaddingValues(bottom = 20.dp)
                 ) {
+                    // The parent row also keeps an empty subdirectory navigable.
+                    if (upPath != null) {
+                        item(key = "parent") {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { vm.browseFiles(upPath) }
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "..",
+                                    color = Accent,
+                                    fontSize = 13.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.width(24.dp)
+                                )
+                                Text("返回上级目录", color = TextSecondary, fontSize = 12.sp)
+                            }
+                            HorizontalDivider(
+                                color = Border.copy(alpha = 0.6f),
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+                        }
+                    }
+                    if (visible.isEmpty()) {
+                        item(key = "empty") {
+                            Text(
+                                if (query.isNotBlank()) {
+                                    "没有匹配「$query」的文件"
+                                } else {
+                                    "这个目录是空的"
+                                },
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+                            )
+                        }
+                    }
                     if (listing.truncated) {
                         item(key = "truncated") {
                             Text(

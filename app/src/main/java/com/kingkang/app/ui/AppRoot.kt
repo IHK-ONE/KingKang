@@ -87,8 +87,11 @@ import com.kingkang.app.agent.AgentSession
 import com.kingkang.app.agent.AgentWorkspace
 import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.TerminalMark
+import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Border
@@ -447,7 +450,6 @@ private fun KingKangDrawer(
     var workspacePath by rememberSaveable { mutableStateOf("/root") }
     // Folded headers survive both drawer closes and process restarts.
     val collapsedWorkspaces = remember { mutableStateOf(vm.collapsedWorkspaceIds()) }
-    val recentDirectories = remember { vm.recentDirectories() }
     // A child owning the transcript is kept in `sessions` so its title and status stay
     // addressable, but it is not a conversation the drawer can switch to: reopening it
     // needs its parent's address. The trail bar is the way back into that chain.
@@ -822,71 +824,79 @@ private fun KingKangDrawer(
     }
 
     if (showWorkspaceDialog) {
-        AlertDialog(
-            onDismissRequest = { showWorkspaceDialog = false },
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextSecondary,
-            shape = RoundedCornerShape(20.dp),
-            title = { Text("添加工作区", style = MaterialTheme.typography.titleMedium) },
-            text = {
-                Column {
-                    Text(
-                        "填写 Kali 中的绝对路径。目录不存在时会自动创建，然后注册为工作区。",
-                        color = TextSecondary,
-                        fontSize = 12.5.sp,
-                        lineHeight = 18.sp
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    BasicTextField(
-                        value = workspacePath,
-                        onValueChange = { workspacePath = it.take(200) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(SurfaceVariant)
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
-                            color = TextPrimary,
-                            fontSize = 13.5.sp,
-                            platformStyle = CompactInputPlatformStyle,
-                            lineHeight = 13.5.sp,
-                        ),
-                        cursorBrush = SolidColor(Accent),
-                        singleLine = true
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "浏览 Kali 目录",
-                        color = Accent,
-                        fontSize = 12.sp,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(7.dp))
-                            .clickable {
-                                vm.browseDirectory(workspacePath.trim().ifBlank { "/root" })
-                                showDirectoryPicker = true
-                            }
-                            .padding(vertical = 6.dp, horizontal = 2.dp)
-                    )
+        KkDialog(onDismiss = { showWorkspaceDialog = false }) {
+            KkDialogTitle(
+                title = "添加工作区",
+                subtitle = "目录不存在时会自动创建",
+                onDismiss = { showWorkspaceDialog = false }
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "填写 Kali 中的绝对路径，或从下方浏览目录。",
+                color = TextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+            Spacer(Modifier.height(10.dp))
+            BasicTextField(
+                value = workspacePath,
+                onValueChange = { workspacePath = it.take(200) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .keyboardLift()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SurfaceVariant)
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = TextPrimary,
+                    fontSize = 13.5.sp,
+                    platformStyle = CompactInputPlatformStyle,
+                    lineHeight = 13.5.sp,
+                ),
+                cursorBrush = SolidColor(Accent),
+                singleLine = true
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "浏览 Kali 目录",
+                    color = Accent,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.dp))
+                        .clickable {
+                            vm.browseDirectory(workspacePath.trim().ifBlank { "/root" })
+                            showDirectoryPicker = true
+                        }
+                        .padding(vertical = 6.dp, horizontal = 2.dp)
+                )
+                Spacer(Modifier.weight(1f))
+            }
+            KkDialogActions {
+                TextButton(onClick = { showWorkspaceDialog = false }) {
+                    Text("取消", color = TextMuted, fontSize = 12.sp)
                 }
-            },
-            confirmButton = {
-                TextButton(
+                Spacer(Modifier.width(6.dp))
+                Button(
                     onClick = {
                         vm.createWorkspace(workspacePath)
                         showWorkspaceDialog = false
                     },
-                    enabled = workspacePath.isNotBlank()
+                    enabled = workspacePath.isNotBlank(),
+                    modifier = Modifier.height(36.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Accent,
+                        contentColor = OnAccent,
+                        disabledContainerColor = SurfaceVariant,
+                        disabledContentColor = TextMuted
+                    )
                 ) {
-                    Text("添加", color = Accent, fontWeight = FontWeight.Medium)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showWorkspaceDialog = false }) {
-                    Text("取消", color = TextSecondary)
+                    Text("添加", fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
-        )
+        }
     }
 
     if (showDirectoryPicker) {
@@ -900,7 +910,6 @@ private fun KingKangDrawer(
                 vm.closeDirectoryBrowser()
             },
             onCreate = vm::createDirectory,
-            recentDirectories = recentDirectories,
             onDismiss = {
                 showDirectoryPicker = false
                 vm.closeDirectoryBrowser()
@@ -1121,6 +1130,7 @@ private fun WorkspaceActionsSheet(
                     onValueChange = onRenameTextChange,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .keyboardLift()
                         .clip(RoundedCornerShape(12.dp))
                         .background(SurfaceVariant)
                         .padding(horizontal = 12.dp, vertical = 11.dp),
@@ -1227,6 +1237,7 @@ private fun SessionActionsSheet(
                     onValueChange = onRenameTextChange,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .keyboardLift()
                         .clip(RoundedCornerShape(12.dp))
                         .background(SurfaceVariant)
                         .padding(horizontal = 12.dp, vertical = 11.dp),

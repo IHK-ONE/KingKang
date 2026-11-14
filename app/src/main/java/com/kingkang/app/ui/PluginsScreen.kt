@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -69,6 +70,7 @@ import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.ScrollEdgeFade
+import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
 import com.kingkang.app.ui.theme.ErrorContainer
@@ -155,7 +157,9 @@ fun PluginsScreen(
 
         ScrollEdgeFade(
             canScrollForward = pageScroll.canScrollForward,
-            modifier = Modifier.weight(1f)
+            // Shrink the viewport while the keyboard is open so a focused field can be
+            // scrolled above it instead of staying hidden behind the keys.
+            modifier = Modifier.weight(1f).imePadding()
         ) {
         Column(
             Modifier
@@ -308,7 +312,7 @@ fun PluginsScreen(
                         BasicTextField(
                             value = searchText,
                             onValueChange = { searchText = it.take(120) },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().keyboardLift(),
                             textStyle = MaterialTheme.typography.bodySmall.copy(
                                 color = TextPrimary,
                                 fontSize = 11.5.sp,
@@ -437,7 +441,7 @@ fun PluginsScreen(
                                 inspected = null
                                 installError = null
                             },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().keyboardLift(),
                             textStyle = MaterialTheme.typography.bodySmall.copy(
                                 color = TextPrimary,
                                 fontSize = 11.5.sp,

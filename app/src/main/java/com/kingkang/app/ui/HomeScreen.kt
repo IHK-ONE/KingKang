@@ -7096,7 +7096,7 @@ private fun effortLabel(effort: AgentEffort): String = when (effort.id.lowercase
     "high" -> "高"
     "xhigh", "extra-high" -> "极高"
     "max", "maximum" -> "最高"
-    "off", "none" -> "无"
+    "off", "none" -> "不推理"
     "auto", "automatic" -> "自动"
     "default" -> "默认"
     else -> effort.name.ifBlank { effort.id }
@@ -9144,17 +9144,16 @@ private fun ModelPickerDialog(
         .takeIf { it >= 0 }
         ?: effortChoices.indexOfFirst { it.second == models?.effectiveEffort }
             .coerceAtLeast(0)
-    var sliderIndex by remember(currentModel?.id, chosenEffort) {
+    // Reset only when the model changes. Syncing on every effort update made the thumb
+    // snap back while a rapid left/right drag was still settling.
+    var sliderIndex by remember(currentModel?.provider, currentModel?.id) {
         mutableStateOf(selectedIndex)
     }
-    val effortText = models?.currentEffort?.let(::effortLabel)
-        ?: if (effortChoices.isNotEmpty()) "默认" else null
     val headline = currentModel?.name ?: "选择模型"
 
     KkDialog(onDismiss = onDismiss) {
         KkDialogTitle(
             title = "模型与推理",
-            subtitle = if (effortText != null) "$headline · $effortText" else headline,
             onDismiss = onDismiss
         )
 
@@ -9311,7 +9310,9 @@ private fun ModelPickerDialog(
                 },
                 onValueChangeFinished = {
                     val effort = effortChoices.getOrNull(sliderIndex)?.second
-                    if (effort != models.reasoningEffort) onSelect(currentModel, effort)
+                    if (effort != models.reasoningEffort) {
+                        onSelect(currentModel, effort)
+                    }
                 },
                 valueRange = 0f..effortChoices.lastIndex.coerceAtLeast(0).toFloat(),
                 steps = (effortChoices.size - 2).coerceAtLeast(0),
@@ -9324,13 +9325,6 @@ private fun ModelPickerDialog(
                 ),
                 modifier = Modifier.fillMaxWidth()
             )
-            if (effortChoices.size > 1) {
-                Row(Modifier.fillMaxWidth()) {
-                    Text(effortChoices.first().first, color = TextMuted, fontSize = 9.5.sp)
-                    Spacer(Modifier.weight(1f))
-                    Text(effortChoices.last().first, color = TextMuted, fontSize = 9.5.sp)
-                }
-            }
             Text(
                 "向左更省、更快，向右推理更深入。",
                 color = TextMuted,

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -55,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kingkang.app.MainViewModel
 import com.kingkang.app.ui.components.ScrollEdgeFade
+import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentSettingEdit
 import com.kingkang.app.agent.AgentSettingField
@@ -142,7 +144,7 @@ fun AgentSettingsScreen(
 
         ScrollEdgeFade(
             canScrollForward = pageScroll.canScrollForward,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f).imePadding()
         ) {
         Column(
             Modifier
@@ -490,6 +492,7 @@ private fun TextSettingField(
         cursorBrush = SolidColor(Accent),
         modifier = Modifier
             .fillMaxWidth()
+            .keyboardLift()
             .clip(RoundedCornerShape(9.dp))
             .background(SurfaceVariant.copy(alpha = 0.6f))
             .padding(horizontal = 10.dp, vertical = 9.dp)
@@ -548,6 +551,7 @@ private fun SecretField(
         cursorBrush = SolidColor(Accent),
         modifier = Modifier
             .fillMaxWidth()
+            .keyboardLift()
             .clip(RoundedCornerShape(9.dp))
             .background(SurfaceVariant.copy(alpha = 0.6f))
             .padding(horizontal = 10.dp, vertical = 9.dp)
