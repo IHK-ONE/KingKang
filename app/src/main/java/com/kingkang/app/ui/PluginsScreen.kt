@@ -940,12 +940,12 @@ private fun InstalledPluginRow(
             Spacer(Modifier.height(5.dp))
             Text(
                 "详情与设置",
-                color = TextMuted,
-                fontSize = 10.sp,
+                color = Accent,
+                fontSize = 10.5.sp,
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
                     .clickable(onClick = onManage)
-                    .padding(vertical = 2.dp)
+                    .padding(vertical = 3.dp)
             )
         }
         Spacer(Modifier.width(12.dp))

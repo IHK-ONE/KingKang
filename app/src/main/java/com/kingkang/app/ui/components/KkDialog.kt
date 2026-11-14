@@ -83,7 +83,7 @@ fun KkDialogTitle(
                 modifier = Modifier
                     .clip(RoundedCornerShape(8.dp))
                     .clickable(onClick = onDismiss)
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .padding(horizontal = 9.dp, vertical = 5.dp)
             )
         }
     }

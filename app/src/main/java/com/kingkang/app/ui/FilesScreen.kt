@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -254,13 +255,24 @@ fun FilesScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             FileSort.entries.forEach { option ->
+                val selected = option == sort
                 FilterChip(
-                    label = option.label,
-                    selected = option == sort,
+                    // The arrow makes the tap-to-reverse behaviour visible; the label alone
+                    // looked like a second, identical button.
+                    label = if (selected) {
+                        "${option.label} ${if (ascending) "↑" else "↓"}"
+                    } else {
+                        option.label
+                    },
+                    selected = selected,
                     onClick = {
-                        if (option == sort) ascending = !ascending else {
+                        if (selected) {
+                            ascending = !ascending
+                        } else {
                             sortName = option.name
-                            ascending = true
+                            // Names read best A→Z; sizes and times read best with the
+                            // largest/newest first.
+                            ascending = option == FileSort.Name
                         }
                     }
                 )
@@ -268,7 +280,7 @@ fun FilesScreen(
             }
             Spacer(Modifier.weight(1f))
             FilterChip(
-                label = if (showHidden) "含隐藏" else "隐藏项",
+                label = "显示隐藏",
                 selected = showHidden,
                 onClick = { showHidden = !showHidden }
             )
@@ -526,15 +538,14 @@ private fun FilesTopBar(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Text(
-            "刷新",
-            color = TextSecondary,
-            fontSize = 11.5.sp,
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onRefresh)
-                .padding(horizontal = 10.dp, vertical = 7.dp)
-        )
+        androidx.compose.material3.IconButton(onClick = onRefresh) {
+            Icon(
+                Icons.Filled.Refresh,
+                contentDescription = "刷新",
+                tint = TextSecondary,
+                modifier = Modifier.size(19.dp)
+            )
+        }
     }
 }
 

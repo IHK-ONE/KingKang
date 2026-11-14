@@ -9302,35 +9302,45 @@ private fun ModelPickerDialog(
                     fontWeight = FontWeight.Medium
                 )
             }
-            Slider(
-                value = sliderIndex.toFloat(),
-                onValueChange = { value ->
-                    sliderIndex = value.roundToInt()
-                        .coerceIn(0, effortChoices.lastIndex.coerceAtLeast(0))
-                },
-                onValueChangeFinished = {
-                    val effort = effortChoices.getOrNull(sliderIndex)?.second
-                    if (effort != models.reasoningEffort) {
-                        onSelect(currentModel, effort)
-                    }
-                },
-                valueRange = 0f..effortChoices.lastIndex.coerceAtLeast(0).toFloat(),
-                steps = (effortChoices.size - 2).coerceAtLeast(0),
-                colors = SliderDefaults.colors(
-                    thumbColor = Accent,
-                    activeTrackColor = Accent,
-                    inactiveTrackColor = SurfaceVariant,
-                    activeTickColor = OnAccent.copy(alpha = 0.5f),
-                    inactiveTickColor = TextMuted.copy(alpha = 0.5f)
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                "向左更省、更快，向右推理更深入。",
-                color = TextMuted,
-                fontSize = 9.5.sp,
-                modifier = Modifier.padding(top = 4.dp)
-            )
+            if (effortChoices.size > 1) {
+                Slider(
+                    value = sliderIndex.toFloat(),
+                    onValueChange = { value ->
+                        sliderIndex = value.roundToInt()
+                            .coerceIn(0, effortChoices.lastIndex.coerceAtLeast(0))
+                    },
+                    onValueChangeFinished = {
+                        val effort = effortChoices.getOrNull(sliderIndex)?.second
+                        if (effort != models.reasoningEffort) {
+                            onSelect(currentModel, effort)
+                        }
+                    },
+                    valueRange = 0f..effortChoices.lastIndex.toFloat(),
+                    steps = effortChoices.size - 2,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Accent,
+                        activeTrackColor = Accent,
+                        inactiveTrackColor = SurfaceVariant,
+                        activeTickColor = OnAccent.copy(alpha = 0.5f),
+                        inactiveTickColor = TextMuted.copy(alpha = 0.5f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "向左更省、更快，向右推理更深入。",
+                    color = TextMuted,
+                    fontSize = 9.5.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            } else {
+                Text(
+                    "这个模型只有一个推理等级。",
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    lineHeight = 15.sp,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
         }
 
         KkDialogActions {

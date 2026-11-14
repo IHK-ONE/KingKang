@@ -149,6 +149,8 @@ fun SettingsScreen(
     val credentialsAnchor = remember { BringIntoViewRequester() }
     val appearanceAnchor = remember { BringIntoViewRequester() }
     val languageAnchor = remember { BringIntoViewRequester() }
+    val npmAnchor = remember { BringIntoViewRequester() }
+    val harnessAnchor = remember { BringIntoViewRequester() }
     val accountAnchor = remember { BringIntoViewRequester() }
     val connectionAnchor = remember { BringIntoViewRequester() }
     val presetAnchor = remember { BringIntoViewRequester() }
@@ -181,14 +183,23 @@ fun SettingsScreen(
         SettingsSearchEntry("Harness 语言", "中文、English、跟随 dsh", "locale language 语言 英文") {
             jumpTo(languageAnchor)
         },
-        SettingsSearchEntry("DeepSeek 账号", "登录状态、资料与余额", "account 账号 余额 登录 退出") {
-            jumpTo(accountAnchor)
+        SettingsSearchEntry("Kali 环境", "安装、更新与删除根文件系统", "kali rootfs 环境 删除") {
+            jumpTo(environmentAnchor)
+        },
+        SettingsSearchEntry("NPM 源", "安装与更新 dsh、插件时使用的源", "npm registry 源 镜像") {
+            jumpTo(npmAnchor)
+        },
+        SettingsSearchEntry("dsh 安装与更新", "版本、预览版本与卸载", "dsh harness 安装 更新 卸载") {
+            jumpTo(harnessAnchor)
         },
         SettingsSearchEntry("API Key", "写入 dsh 的凭据库", "key secret 密钥 deepseek") {
             jumpTo(credentialsAnchor)
         },
         SettingsSearchEntry("模型提供方", "端点、模型与默认模型", "provider model baseurl 模型") {
             onOpenProviders()
+        },
+        SettingsSearchEntry("DeepSeek 账号", "登录状态、资料与余额", "account 账号 余额 登录 退出") {
+            jumpTo(accountAnchor)
         },
         SettingsSearchEntry("网页搜索", "DeepSeek 搜索提供方与搜索次数", "web search 搜索") {
             onOpenAgentSettings("web-search-deepseek")
@@ -217,13 +228,10 @@ fun SettingsScreen(
         SettingsSearchEntry("运行模式", "新对话使用的 Agent 预设", "preset 预设 模式") {
             jumpTo(presetAnchor)
         },
-        SettingsSearchEntry("Kali 环境", "安装、更新与删除根文件系统", "kali rootfs 环境 删除") {
-            jumpTo(environmentAnchor)
-        },
         SettingsSearchEntry("存储与隐私", "运行位置、网络与共享目录", "storage privacy 存储 隐私 网络") {
             jumpTo(storageAnchor)
         },
-        SettingsSearchEntry("DeepSeek Harness", "轨迹视图与 dsh-web 的其余页面", "harness 轨迹 dsh web") {
+        SettingsSearchEntry("打开 Harness", "轨迹视图与 dsh-web 的其余页面", "harness 轨迹 dsh web") {
             onOpenHarness()
         }
     )
@@ -347,28 +355,32 @@ fun SettingsScreen(
             // dsh itself leads: its npm source and install state are the foundation the
             // rest of this section operates on, followed by the key, providers, account
             // and the remaining switches.
-            NpmSourceCard(
-                registry = npmRegistry,
-                onSelect = vm::setNpmRegistry,
-                onCustom = { showNpmSource = true }
-            )
+            Box(Modifier.bringIntoViewRequester(npmAnchor)) {
+                NpmSourceCard(
+                    registry = npmRegistry,
+                    onSelect = vm::setNpmRegistry,
+                    onCustom = { showNpmSource = true }
+                )
+            }
 
             Spacer(Modifier.height(10.dp))
-            HarnessCard(
-                harness = harness,
-                // A stopped bridge no longer proves dsh is present. After an uninstall its
-                // last version would otherwise survive in the card as a fake "已安装".
-                liveVersion = agent.dshVersion
-                    ?.takeIf { agent.connection == AgentConnection.Ready },
-                kaliInstalled = environment.installed,
-                prerelease = prereleaseUpdates,
-                onPrereleaseChange = vm::setPrereleaseUpdates,
-                onInstall = vm::installHarness,
-                onCheckUpdate = vm::checkHarnessUpdate,
-                onUninstall = { confirmUninstallHarness = true },
-                onCancel = vm::cancelHarnessTask,
-                onDismissError = vm::dismissHarnessError
-            )
+            Box(Modifier.bringIntoViewRequester(harnessAnchor)) {
+                HarnessCard(
+                    harness = harness,
+                    // A stopped bridge no longer proves dsh is present. After an uninstall
+                    // its last version would otherwise survive in the card as a fake "已安装".
+                    liveVersion = agent.dshVersion
+                        ?.takeIf { agent.connection == AgentConnection.Ready },
+                    kaliInstalled = environment.installed,
+                    prerelease = prereleaseUpdates,
+                    onPrereleaseChange = vm::setPrereleaseUpdates,
+                    onInstall = vm::installHarness,
+                    onCheckUpdate = vm::checkHarnessUpdate,
+                    onUninstall = { confirmUninstallHarness = true },
+                    onCancel = vm::cancelHarnessTask,
+                    onDismissError = vm::dismissHarnessError
+                )
+            }
 
             Spacer(Modifier.height(10.dp))
             Box(Modifier.bringIntoViewRequester(credentialsAnchor)) {
