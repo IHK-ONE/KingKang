@@ -3,6 +3,7 @@ package com.kingkang.app.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -317,9 +319,34 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .imePadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        )
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    // On the chat the notice floats above the composer instead of covering
+                    // it; every other page keeps it just above the bottom edge.
+                    bottom = if (screen == AppScreen.Home) 98.dp else 12.dp
+                )
+        ) { data ->
+            // A themed pill instead of Material's near-black bar: same surface, border
+            // and text colours as the rest of the native UI.
+            val shape = RoundedCornerShape(12.dp)
+            Box(
+                Modifier
+                    .clip(shape)
+                    .background(SurfaceRaised)
+                    .border(1.dp, Border, shape)
+                    .padding(horizontal = 14.dp, vertical = 9.dp)
+            ) {
+                Text(
+                    data.visuals.message,
+                    color = TextPrimary,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp
+                )
+            }
+        }
     }
 
     pendingSession?.let { session ->
