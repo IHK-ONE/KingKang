@@ -323,16 +323,20 @@ fun PluginsScreen(
                             singleLine = true,
                             enabled = ready && !agent.pluginSearch.loading,
                             decorationBox = { inner ->
-                                if (searchText.isEmpty()) {
-                                    Text(
-                                        "搜索插件，例如 web-search",
-                                        color = TextMuted,
-                                        fontSize = 11.5.sp,
-                                        lineHeight = 11.5.sp,
-                                        style = TextStyle(platformStyle = CompactInputPlatformStyle)
-                                    )
+                                Box(contentAlignment = Alignment.CenterStart) {
+                                    if (searchText.isEmpty()) {
+                                        Text(
+                                            "搜索插件，例如 web-search",
+                                            color = TextMuted,
+                                            fontSize = 11.5.sp,
+                                            lineHeight = 11.5.sp,
+                                            style = TextStyle(
+                                                platformStyle = CompactInputPlatformStyle
+                                            )
+                                        )
+                                    }
+                                    inner()
                                 }
-                                inner()
                             }
                         )
                     }
@@ -452,15 +456,20 @@ fun PluginsScreen(
                             singleLine = true,
                             enabled = ready && installing == null && !inspecting,
                             decorationBox = { inner ->
-                                if (spec.isEmpty()) {
-                                    Text(
-                                        "npm 包名，例如 dsh-plugin-xxx",
-                                        color = TextMuted,
-                                        fontSize = 11.5.sp,
-                                        style = TextStyle(platformStyle = CompactInputPlatformStyle)
-                                    )
+                                Box(contentAlignment = Alignment.CenterStart) {
+                                    if (spec.isEmpty()) {
+                                        Text(
+                                            "npm 包名，例如 dsh-plugin-xxx",
+                                            color = TextMuted,
+                                            fontSize = 11.5.sp,
+                                            lineHeight = 11.5.sp,
+                                            style = TextStyle(
+                                                platformStyle = CompactInputPlatformStyle
+                                            )
+                                        )
+                                    }
+                                    inner()
                                 }
-                                inner()
                             }
                         )
                     }

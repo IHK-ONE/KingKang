@@ -202,6 +202,7 @@ import com.kingkang.app.agent.UserItem
 import com.kingkang.app.agent.WorkflowItem
 import com.kingkang.app.agent.activeAtToken
 import com.kingkang.app.agent.formatFileMention
+import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.KkDialog
 import com.kingkang.app.ui.components.KkDialogActions
 import com.kingkang.app.ui.components.KkDialogTitle
@@ -1915,7 +1916,12 @@ private fun GoalCreateDialog(
                     Text(
                         "例如：完成本地服务的漏洞排查并给出修复建议",
                         color = TextMuted,
-                        fontSize = 13.sp
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                        style = TextStyle(
+                            platformStyle = com.kingkang.app.ui.components
+                                .CompactInputPlatformStyle
+                        )
                     )
                 }
                 inner()
@@ -2004,10 +2010,18 @@ private fun GoalEditDialog(
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             decorationBox = { inner ->
-                if (rounds.isEmpty()) {
-                    Text("留空则保持当前轮次上限", color = TextMuted, fontSize = 12.sp)
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (rounds.isEmpty()) {
+                        Text(
+                            "留空则保持当前轮次上限",
+                            color = TextMuted,
+                            fontSize = 13.sp,
+                            lineHeight = 13.sp,
+                            style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                        )
+                    }
+                    inner()
                 }
-                inner()
             }
         )
         if (!roundsValid) {
@@ -2605,7 +2619,13 @@ private fun ScheduleInput(
         },
         decorationBox = { inner ->
             if (value.isEmpty()) {
-                Text(hint, color = TextMuted, fontSize = 12.sp)
+                Text(
+                    hint,
+                    color = TextMuted,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                    style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                )
             }
             inner()
         }
@@ -3756,10 +3776,18 @@ private fun TrajectoryFilterBar(
                 ),
                 cursorBrush = SolidColor(Accent),
                 decorationBox = { inner ->
-                    if (query.isEmpty()) {
-                        Text("搜索轨迹", color = TextMuted, fontSize = 12.5.sp)
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (query.isEmpty()) {
+                            Text(
+                                "搜索轨迹",
+                                color = TextMuted,
+                                fontSize = 12.5.sp,
+                                lineHeight = 12.5.sp,
+                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                            )
+                        }
+                        inner()
                     }
-                    inner()
                 }
             )
             if (query.isNotEmpty()) {
@@ -6125,7 +6153,12 @@ private fun FeedbackEditorDialog(
                 BasicTextField(
                     value = note,
                     onValueChange = { if (it.length <= 600) note = it },
-                    textStyle = TextStyle(color = TextPrimary, fontSize = 13.sp, lineHeight = 19.sp),
+                    textStyle = TextStyle(
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                        platformStyle = CompactInputPlatformStyle
+                    ),
                     cursorBrush = SolidColor(Accent),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -6142,7 +6175,9 @@ private fun FeedbackEditorDialog(
                                     "这次哪里做得好，可以补充说明"
                                 },
                                 color = TextMuted,
-                                fontSize = 12.sp
+                                fontSize = 13.sp,
+                                lineHeight = 19.sp,
+                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
                             )
                         }
                         inner()
@@ -7442,7 +7477,13 @@ private fun QuestionDock(
                     maxLines = 3,
                     decorationBox = { inner ->
                         if (custom[item.id].orEmpty().isEmpty()) {
-                            Text("其他回答（可选）", color = TextMuted, fontSize = 12.sp)
+                            Text(
+                                "其他回答（可选）",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                            )
                         }
                         inner()
                     }
@@ -7747,7 +7788,6 @@ private fun ContextStatsDialog(
                     .heightIn(max = 430.dp)
                     .verticalScroll(scroll)
             ) {
-                StatSection("模型")
                 StatWideRow("当前模型", modelSelectionLabel(selection))
 
                 StatSection("上下文")

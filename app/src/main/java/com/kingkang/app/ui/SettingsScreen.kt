@@ -92,6 +92,7 @@ import com.kingkang.app.agent.AgentLanguageSettings
 import com.kingkang.app.agent.AgentPresetCopy
 import com.kingkang.app.agent.AgentState
 import com.kingkang.app.browser.BrowserActivity
+import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.Dot
 import com.kingkang.app.ui.components.KkDialog
 import com.kingkang.app.ui.components.KkDialogActions
@@ -651,10 +652,17 @@ private fun SettingsSearchDialog(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(9.dp))
                 .background(SurfaceVariant.copy(alpha = 0.6f))
-                .padding(horizontal = 10.dp, vertical = 9.dp)
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            contentAlignment = Alignment.CenterStart
         ) {
             if (query.isEmpty()) {
-                Text("搜索设置项", color = TextMuted, fontSize = 13.sp)
+                Text(
+                    "搜索设置项",
+                    color = TextMuted,
+                    fontSize = 13.sp,
+                    lineHeight = 13.sp,
+                    style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                )
             }
             BasicTextField(
                 value = query,
@@ -2401,14 +2409,18 @@ private fun NpmSourceDialog(
                             imeAction = ImeAction.Done
                         ),
                         decorationBox = { inner ->
-                            if (input.isEmpty()) {
-                                Text(
-                                    "https://npm.example.com/",
-                                    color = TextMuted,
-                                    fontSize = 12.sp
-                                )
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (input.isEmpty()) {
+                                    Text(
+                                        "https://npm.example.com/",
+                                        color = TextMuted,
+                                        fontSize = 12.sp,
+                                        lineHeight = 12.sp,
+                                        style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                                    )
+                                }
+                                inner()
                             }
-                            inner()
                         }
                     )
                 }
@@ -2757,14 +2769,18 @@ private fun AgentCredentialsCard(
                         imeAction = ImeAction.Done
                     ),
                     decorationBox = { inner ->
-                        if (keyInput.isEmpty()) {
-                            Text(
-                                if (ready) "输入新的 API Key" else "Agent 尚未连接",
-                                color = TextMuted,
-                                fontSize = 12.sp
-                            )
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (keyInput.isEmpty()) {
+                                Text(
+                                    if (ready) "输入新的 API Key" else "Agent 尚未连接",
+                                    color = TextMuted,
+                                    fontSize = 12.sp,
+                                    lineHeight = 12.sp,
+                                    style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                                )
+                            }
+                            inner()
                         }
-                        inner()
                     }
                 )
                 // A plain tap target instead of a TextButton: a button's 48 dp minimum would

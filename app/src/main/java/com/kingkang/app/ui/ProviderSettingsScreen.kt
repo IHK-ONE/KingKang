@@ -51,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -69,6 +70,7 @@ import com.kingkang.app.agent.AgentProviderModel
 import com.kingkang.app.agent.AgentState
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
+import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.theme.Background
@@ -979,10 +981,18 @@ private fun ProviderField(
                     imeAction = ImeAction.Next
                 ),
                 decorationBox = { inner ->
-                    if (value.isEmpty()) {
-                        Text(placeholder, color = TextMuted, fontSize = 12.sp)
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (value.isEmpty()) {
+                            Text(
+                                placeholder,
+                                color = TextMuted,
+                                fontSize = 12.5.sp,
+                                lineHeight = 12.5.sp,
+                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                            )
+                        }
+                        inner()
                     }
-                    inner()
                 }
             )
             trailing?.invoke()
