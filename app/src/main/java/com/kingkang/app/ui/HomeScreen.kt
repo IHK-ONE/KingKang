@@ -2356,6 +2356,7 @@ private fun ScheduleFormDialog(
         else -> true
     }
     val canSave = !busy && title.isNotBlank() && prompt.isNotBlank() && timingValid
+    val formScroll = rememberScrollState()
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Surface,
@@ -2368,10 +2369,11 @@ private fun ScheduleFormDialog(
             )
         },
         text = {
+            ScrollEdgeFade(canScrollForward = formScroll.canScrollForward) {
             Column(
                 Modifier
                     .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(formScroll)
             ) {
                 ScheduleInput(
                     label = "标题",
@@ -2520,6 +2522,7 @@ private fun ScheduleFormDialog(
                         lineHeight = 15.sp
                     )
                 }
+            }
             }
         },
         confirmButton = {
@@ -9204,11 +9207,13 @@ private fun ModelPickerDialog(
             )
         }
         if (changingModel) {
+            val modelListScroll = rememberScrollState()
+            ScrollEdgeFade(canScrollForward = modelListScroll.canScrollForward) {
             Column(
                 Modifier
                     .fillMaxWidth()
                     .heightIn(max = 240.dp)
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(modelListScroll)
                     .padding(bottom = 4.dp)
             ) {
                 models.groups.forEach { group ->
@@ -9262,6 +9267,7 @@ private fun ModelPickerDialog(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
                     )
                 }
+            }
             }
         }
 

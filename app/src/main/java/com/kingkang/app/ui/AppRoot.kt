@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -445,6 +446,7 @@ private fun KingKangDrawer(
 ) {
     val agent by vm.agentState.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
+    val drawerListState = rememberLazyListState()
     var showWorkspaceDialog by rememberSaveable { mutableStateOf(false) }
     var showDirectoryPicker by rememberSaveable { mutableStateOf(false) }
     var workspacePath by rememberSaveable { mutableStateOf("/root") }
@@ -568,9 +570,15 @@ private fun KingKangDrawer(
                 onSessionLongPress(session, session.id in agent.pinnedSessionIds)
             }
 
-            Box(Modifier.weight(1f)) {
+            // The session list is the one long surface that had no edge hint; without it
+            // the 未分组 header could sit at the fold with its rows invisible.
+            ScrollEdgeFade(
+                canScrollForward = drawerListState.canScrollForward,
+                modifier = Modifier.weight(1f)
+            ) {
                 LazyColumn(
                     Modifier.fillMaxSize(),
+                    state = drawerListState,
                     contentPadding = PaddingValues(bottom = 22.dp)
                 ) {
                 if (trimmedQuery.isNotEmpty()) {

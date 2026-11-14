@@ -986,6 +986,7 @@ private fun McpServerDialog(
     var enabled by remember { mutableStateOf(initial?.enabled ?: true) }
     val valid = name.trim().isNotEmpty() &&
         if (transport == "stdio") command.trim().isNotEmpty() else url.trim().isNotEmpty()
+    val formScroll = rememberScrollState()
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Surface,
@@ -998,7 +999,8 @@ private fun McpServerDialog(
             )
         },
         text = {
-            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+            ScrollEdgeFade(canScrollForward = formScroll.canScrollForward) {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(formScroll)) {
                 McpField("名称", name, enabledField = initial == null) { name = it.take(32) }
                 Spacer(Modifier.height(8.dp))
                 Row {
@@ -1022,6 +1024,7 @@ private fun McpServerDialog(
                     Spacer(Modifier.weight(1f))
                     Switch(checked = enabled, onCheckedChange = { enabled = it })
                 }
+            }
             }
         },
         confirmButton = {
