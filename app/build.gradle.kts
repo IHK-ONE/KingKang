@@ -11,8 +11,8 @@ android {
         applicationId = "com.kingkang.app"
         minSdk = 26
         targetSdk = 28
-        versionCode = 7
-        versionName = "0.2.4"
+        versionCode = 8
+        versionName = "0.2.5"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -41,6 +41,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
     }
 
     composeOptions {
@@ -74,6 +75,12 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("org.tukaani:xz:1.9")
+
+    // Shizuku grants the app a shell-user binder without root. The provider artifact
+    // registers the binder bridge; the API is used only for permission state and the
+    // device-side adb helper.
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

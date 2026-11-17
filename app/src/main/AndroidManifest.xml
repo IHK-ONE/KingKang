@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- USB host is optional: OTG network adapters are detected when attached. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <application
         android:name=".KingKangApplication"
@@ -48,6 +51,16 @@
             android:exported="false"
             android:process=":browser"
             android:windowSoftInputMode="adjustResize" />
+
+        <!-- Shizuku hands its binder to the app through this provider. The user grants
+             shell-level access in Shizuku; KingKang never asks for root. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <!-- Exports and attachments leave the app as content:// URIs only. -->
         <provider

@@ -19,7 +19,8 @@ class RootfsInstaller(
         spec: RootfsSpec,
         expectedSha256: String = spec.sha256,
         onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> },
-        onStatus: (String) -> Unit = {}
+        onStatus: (String) -> Unit = {},
+        onExtractProgress: (Float) -> Unit = {}
     ) = withContext(Dispatchers.IO) {
         val archive = File(context.cacheDir, "kali-${spec.fileName}")
         archive.parentFile?.mkdirs()
@@ -36,7 +37,7 @@ class RootfsInstaller(
             (expectedSha256.isBlank() || manager.verifySha256(archive, expectedSha256))
         ) {
             onStatus("发现已下载的安装包，直接安装…")
-            manager.installArchive(archive, expectedSha256, onStatus)
+            manager.installArchive(archive, expectedSha256, onStatus, onExtractProgress)
             archive.delete()
             return@withContext
         }
@@ -86,7 +87,7 @@ class RootfsInstaller(
 
             connection.inputStream.use { input ->
                 FileOutputStream(part, appending).use { output ->
-                    val buffer = ByteArray(128 * 1024)
+                    val buffer = ByteArray(256 * 1024)
                     while (true) {
                         coroutineContext.ensureActive()
                         val n = input.read(buffer)
@@ -105,7 +106,7 @@ class RootfsInstaller(
                 part.delete()
             }
             onProgress(archive.length(), archive.length())
-            manager.installArchive(archive, expectedSha256, onStatus)
+            manager.installArchive(archive, expectedSha256, onStatus, onExtractProgress)
             archive.delete()
         } finally {
             connection.disconnect()

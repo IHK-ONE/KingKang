@@ -3,7 +3,10 @@ package com.kingkang.app.runtime
 import android.content.Context
 import android.util.Log
 import org.tukaani.xz.XZInputStream
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
@@ -52,7 +55,8 @@ class RootfsManager(private val context: Context) {
     fun installArchive(
         archive: File,
         expectedSha256: String?,
-        onStatus: (String) -> Unit = {}
+        onStatus: (String) -> Unit = {},
+        onProgress: (Float) -> Unit = {}
     ) {
         if (!archive.isFile || archive.length() == 0L) {
             throw IOException("rootfs 压缩包不存在")
@@ -71,8 +75,7 @@ class RootfsManager(private val context: Context) {
         if (!tmp.isDirectory) throw IOException("无法创建临时目录")
 
         try {
-            onStatus("正在解压 Kali 环境…")
-            extract(archive, tmp)
+            extract(archive, tmp, onStatus, onProgress)
             normalizeSingleTopLevelDirectory(tmp)
             if (!File(tmp, "etc/os-release").isFile) {
                 throw IOException("解压完成，但没有找到 etc/os-release，rootfs 结构不正确")
@@ -232,9 +235,20 @@ class RootfsManager(private val context: Context) {
     fun verifySha256(archive: File, expected: String): Boolean =
         archive.isFile && sha256(archive).equals(expected, ignoreCase = true)
 
-    private fun extract(archive: File, destination: File) {
+    private fun extract(
+        archive: File,
+        destination: File,
+        onStatus: (String) -> Unit = {},
+        onProgress: (Float) -> Unit = {}
+    ) {
         val compression = sniffCompression(archive)
         val log = File(context.cacheDir, "rootfs-extract.log")
+        val archiveBytes = archive.length().coerceAtLeast(1L)
+        val startedAt = System.currentTimeMillis()
+        var lastReportAt = 0L
+        var lastReportedBytes = -1L
+        onProgress(0f)
+        onStatus("正在解压 Kali 环境…")
 
         // Android's toybox tar only supports xz when an external `xz` binary exists, which
         // stock Android does not ship. Decompress in-process and stream a plain tar into
@@ -251,23 +265,51 @@ class RootfsManager(private val context: Context) {
             .start()
 
         try {
-            archive.inputStream().use { fileInput ->
+            archive.inputStream().buffered(1 shl 20).use { rawInput ->
+                // Progress is measured on the compressed stream: it is the only total we
+                // know before extraction starts, and it advances steadily with real work.
+                var compressed = 0L
+                val fileInput = object : FilterInputStream(rawInput) {
+                    override fun read(): Int {
+                        val value = super.read()
+                        if (value >= 0) compressed += 1
+                        return value
+                    }
+
+                    override fun read(b: ByteArray, off: Int, len: Int): Int {
+                        val count = super.read(b, off, len)
+                        if (count > 0) compressed += count
+                        return count
+                    }
+                }
                 val decoded: InputStream = when (compression) {
                     Compression.XZ -> XZInputStream(fileInput)
                     Compression.GZIP -> GZIPInputStream(fileInput)
                     Compression.NONE -> fileInput
                 }
                 decoded.use { input ->
-                    process.outputStream.use { output ->
+                    BufferedOutputStream(process.outputStream, 1 shl 20).use { output ->
                         // A full NetHunter image expands to many gigabytes; stop early
                         // instead of filling the device's data partition.
-                        val buffer = ByteArray(128 * 1024)
+                        val buffer = ByteArray(1 shl 20)
                         var sinceCheck = 0L
                         while (true) {
                             val n = input.read(buffer)
                             if (n <= 0) break
                             output.write(buffer, 0, n)
                             sinceCheck += n
+                            val now = System.currentTimeMillis()
+                            if (compressed - lastReportedBytes >= 1_000_000 ||
+                                now - lastReportAt >= 2_000
+                            ) {
+                                lastReportedBytes = compressed
+                                lastReportAt = now
+                                onProgress((compressed.toFloat() / archiveBytes).coerceIn(0f, 1f))
+                                val seconds = (now - startedAt) / 1000
+                                onStatus(
+                                    "正在解压 Kali 环境… 已用时 ${seconds / 60} 分 ${seconds % 60} 秒"
+                                )
+                            }
                             if (sinceCheck >= 64L * 1024 * 1024) {
                                 sinceCheck = 0
                                 if (destination.usableSpace in 1 until MIN_FREE_BYTES) {
@@ -278,6 +320,8 @@ class RootfsManager(private val context: Context) {
                     }
                 }
             }
+            onProgress(1f)
+            onStatus("正在完成安装…")
 
             val exit = process.waitFor()
             // A tarball may contain device nodes (dev/null, dev/random) that an app

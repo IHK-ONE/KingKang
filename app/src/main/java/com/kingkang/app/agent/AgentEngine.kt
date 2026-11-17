@@ -13,6 +13,7 @@ import com.kingkang.app.BuildConfig
 import com.kingkang.app.MainActivity
 import com.kingkang.app.R
 import com.kingkang.app.data.SettingsStore
+import com.kingkang.app.device.DeviceCapabilities
 import com.kingkang.app.files.FileActions
 import com.kingkang.app.runtime.RootfsManager
 import kotlinx.coroutines.CoroutineScope
@@ -5446,6 +5447,24 @@ object AgentEngine {
     private fun attachmentTextForFiles(text: String, files: List<AgentFile>): String =
         attachNote(text, files)
 
+    /**
+     * The prompt body: the user's text, the file-path note when files are staged, and the
+     * active device capabilities. The capability block is evaluated per message, so a
+     * Shizuku grant or OTG adapter connected mid-session appears from the next turn and a
+     * missing capability is never mentioned.
+     */
+    private fun outgoingWithContext(text: String, files: List<AgentDraftFile>): String {
+        val base = attachmentText(text, files)
+        val device = DeviceCapabilities.promptNote() ?: return base
+        return buildString {
+            if (base.isNotEmpty()) {
+                append(base.trimEnd())
+                append("\n\n")
+            }
+            append(device)
+        }
+    }
+
     private fun attachNote(text: String, files: List<AgentFile>): String {
         if (files.isEmpty()) return text
         return buildString {
@@ -5470,9 +5489,11 @@ object AgentEngine {
      * instead of staying visible as prompt plumbing.
      */
     private fun splitAttachmentText(raw: String): Pair<String, List<AgentFile>> {
-        val markerIndex = raw.indexOf(ATTACHMENT_MARKER)
-        if (markerIndex < 0) return raw to emptyList()
-        val body = raw.substring(markerIndex + ATTACHMENT_MARKER.length)
+        // Device-capability plumbing is prompt context, not something the user typed.
+        val withoutContext = stripDeviceContext(raw)
+        val markerIndex = withoutContext.indexOf(ATTACHMENT_MARKER)
+        if (markerIndex < 0) return withoutContext to emptyList()
+        val body = withoutContext.substring(markerIndex + ATTACHMENT_MARKER.length)
         val files = body.lineSequence()
             .map { it.trim() }
             .filter { it.startsWith("- /root/shared/") }
@@ -5487,9 +5508,20 @@ object AgentEngine {
                 )
             }
             .toList()
-        if (files.isEmpty()) return raw to emptyList()
-        val visible = raw.substring(0, markerIndex).trimEnd()
+        if (files.isEmpty()) return withoutContext to emptyList()
+        val visible = withoutContext.substring(0, markerIndex).trimEnd()
         return visible to files
+    }
+
+    /** Removes the device-capability block that KingKang appends to outgoing prompts. */
+    private fun stripDeviceContext(raw: String): String {
+        val marker = DeviceCapabilities.CONTEXT_MARKER
+        val index = when {
+            raw.startsWith(marker) -> 0
+            else -> raw.indexOf("\n\n$marker")
+        }
+        if (index < 0) return raw
+        return raw.substring(0, index).trimEnd()
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -5575,7 +5607,7 @@ object AgentEngine {
                 hostPath = it.hostPath
             )
         }
-        val outgoing = attachmentText(trimmed, files)
+        val outgoing = outgoingWithContext(trimmed, files)
         val derivedTitle = trimmed.replace(Regex("\\s+"), " ").take(28)
             .ifBlank {
                 when {
@@ -5746,7 +5778,7 @@ object AgentEngine {
             return
         }
 
-        val outgoing = attachmentText(text, files)
+        val outgoing = outgoingWithContext(text, files)
         val pending = UserItem(
             key = "u:sub:${UUID.randomUUID()}",
             text = text,

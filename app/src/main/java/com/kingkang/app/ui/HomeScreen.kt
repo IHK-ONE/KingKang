@@ -203,6 +203,7 @@ import com.kingkang.app.agent.WorkflowItem
 import com.kingkang.app.agent.activeAtToken
 import com.kingkang.app.agent.formatFileMention
 import com.kingkang.app.ui.components.CompactInputPlatformStyle
+import com.kingkang.app.ui.components.DeviceIndicators
 import com.kingkang.app.ui.components.KkDialog
 import com.kingkang.app.ui.components.KkDialogActions
 import com.kingkang.app.ui.components.KkDialogTitle
@@ -4778,6 +4779,8 @@ private fun EmptyState(
             fontSize = 13.sp,
             lineHeight = 20.sp
         )
+        Spacer(Modifier.height(10.dp))
+        DeviceIndicators(onOpenSettings = onOpenSettings)
         if (apiKeyMissing) {
             Spacer(Modifier.height(16.dp))
             ApiKeyPrompt(onConfigureKey)
@@ -4871,7 +4874,7 @@ private fun TerminalEntry(
         environment.installed ->
             if (rootMode) "Root · chroot · 环境就绪" else "PRoot · 无需 root · 环境就绪"
 
-        else -> "首次使用需下载 ${formatBytes(environment.approxBytes)}"
+        else -> "首次使用需要下载 Kali 环境"
     }
 
     Row(

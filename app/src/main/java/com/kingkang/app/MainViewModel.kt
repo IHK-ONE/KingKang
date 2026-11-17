@@ -23,6 +23,7 @@ import com.kingkang.app.agent.AgentSettingGroup
 import com.kingkang.app.agent.AgentState
 import com.kingkang.app.agent.AgentSubagent
 import com.kingkang.app.data.SettingsStore
+import com.kingkang.app.device.DeviceAdbHelper
 import com.kingkang.app.files.FileActions
 import com.kingkang.app.runtime.ChrootEngine
 import com.kingkang.app.runtime.CommandSpec
@@ -127,10 +128,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** npm registry for dsh installs and plugin installs; blank means the Aliyun default. */
     private val _npmRegistry = MutableStateFlow(settingsStore.npmRegistry)
     val npmRegistry: StateFlow<String> = _npmRegistry.asStateFlow()
-
-    /** Whether dsh update checks include rc/alpha releases. */
-    private val _prereleaseUpdates = MutableStateFlow(settingsStore.prereleaseUpdates)
-    val prereleaseUpdates: StateFlow<Boolean> = _prereleaseUpdates.asStateFlow()
 
     private val _rootProbe = MutableStateFlow<RootProbe>(RootProbe.Unknown)
     val rootProbe: StateFlow<RootProbe> = _rootProbe.asStateFlow()
@@ -411,18 +408,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _environment.update { it.copy(progress = fraction) }
                     },
                     onStatus = { status ->
-                        _environment.update {
-                            val postDownload = status.contains("解压") ||
-                                status.contains("校验") || status.contains("安装")
-                            it.copy(
-                                status = status,
-                                progress = if (postDownload) null else it.progress
-                            )
-                        }
+                        // Keep the bar: extraction reports its own compressed-byte
+                        // fraction, so the percentage stays true from download to unpack.
+                        _environment.update { it.copy(status = status) }
+                    },
+                    onExtractProgress = { fraction ->
+                        _environment.update { it.copy(progress = fraction) }
                     }
                 )
                 refreshEnvironment()
                 refreshHarness()
+                // A replaced image has lost /usr/local/bin/kk-adb; put it back so the
+                // device-side helper survives Kali updates.
+                DeviceAdbHelper.ensureInstalled(getApplication())
                 _environment.update {
                     it.copy(
                         installing = false,
@@ -1274,13 +1272,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setPrereleaseUpdates(enabled: Boolean) {
-        if (enabled == _prereleaseUpdates.value) return
-        settingsStore.prereleaseUpdates = enabled
-        _prereleaseUpdates.value = enabled
-        emitUiMessage(if (enabled) "更新检查将包含预览版本" else "更新检查只跟随正式版本")
-    }
-
     /**
      * Plugin bundles are enabled per dsh profile, not per chat, so a switch here changes
      * what every session started afterwards loads.
@@ -1596,10 +1587,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** The npm source handed to Kali maintenance scripts; blank means the app default. */
     private fun harnessNpmEnv(): Map<String, String> =
-        buildMap {
-            put("KINGKANG_NPM_REGISTRY", _npmRegistry.value.ifBlank { NPM_REGISTRY_DEFAULT })
-            if (_prereleaseUpdates.value) put("KINGKANG_DSH_PRERELEASE", "1")
-        }
+        mapOf("KINGKANG_NPM_REGISTRY" to _npmRegistry.value.ifBlank { NPM_REGISTRY_DEFAULT })
 
     override fun onCleared() {
         installJob?.cancel()

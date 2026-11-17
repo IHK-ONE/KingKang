@@ -85,6 +85,8 @@ import com.kingkang.app.BuildConfig
 import com.kingkang.app.MainViewModel
 import com.kingkang.app.RootProbe
 import com.kingkang.app.agent.AgentAccountSnapshot
+import com.kingkang.app.device.ShizukuManager
+import com.kingkang.app.device.UsbMonitor
 import com.kingkang.app.agent.AgentMcpServer
 import com.kingkang.app.agent.AgentMcpSettings
 import com.kingkang.app.agent.AgentConnection
@@ -138,7 +140,6 @@ fun SettingsScreen(
     val agent by vm.agentState.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
     val npmRegistry by vm.npmRegistry.collectAsState()
-    val prereleaseUpdates by vm.prereleaseUpdates.collectAsState()
     val settingsScroll = rememberScrollState()
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmUninstallHarness by remember { mutableStateOf(false) }
@@ -152,6 +153,7 @@ fun SettingsScreen(
     val languageAnchor = remember { BringIntoViewRequester() }
     val npmAnchor = remember { BringIntoViewRequester() }
     val harnessAnchor = remember { BringIntoViewRequester() }
+    val deviceAnchor = remember { BringIntoViewRequester() }
     val accountAnchor = remember { BringIntoViewRequester() }
     val connectionAnchor = remember { BringIntoViewRequester() }
     val presetAnchor = remember { BringIntoViewRequester() }
@@ -190,7 +192,7 @@ fun SettingsScreen(
         SettingsSearchEntry("NPM 源", "安装与更新 dsh、插件时使用的源", "npm registry 源 镜像") {
             jumpTo(npmAnchor)
         },
-        SettingsSearchEntry("dsh 安装与更新", "版本、预览版本与卸载", "dsh harness 安装 更新 卸载") {
+        SettingsSearchEntry("dsh 安装与更新", "版本、检查更新与卸载", "dsh harness 安装 更新 卸载") {
             jumpTo(harnessAnchor)
         },
         SettingsSearchEntry("API Key", "写入 dsh 的凭据库", "key secret 密钥 deepseek") {
@@ -228,6 +230,9 @@ fun SettingsScreen(
         },
         SettingsSearchEntry("运行模式", "新对话使用的 Agent 预设", "preset 预设 模式") {
             jumpTo(presetAnchor)
+        },
+        SettingsSearchEntry("设备能力", "OTG 网卡与 Shizuku ADB 授权", "otg usb shizuku adb 网卡 设备") {
+            jumpTo(deviceAnchor)
         },
         SettingsSearchEntry("存储与隐私", "运行位置、网络与共享目录", "storage privacy 存储 隐私 网络") {
             jumpTo(storageAnchor)
@@ -373,8 +378,6 @@ fun SettingsScreen(
                     liveVersion = agent.dshVersion
                         ?.takeIf { agent.connection == AgentConnection.Ready },
                     kaliInstalled = environment.installed,
-                    prerelease = prereleaseUpdates,
-                    onPrereleaseChange = vm::setPrereleaseUpdates,
                     onInstall = vm::installHarness,
                     onCheckUpdate = vm::checkHarnessUpdate,
                     onUninstall = { confirmUninstallHarness = true },
@@ -502,6 +505,13 @@ fun SettingsScreen(
             )
 
             Spacer(Modifier.height(24.dp))
+            Box(Modifier.bringIntoViewRequester(deviceAnchor)) {
+                SectionLabel("设备能力")
+            }
+            Spacer(Modifier.height(8.dp))
+            DeviceCapabilityCard(onOpenUrl = ::openExternal)
+
+            Spacer(Modifier.height(24.dp))
             Box(Modifier.bringIntoViewRequester(storageAnchor)) {
                 SectionLabel("存储与隐私")
             }
@@ -554,7 +564,7 @@ fun SettingsScreen(
     if (confirmUninstallHarness) {
         ConfirmDialog(
             title = "卸载 Agent 核心？",
-            text = "会从 Kali 内删除 dsh、Node.js 与 npm 依赖缓存（约 1.4 GB）。" +
+            text = "会从 Kali 内删除 dsh、Node.js 与 npm 依赖缓存。" +
                 "Kali 环境本身和 /root 中的其他文件不受影响。",
             confirmLabel = "卸载",
             destructive = true,
@@ -1497,6 +1507,138 @@ internal fun ChoiceSegmented(
     }
 }
 
+/**
+ * Device-side abilities: USB network adapters seen through OTG, and Shizuku's shell
+ * access. Neither is root; the card states exactly what the model is told.
+ */
+@Composable
+private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
+    val context = LocalContext.current
+    val otg by UsbMonitor.networkPresent.collectAsState()
+    val shizuku by ShizukuManager.state.collectAsState()
+    val shizukuStatus = when {
+        shizuku.authorized -> "已授权"
+        !shizuku.installed -> "未安装"
+        shizuku.running -> "未授权"
+        else -> "未运行"
+    }
+    SettingsCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "OTG 网卡",
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "插入 USB 网络适配器后自动识别；能否联网取决于 Android 是否启用了该网卡。",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                if (otg) "已接入" else "未接入",
+                color = if (otg) Success else TextMuted,
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = Border.copy(alpha = 0.7f))
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Shizuku ADB",
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "授权后，AI 可以在 Kali 中运行 kk-adb 执行设备端 adb shell 命令" +
+                        "（shell 权限，不是 root）。",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                shizukuStatus,
+                color = when {
+                    shizuku.authorized -> Success
+                    shizuku.running -> Amber
+                    else -> TextMuted
+                },
+                fontSize = 11.sp
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            when {
+                !shizuku.installed -> OutlinedButton(
+                    onClick = { onOpenUrl(SHIZUKU_SITE) },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Border),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                    modifier = Modifier.height(32.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                ) {
+                    Text("了解 Shizuku", fontSize = 11.sp)
+                }
+
+                !shizuku.running -> OutlinedButton(
+                    onClick = {
+                        if (!ShizukuManager.openManager(context)) onOpenUrl(SHIZUKU_SITE)
+                    },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, Border),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                    modifier = Modifier.height(32.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                ) {
+                    Text("打开 Shizuku", fontSize = 11.sp)
+                }
+
+                !shizuku.authorized -> Button(
+                    onClick = { ShizukuManager.requestPermission() },
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    modifier = Modifier.height(32.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Accent,
+                        contentColor = OnAccent
+                    )
+                ) {
+                    Text("授权", fontSize = 11.sp)
+                }
+
+                else -> Text(
+                    "kk-adb 已可用",
+                    color = Success,
+                    fontSize = 10.5.sp
+                )
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                "刷新",
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .clickable { ShizukuManager.refresh() }
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
+    }
+}
+
+private const val SHIZUKU_SITE = "https://shizuku.rikka.app/"
+
 @Composable
 private fun RootSettingCard(
     rootMode: Boolean,
@@ -1630,6 +1772,25 @@ private fun RootSettingCard(
     }
 }
 
+/**
+ * A truthful progress companion: elapsed wall-clock time since the work started. It is
+ * the only time figure the install UI shows; no archive size or duration is guessed.
+ */
+@Composable
+private fun rememberElapsedText(active: Boolean): String? {
+    var seconds by remember(active) { mutableStateOf(0L) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        val started = System.currentTimeMillis()
+        while (true) {
+            seconds = (System.currentTimeMillis() - started) / 1000
+            delay(1_000)
+        }
+    }
+    if (!active) return null
+    return "已用时 ${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
+}
+
 @Composable
 private fun EnvironmentCard(
     environment: com.kingkang.app.EnvironmentUi,
@@ -1641,6 +1802,7 @@ private fun EnvironmentCard(
     onDelete: () -> Unit,
     onOpenTerminal: () -> Unit
 ) {
+    val elapsed = rememberElapsedText(environment.installing || environment.deleting)
     val postDownload = environment.installing && (
         environment.status?.contains("解压") == true ||
             environment.status?.contains("校验") == true ||
@@ -1720,6 +1882,15 @@ private fun EnvironmentCard(
                     fontSize = 10.5.sp,
                     modifier = Modifier.weight(1f)
                 )
+                if (elapsed != null) {
+                    Text(
+                        elapsed,
+                        color = TextMuted,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.5.sp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
                 Text(
                     if (progress != null) "${(progress * 100).toInt()}%" else "",
                     color = AccentSoft,
@@ -1888,15 +2059,15 @@ private fun EnvironmentCard(
                     )
                 ) {
                     Text(
-                        "下载并安装 · ${formatBytes(environment.approxBytes)}",
+                        "下载并安装 Kali 环境",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
                 Spacer(Modifier.height(7.dp))
                 Text(
-                    "安装会下载 Kali NetHunter 完整根文件系统并校验 SHA-256。" +
-                        "解压后占用明显更多空间，请预留足够存储。",
+                    "安装会下载 Kali NetHunter 完整根文件系统并校验 SHA-256；下载与解压都会显示" +
+                        "真实进度和已用时间。解压后占用会明显增加，请预留足够存储。",
                     color = TextMuted,
                     fontSize = 9.5.sp,
                     lineHeight = 14.sp
@@ -1911,8 +2082,6 @@ private fun HarnessCard(
     harness: HarnessUi,
     liveVersion: String?,
     kaliInstalled: Boolean,
-    prerelease: Boolean,
-    onPrereleaseChange: (Boolean) -> Unit,
     onInstall: () -> Unit,
     onCheckUpdate: () -> Unit,
     onUninstall: () -> Unit,
@@ -1923,6 +2092,7 @@ private fun HarnessCard(
     // (for example when dsh was installed outside the in-app flow).
     val installed = harness.installed || !liveVersion.isNullOrBlank()
     val versionText = harness.version ?: liveVersion
+    val elapsed = rememberElapsedText(harness.busy)
     val uninstalling = harness.busy && harness.step?.contains("卸载") == true
     val statusLabel = when {
         harness.busy -> when {
@@ -2024,11 +2194,22 @@ private fun HarnessCard(
 
         if (harness.busy) {
             Spacer(Modifier.height(12.dp))
-            Text(
-                harness.step ?: "正在执行…",
-                color = TextSecondary,
-                fontSize = 10.5.sp
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    harness.step ?: "正在执行…",
+                    color = TextSecondary,
+                    fontSize = 10.5.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                if (elapsed != null) {
+                    Text(
+                        elapsed,
+                        color = TextMuted,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 9.5.sp
+                    )
+                }
+            }
             Spacer(Modifier.height(8.dp))
             val fraction = harness.progress
             if (fraction != null) {
@@ -2158,9 +2339,9 @@ private fun HarnessCard(
                 }
                 Spacer(Modifier.height(7.dp))
                 Text(
-                    "会安装 Node.js 24 与 @deepseek-ai/dsh（约 1.4 GB，另用约 300 MB 依赖缓存），" +
-                        "npm 包来自上方所选源；首次安装视网络需要 20–40 分钟，" +
-                        "Node.js 来自 nodejs.org 并校验 SHA-256。",
+                    "会安装 Node.js 与 @deepseek-ai/dsh，npm 包来自上方所选源；" +
+                        "Node.js 来自 nodejs.org 并校验 SHA-256。安装过程会显示当前阶段和已用时间，" +
+                        "依赖体积与耗时取决于版本、网络和设备。",
                     color = TextMuted,
                     fontSize = 9.5.sp,
                     lineHeight = 14.sp
@@ -2206,20 +2387,6 @@ private fun HarnessCard(
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("预览版本", color = TextSecondary, fontSize = 11.sp)
-                        Text(
-                            "启用后检查更新会包含 rc/alpha 版本；关闭时只跟随 npm 的 latest 标签。",
-                            color = TextMuted,
-                            fontSize = 9.5.sp,
-                            lineHeight = 14.sp
-                        )
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Switch(checked = prerelease, onCheckedChange = onPrereleaseChange)
-                }
-                Spacer(Modifier.height(7.dp))
                 Text(
                     "检查更新会比对所选 NPM 源上的最新版本，发现新版本时只替换 dsh 包并重启本地桥接；" +
                         "Node.js、插件和已有对话都会保留，不会重装。",

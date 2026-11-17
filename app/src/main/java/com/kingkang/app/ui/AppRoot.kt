@@ -89,6 +89,7 @@ import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentSession
 import com.kingkang.app.agent.AgentWorkspace
 import com.kingkang.app.ui.components.CompactInputPlatformStyle
+import com.kingkang.app.ui.components.DeviceIndicators
 import com.kingkang.app.ui.components.KkDialog
 import com.kingkang.app.ui.components.KkDialogActions
 import com.kingkang.app.ui.components.KkDialogTitle
@@ -854,7 +855,13 @@ private fun KingKangDrawer(
                 },
                 onClick = onOpenSettings
             )
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(8.dp))
+            HorizontalDivider(color = Border.copy(alpha = 0.7f))
+            DeviceIndicators(
+                modifier = Modifier.padding(top = 6.dp, bottom = 4.dp),
+                onOpenSettings = onOpenSettings
+            )
+            Spacer(Modifier.height(12.dp))
         }
     }
 
@@ -1342,8 +1349,9 @@ private fun SessionSheetAction(
 
 @Composable
 private fun AgentStatusRow(connection: AgentConnection) {
-    // A healthy agent needs no label in the rail; only a problem is worth the pixels.
-    if (connection == AgentConnection.Ready) return
+    // A healthy or still-starting agent needs no label in the rail; only a problem is
+    // worth the pixels. Startup already has its own progress on the main screen.
+    if (connection == AgentConnection.Ready || connection == AgentConnection.Starting) return
     val color = when (connection) {
         AgentConnection.Ready -> Success
         AgentConnection.Starting -> Amber

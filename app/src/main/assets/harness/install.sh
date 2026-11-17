@@ -59,7 +59,7 @@ if [ "$UPDATE" = "1" ]; then
   echo "KK_MODE=update"
   step "正在更新 dsh（复用缓存，保留现有配置与插件）…"
 else
-  step "正在安装 dsh 依赖（约 1.2 GB，首次需要 20–40 分钟）…"
+  step "正在安装 dsh 包与依赖（从 npm 源下载，耗时取决于网络和设备）…"
 fi
 mkdir -p /opt/kingkang/dsh
 # npm moves every downloaded packument and tarball into place with rename(2); Android's

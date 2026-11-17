@@ -444,7 +444,6 @@ private fun SetupPane(
                 "运行方式",
                 if (rootMode && rootReady) "Root · chroot" else "PRoot · 无 root"
             )
-            SetupInfoRow("下载体积", formatBytes(environment.approxBytes))
             SetupInfoRow("数据位置", "应用私有目录")
         }
 
@@ -519,7 +518,7 @@ private fun SetupPane(
                 )
             ) {
                 Text(
-                    "下载并安装 Kali · ${formatBytes(environment.approxBytes)}",
+                    "下载并安装 Kali 环境",
                     fontWeight = FontWeight.SemiBold,
                     fontSize = 13.sp
                 )
