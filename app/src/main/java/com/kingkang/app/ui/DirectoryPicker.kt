@@ -19,6 +19,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,6 +38,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -46,10 +50,12 @@ import com.kingkang.app.ui.components.KkDialogActions
 import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.keyboardLift
+import com.kingkang.app.ui.components.normalizePathInput
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Border
 import com.kingkang.app.ui.theme.OnAccent
 import com.kingkang.app.ui.theme.Red
+import com.kingkang.app.ui.theme.SurfaceRaised
 import com.kingkang.app.ui.theme.SurfaceVariant
 import com.kingkang.app.ui.theme.TextMuted
 import com.kingkang.app.ui.theme.TextPrimary
@@ -76,6 +82,8 @@ fun DirectoryPickerDialog(
     val listState = rememberLazyListState()
     var newFolder by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
+    var pathInput by remember { mutableStateOf("") }
+    var pathError by remember { mutableStateOf(false) }
     val parent = listing.parent
     val canPick = listing.path.isNotBlank() && !listing.loading && listing.error == null
 
@@ -122,7 +130,98 @@ fun DirectoryPickerDialog(
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(SurfaceRaised)
+                    .border(1.dp, Border, RoundedCornerShape(9.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                BasicTextField(
+                    value = pathInput,
+                    onValueChange = {
+                        pathInput = normalizePathInput(it).take(200)
+                        pathError = false
+                    },
+                    singleLine = true,
+                    // A Chinese IME otherwise converts letters typed after "/" into pinyin
+                    // words, which looks like the field is fighting the user. Asking for an
+                    // ASCII keyboard keeps the punctuation a path needs.
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Ascii,
+                        imeAction = ImeAction.Go
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onGo = {
+                            val target = normalizePathInput(pathInput).trim()
+                            if (target.startsWith("/")) {
+                                onBrowse(target)
+                                pathInput = ""
+                                pathError = false
+                            } else {
+                                pathError = true
+                            }
+                        }
+                    ),
+                    textStyle = TextStyle(
+                        color = TextPrimary,
+                        fontSize = 12.sp,
+                        lineHeight = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        platformStyle = CompactInputPlatformStyle
+                    ),
+                    cursorBrush = SolidColor(Accent),
+                    modifier = Modifier.fillMaxWidth().keyboardLift(),
+                    decorationBox = { inner ->
+                        if (pathInput.isEmpty()) {
+                            Text(
+                                "跳转到路径，例如 /root/tools",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                                lineHeight = 12.sp,
+                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                            )
+                        }
+                        inner()
+                    }
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(
+                onClick = {
+                    val target = normalizePathInput(pathInput).trim()
+                    if (target.startsWith("/")) {
+                        onBrowse(target)
+                        pathInput = ""
+                        pathError = false
+                    } else {
+                        pathError = true
+                    }
+                },
+                enabled = pathInput.isNotBlank() && !listing.loading,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+            ) {
+                Text(
+                    "前往",
+                    color = if (pathInput.isNotBlank() && !listing.loading) Accent else TextMuted,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
+        if (pathError) {
+            Text(
+                "请输入以 / 开头的绝对路径",
+                color = Red,
+                fontSize = 9.5.sp,
+                modifier = Modifier.padding(start = 2.dp, top = 3.dp)
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 if (newFolder) "取消新建" else "＋ 新建文件夹",

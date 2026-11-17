@@ -9,6 +9,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import kotlin.coroutines.coroutineContext
 
 class RootfsInstaller(
@@ -22,8 +23,10 @@ class RootfsInstaller(
         onStatus: (String) -> Unit = {},
         onExtractProgress: (Float) -> Unit = {}
     ) = withContext(Dispatchers.IO) {
-        val archive = File(context.cacheDir, "kali-${spec.fileName}")
-        archive.parentFile?.mkdirs()
+        // Keep the multi-GB archive in the app's own storage: Android may evict cacheDir
+        // under storage pressure, which would silently kill a resumable install.
+        val downloads = File(context.filesDir, "downloads").apply { mkdirs() }
+        val archive = File(downloads, "kali-${spec.fileName}")
         val part = File(archive.absolutePath + ".part")
 
         val free = context.filesDir.usableSpace
@@ -37,7 +40,13 @@ class RootfsInstaller(
             (expectedSha256.isBlank() || manager.verifySha256(archive, expectedSha256))
         ) {
             onStatus("发现已下载的安装包，直接安装…")
-            manager.installArchive(archive, expectedSha256, onStatus, onExtractProgress)
+            manager.installArchive(
+                archive,
+                expectedSha256,
+                onStatus,
+                onExtractProgress,
+                alreadyVerified = true
+            )
             archive.delete()
             return@withContext
         }
@@ -84,6 +93,13 @@ class RootfsInstaller(
             }
             var downloaded = if (appending) resumeFrom else 0L
             if (downloaded > 0L) onProgress(downloaded, total)
+            // A fresh stream can be hashed while it is written; a resumed file has to be
+            // read once at the end. This avoids the extra full read after every download.
+            val digest = if (!appending && expectedSha256.isNotBlank()) {
+                MessageDigest.getInstance("SHA-256")
+            } else {
+                null
+            }
 
             connection.inputStream.use { input ->
                 FileOutputStream(part, appending).use { output ->
@@ -93,6 +109,7 @@ class RootfsInstaller(
                         val n = input.read(buffer)
                         if (n <= 0) break
                         output.write(buffer, 0, n)
+                        digest?.update(buffer, 0, n)
                         downloaded += n
                         onProgress(downloaded, total)
                     }
@@ -105,8 +122,30 @@ class RootfsInstaller(
                 part.copyTo(archive, overwrite = true)
                 part.delete()
             }
+            val verified = when {
+                expectedSha256.isBlank() -> true
+                digest != null -> {
+                    val actual = digest.digest().joinToString("") { "%02x".format(it) }
+                    if (!actual.equals(expectedSha256, ignoreCase = true)) {
+                        archive.delete()
+                        throw IOException("SHA-256 校验失败\n期望: $expectedSha256\n实际: $actual")
+                    }
+                    true
+                }
+                manager.verifySha256(archive, expectedSha256) -> true
+                else -> {
+                    archive.delete()
+                    throw IOException("SHA-256 校验失败，请重新下载")
+                }
+            }
             onProgress(archive.length(), archive.length())
-            manager.installArchive(archive, expectedSha256, onStatus, onExtractProgress)
+            manager.installArchive(
+                archive,
+                expectedSha256,
+                onStatus,
+                onExtractProgress,
+                alreadyVerified = verified
+            )
             archive.delete()
         } finally {
             connection.disconnect()

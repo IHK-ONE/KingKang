@@ -89,6 +89,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -643,41 +644,34 @@ fun HomeScreen(
 
     confirmPermission?.let { value ->
         val label = permissionLabel(value, state.permissionCatalog.options)
-        AlertDialog(
-            onDismissRequest = { confirmPermission = null },
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextSecondary,
-            shape = RoundedCornerShape(20.dp),
-            title = { Text("切换到「$label」？", style = MaterialTheme.typography.titleMedium) },
-            text = {
-                Text(
-                    if (value == "auto") {
-                        "自动审核会让 agent 自行判断并放行工具调用，不再逐条等待你确认。" +
-                            "只在你信任当前任务范围时使用。"
-                    } else {
-                        "完全权限会让 agent 在 Kali 中不受工作区限制地执行命令，" +
-                            "不再逐条等待你确认。只在你信任当前任务范围时使用。"
-                    },
-                    color = TextSecondary,
-                    fontSize = 13.sp,
-                    lineHeight = 19.sp
-                )
-            },
-            confirmButton = {
+        KkDialog(onDismiss = { confirmPermission = null }) {
+            KkDialogTitle("切换到「$label」？", onDismiss = { confirmPermission = null })
+            Spacer(Modifier.height(10.dp))
+            Text(
+                if (value == "auto") {
+                    "自动审核会让 agent 自行判断并放行工具调用，不再逐条等待你确认。" +
+                        "只在你信任当前任务范围时使用。"
+                } else {
+                    "完全权限会让 agent 在 Kali 中不受工作区限制地执行命令，" +
+                        "不再逐条等待你确认。只在你信任当前任务范围时使用。"
+                },
+                color = TextSecondary,
+                fontSize = 13.sp,
+                lineHeight = 19.sp
+            )
+            KkDialogActions {
+                TextButton(onClick = { confirmPermission = null }) {
+                    Text("取消", color = TextMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(6.dp))
                 TextButton(onClick = {
                     vm.selectAgentPermission(value)
                     confirmPermission = null
                 }) {
-                    Text("仍然切换", color = Amber, fontWeight = FontWeight.Medium)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmPermission = null }) {
-                    Text("取消", color = TextSecondary)
+                    Text("仍然切换", color = Amber, fontWeight = FontWeight.Medium, fontSize = 12.sp)
                 }
             }
-        )
+        }
     }
 
     if (showModelPicker) {
@@ -769,7 +763,6 @@ fun HomeScreen(
             onOpenChange = { diffIndex = it },
             onCopyPath = { path ->
                 clipboard.setText(AnnotatedString(path))
-                vm.notify("已复制")
             },
             onOpenDeliverable = { path -> vm.openGuestFile(path) },
             onShareDeliverable = { path -> vm.openGuestFile(path, share = true) },
@@ -838,7 +831,6 @@ fun HomeScreen(
             onCopyPath = {
                 changedFile?.path?.let { path ->
                     clipboard.setText(AnnotatedString(path))
-                    vm.notify("已复制")
                 }
             },
             onOpenFile = {
@@ -2974,6 +2966,13 @@ private fun DeliverableRow(
     onShare: () -> Unit,
     onCopy: () -> Unit
 ) {
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_800)
+            copied = false
+        }
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -3020,12 +3019,15 @@ private fun DeliverableRow(
             fontSize = 10.5.sp
         )
         Text(
-            "复制",
+            if (copied) "已复制" else "复制",
             modifier = Modifier
                 .clip(RoundedCornerShape(7.dp))
-                .clickable(onClick = onCopy)
+                .clickable {
+                    onCopy()
+                    copied = true
+                }
                 .padding(start = 10.dp, top = 4.dp, bottom = 4.dp),
-            color = TextMuted,
+            color = if (copied) Success else TextMuted,
             fontSize = 10.5.sp
         )
     }
@@ -3401,6 +3403,13 @@ private fun ChangesDiffDialog(
 ) {
     val hunks = diff?.hunks.orEmpty()
     val diffListState = rememberLazyListState()
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_800)
+            copied = false
+        }
+    }
     val rows = remember(hunks) {
         buildList {
             hunks.forEach { hunk ->
@@ -3528,8 +3537,17 @@ private fun ChangesDiffDialog(
                         .padding(top = 4.dp),
                     horizontalArrangement = Arrangement.End
                 ) {
-                    TextButton(onClick = onCopyPath, enabled = file != null) {
-                        Text("复制路径", color = TextSecondary)
+                    TextButton(
+                        onClick = {
+                            onCopyPath()
+                            copied = true
+                        },
+                        enabled = file != null
+                    ) {
+                        Text(
+                            if (copied) "已复制" else "复制路径",
+                            color = if (copied) Success else TextSecondary
+                        )
                     }
                     TextButton(onClick = onOpenFile, enabled = file != null) {
                         Text("打开", color = TextSecondary)
@@ -4780,7 +4798,7 @@ private fun EmptyState(
             lineHeight = 20.sp
         )
         Spacer(Modifier.height(10.dp))
-        DeviceIndicators(onOpenSettings = onOpenSettings)
+        DeviceIndicators()
         if (apiKeyMissing) {
             Spacer(Modifier.height(16.dp))
             ApiKeyPrompt(onConfigureKey)
@@ -7638,7 +7656,7 @@ private fun ComposerChip(
         Modifier
             .clip(RoundedCornerShape(8.dp))
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 7.dp, vertical = 4.dp),
+            .padding(horizontal = 7.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -7958,8 +7976,13 @@ private fun Composer(
     onTranscribeSpeech: suspend (ByteArray, String?, String?) -> String = { _, _, _ -> "" },
     onStop: () -> Unit
 ) {
-    var input by rememberSaveable(sessionId, stateSaver = TextFieldValue.Saver) {
-        mutableStateOf(TextFieldValue(""))
+    // Drafts stay with their conversation when the user switches away and back.
+    val textDrafts = remember { mutableStateMapOf<String, TextFieldValue>() }
+    var input by remember(sessionId) {
+        mutableStateOf(textDrafts[sessionId] ?: TextFieldValue(""))
+    }
+    LaunchedEffect(sessionId, input) {
+        textDrafts[sessionId] = input
     }
     var steer by rememberSaveable(sessionId) { mutableStateOf(false) }
     var drafts by remember(sessionId) { mutableStateOf(emptyList<AgentDraftImage>()) }

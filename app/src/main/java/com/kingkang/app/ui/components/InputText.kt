@@ -26,6 +26,16 @@ import kotlinx.coroutines.delay
 val CompactInputPlatformStyle = PlatformTextStyle(includeFontPadding = false)
 
 /**
+ * A Chinese IME in 中文标点 mode types "／" (U+FF0F) for "/", and a paste from a chat app can
+ * carry a zero-width character. Both look like a normal path in the field but make every
+ * path check fail, so normalize them while the user types instead of rejecting the input.
+ */
+fun normalizePathInput(value: String): String = value
+    .replace('／', '/')
+    .replace('＼', '\\')
+    .filterNot { it == '​' || it == '‌' || it == '‍' || it == '﻿' }
+
+/**
  * Keeps the focused field above the keyboard. The page still scrolls normally; when the
  * IME appears (or focus moves while it is open) the field asks its scroll parent to bring
  * it into view, which is what makes a card near the bottom of a long settings page usable

@@ -49,7 +49,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,7 +65,24 @@ import com.kingkang.app.TerminalUiState
 import com.kingkang.app.terminal.TerminalSession
 import com.kingkang.app.terminal.TerminalWebView
 import com.kingkang.app.terminal.TerminalWebViewState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import com.kingkang.app.ui.components.CompactInputPlatformStyle
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import com.kingkang.app.ui.components.Dot
+import com.kingkang.app.ui.theme.SurfaceVariant
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
+import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.components.KeyboardGlyph
 import com.kingkang.app.ui.components.MonoTag
 import com.kingkang.app.ui.components.SectionEyebrow
@@ -216,14 +232,25 @@ fun TerminalScreen(
             }
         }
 
+        var showCommandInput by remember { mutableStateOf(false) }
         if (activeSession != null) {
             KeyBar(
                 onKey = { bytes -> activeSession.write(bytes) },
                 onPaste = {
                     val text = readClipboard(context)
                     if (text.isNotEmpty()) activeSession.write(text.toByteArray(Charsets.UTF_8))
-                }
+                },
+                onCommand = { showCommandInput = true }
             )
+            if (showCommandInput) {
+                CommandInputDialog(
+                    onSend = { command ->
+                        activeSession.write((command + "\r").toByteArray(Charsets.UTF_8))
+                        showCommandInput = false
+                    },
+                    onDismiss = { showCommandInput = false }
+                )
+            }
         }
     }
 }
@@ -708,7 +735,8 @@ private fun CenteredStatus(title: String, subtitle: String) {
 @Composable
 private fun KeyBar(
     onKey: (ByteArray) -> Unit,
-    onPaste: () -> Unit
+    onPaste: () -> Unit,
+    onCommand: () -> Unit
 ) {
     val esc = byteArrayOf(0x1B)
     val tab = byteArrayOf(0x09)
@@ -734,6 +762,7 @@ private fun KeyBar(
         KeyCap("CTRL-D") { onKey(ctrlD) }
         KeyCap("CTRL-L") { onKey(ctrlL) }
         KeyCap("粘贴") { onPaste() }
+        KeyCap("命令") { onCommand() }
         KeyCap("↑") { onKey(up) }
         KeyCap("↓") { onKey(down) }
         KeyCap("←") { onKey(left) }
@@ -751,12 +780,85 @@ private fun KeyCap(label: String, onClick: () -> Unit) {
     ) {
         Text(
             text = label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             color = TextSecondary,
             fontFamily = FontFamily.Monospace,
-            fontSize = 9.5.sp,
+            fontSize = 10.sp,
             letterSpacing = 0.3.sp
         )
+    }
+}
+
+@Composable
+private fun CommandInputDialog(
+    onSend: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var command by remember { mutableStateOf("") }
+    fun send() {
+        if (command.isNotBlank()) onSend(command)
+    }
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle(
+            title = "输入命令",
+            subtitle = "使用英文键盘输入，避免输入法把命令转成中文",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceVariant)
+                .padding(horizontal = 11.dp, vertical = 9.dp)
+        ) {
+            BasicTextField(
+                value = command,
+                onValueChange = { command = it.take(4_000) },
+                modifier = Modifier.fillMaxWidth().keyboardLift(),
+                textStyle = TextStyle(
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    lineHeight = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    platformStyle = CompactInputPlatformStyle
+                ),
+                cursorBrush = SolidColor(Accent),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Ascii,
+                    imeAction = ImeAction.Send
+                ),
+                keyboardActions = KeyboardActions(onSend = { send() }),
+                decorationBox = { inner ->
+                    if (command.isEmpty()) {
+                        Text(
+                            "例如 ls -la",
+                            color = TextMuted,
+                            fontSize = 13.sp,
+                            lineHeight = 13.sp,
+                            fontFamily = FontFamily.Monospace,
+                            style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                        )
+                    }
+                    inner()
+                }
+            )
+        }
+        KkDialogActions {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(6.dp))
+            TextButton(onClick = { send() }, enabled = command.isNotBlank()) {
+                Text(
+                    "发送",
+                    color = if (command.isNotBlank()) Accent else TextMuted,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
     }
 }
 

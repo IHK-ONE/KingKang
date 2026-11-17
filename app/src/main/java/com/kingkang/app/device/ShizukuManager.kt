@@ -32,7 +32,9 @@ object ShizukuManager {
     data class State(
         val installed: Boolean = false,
         val running: Boolean = false,
-        val authorized: Boolean = false
+        val authorized: Boolean = false,
+        /** The user service is bound and can execute commands. */
+        val connected: Boolean = false
     )
 
     private const val MANAGER_PACKAGE = "moe.shizuku.privileged.api"
@@ -56,11 +58,13 @@ object ShizukuManager {
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             shell = service?.let { IDeviceShell.Stub.asInterface(it) }
+            _state.value = _state.value.copy(connected = shell != null)
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             shell = null
             bound = false
+            _state.value = _state.value.copy(connected = false)
         }
     }
 
@@ -124,7 +128,12 @@ object ShizukuManager {
         val authorized = running && runCatching {
             Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         }.getOrDefault(false)
-        _state.value = State(installed = installed, running = running, authorized = authorized)
+        _state.value = State(
+            installed = installed,
+            running = running,
+            authorized = authorized,
+            connected = authorized && _state.value.connected
+        )
         main.post { if (_state.value.authorized) bind() else unbind() }
     }
 
@@ -152,5 +161,6 @@ object ShizukuManager {
         runCatching { Shizuku.unbindUserService(userService, connection, true) }
         bound = false
         shell = null
+        _state.value = _state.value.copy(connected = false)
     }
 }

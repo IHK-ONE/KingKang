@@ -1,6 +1,7 @@
 package com.kingkang.app.device
 
 import android.content.Context
+import android.os.FileObserver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,6 +22,8 @@ object DeviceCommandBridge {
     private const val MAX_REPLY_CHARS = 200_000
 
     private var started = false
+    private var observer: FileObserver? = null
+    private val pollLock = Any()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun start(context: Context) {
@@ -30,9 +33,22 @@ object DeviceCommandBridge {
         scope.launch {
             val dir = File(app.filesDir, "shared/$DIR_NAME")
             runCatching { dir.mkdirs() }
+            // Wake immediately when the guest writes a request; the slow loop below is
+            // only a fallback for a missed event or a file created before watching.
+            runCatching {
+                @Suppress("DEPRECATION")
+                observer = object : FileObserver(
+                    dir.absolutePath,
+                    CREATE or MOVED_TO
+                ) {
+                    override fun onEvent(event: Int, path: String?) {
+                        scope.launch { synchronized(pollLock) { runCatching { poll(dir) } } }
+                    }
+                }.also { it.startWatching() }
+            }
             while (isActive) {
-                runCatching { poll(dir) }
-                delay(150)
+                runCatching { synchronized(pollLock) { poll(dir) } }
+                delay(2_000)
             }
         }
     }

@@ -25,13 +25,16 @@ class DeviceShellService : IDeviceShell.Stub() {
             .redirectErrorStream(true)
             .start()
         val output = StringBuilder()
+        var truncated = false
         val reader = Thread {
             runCatching {
                 process.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach { line ->
                         synchronized(output) {
-                            if (output.length < MAX_OUTPUT_CHARS) {
+                            if (output.length + line.length + 1 <= MAX_OUTPUT_CHARS) {
                                 output.append(line).append('\n')
+                            } else {
+                                truncated = true
                             }
                         }
                     }
@@ -53,7 +56,12 @@ class DeviceShellService : IDeviceShell.Stub() {
         }
         reader.join(1_000)
         val text = synchronized(output) { output.toString().trimEnd() }
-        return text.ifBlank { "（命令完成，无输出）" }
+        val suffix = if (truncated) {
+            "\n[kk-adb: 输出已截断，只保留前 $MAX_OUTPUT_CHARS 个字符]"
+        } else {
+            ""
+        }
+        return (text.ifBlank { "（命令完成，无输出）" } + suffix)
     }
 
     private companion object {

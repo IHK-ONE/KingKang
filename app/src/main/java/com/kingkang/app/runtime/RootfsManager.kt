@@ -56,12 +56,13 @@ class RootfsManager(private val context: Context) {
         archive: File,
         expectedSha256: String?,
         onStatus: (String) -> Unit = {},
-        onProgress: (Float) -> Unit = {}
+        onProgress: (Float) -> Unit = {},
+        alreadyVerified: Boolean = false
     ) {
         if (!archive.isFile || archive.length() == 0L) {
             throw IOException("rootfs 压缩包不存在")
         }
-        if (!expectedSha256.isNullOrBlank()) {
+        if (!alreadyVerified && !expectedSha256.isNullOrBlank()) {
             onStatus("正在校验 Kali 环境…")
             val actual = sha256(archive)
             if (!actual.equals(expectedSha256, ignoreCase = true)) {

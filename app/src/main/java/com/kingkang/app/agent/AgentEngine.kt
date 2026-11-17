@@ -152,6 +152,9 @@ object AgentEngine {
 
     private val liveBlocks = LinkedHashMap<String, LinkedHashMap<Int, LiveBlock>>()
 
+    /** Last capability signature sent to each session, so the note is not repeated. */
+    private val capabilityNotesSent = HashMap<String, String>()
+
     /**
      * Child transcripts have no follow stream — dsh serves them as persisted history —
      * so while a viewed child is running the engine refetches its page on a slow cadence
@@ -3258,6 +3261,18 @@ object AgentEngine {
             )
             .setSilent(true)
             .setOnlyAlertOnce(true)
+            // The lock screen gets a neutral line; conversation and tool text stay private.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                NotificationCompat.Builder(appContext, TASK_CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_agent_notification)
+                    .setContentTitle("KingKang")
+                    .setContentText(if (isError) "有任务需要查看" else "有任务已完成")
+                    .setContentIntent(pending)
+                    .setAutoCancel(true)
+                    .setSilent(true)
+                    .build()
+            )
             .build()
         runCatching {
             manager.notify(id, notification)
@@ -5253,17 +5268,27 @@ object AgentEngine {
         }
         // KingKang's own default: new chats start with full access. dsh may materialise its
         // own default while the profile is created, so the presence of a value is not proof
-        // the user chose it; only an explicit pick in this app stops the override.
+        // the user chose it. A value that differs from the shipped default is treated as a
+        // deliberate choice (made here or in Harness) and is preserved.
         val applied = _state.value
-        val chosenByUser = if (::appContext.isInitialized) {
+        var chosenByUser = if (::appContext.isInitialized) {
             SettingsStore(appContext).permissionDefaultChosen
         } else {
             true
         }
+        val shippedDefault = applied.permissionCatalog.defaultPreset
+        val currentDefault = applied.permissionSettings.defaultPreset
+        if (!chosenByUser && currentDefault != null && shippedDefault != null &&
+            currentDefault != shippedDefault && ::appContext.isInitialized
+        ) {
+            chosenByUser = true
+            SettingsStore(appContext).permissionDefaultChosen = true
+            appendLog("保留 dsh 中已选择的默认权限：$currentDefault")
+        }
         if (!defaultPermissionEnsured &&
             applied.permissionSettings.writable &&
             !chosenByUser &&
-            applied.permissionSettings.defaultPreset != FULL_ACCESS_PRESET &&
+            currentDefault != FULL_ACCESS_PRESET &&
             applied.permissionCatalog.options.any { it.value == FULL_ACCESS_PRESET }
         ) {
             defaultPermissionEnsured = true
@@ -5453,9 +5478,19 @@ object AgentEngine {
      * Shizuku grant or OTG adapter connected mid-session appears from the next turn and a
      * missing capability is never mentioned.
      */
-    private fun outgoingWithContext(text: String, files: List<AgentDraftFile>): String {
+    private fun outgoingWithContext(
+        sessionId: String?,
+        text: String,
+        files: List<AgentDraftFile>
+    ): String {
         val base = attachmentText(text, files)
         val device = DeviceCapabilities.promptNote() ?: return base
+        val signature = DeviceCapabilities.signature()
+        if (sessionId != null) {
+            val previous = synchronized(capabilityNotesSent) { capabilityNotesSent[sessionId] }
+            if (previous == signature) return base
+            synchronized(capabilityNotesSent) { capabilityNotesSent[sessionId] = signature }
+        }
         return buildString {
             if (base.isNotEmpty()) {
                 append(base.trimEnd())
@@ -5607,7 +5642,7 @@ object AgentEngine {
                 hostPath = it.hostPath
             )
         }
-        val outgoing = outgoingWithContext(trimmed, files)
+        val outgoing = outgoingWithContext(sessionId, trimmed, files)
         val derivedTitle = trimmed.replace(Regex("\\s+"), " ").take(28)
             .ifBlank {
                 when {
@@ -5778,7 +5813,7 @@ object AgentEngine {
             return
         }
 
-        val outgoing = outgoingWithContext(text, files)
+        val outgoing = outgoingWithContext(view.id, text, files)
         val pending = UserItem(
             key = "u:sub:${UUID.randomUUID()}",
             text = text,
@@ -6340,19 +6375,22 @@ object AgentEngine {
      * Registers a Kali directory as a Workspace. The bridge creates the directory when it
      * is missing, so a path the user typed can become the workspace root directly.
      */
-    fun createWorkspace(path: String) {
+    fun createWorkspace(path: String, onResult: (Boolean) -> Unit = {}) {
         val trimmed = path.trim()
         if (trimmed.isEmpty()) {
             notifyState("请填写 Kali 中的目录")
+            onResult(false)
             return
         }
         if (!trimmed.startsWith("/")) {
             notifyState("工作区需要 Kali 中的绝对路径（以 / 开头）")
+            onResult(false)
             return
         }
         val client = bridge
         if (client == null || _state.value.connection != AgentConnection.Ready) {
             notifyState("Agent 尚未连接，稍等片刻再添加工作区")
+            onResult(false)
             return
         }
         scope.launch {
@@ -6364,6 +6402,7 @@ object AgentEngine {
                 )
             } catch (t: Throwable) {
                 notifyState("创建工作区失败：${readableError(t)}")
+                onResult(false)
                 return@launch
             }
             refreshWorkspacesNow(client)
@@ -6372,6 +6411,7 @@ object AgentEngine {
                 else "已添加工作区 $trimmed",
                 isError = false
             )
+            onResult(true)
         }
     }
 

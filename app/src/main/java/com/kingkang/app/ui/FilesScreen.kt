@@ -455,6 +455,7 @@ fun FilesScreen(
                     items(visible, key = { it.path }) { entry ->
                         FileRow(
                             entry = entry,
+                            showTime = sort == FileSort.Time,
                             onClick = {
                                 when {
                                     entry.directory -> vm.browseFiles(entry.path)
@@ -532,7 +533,7 @@ private fun FilesTopBar(
             Text(
                 if (path.isBlank()) root else path,
                 color = TextMuted,
-                fontSize = 10.sp,
+                fontSize = 10.5.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -619,7 +620,7 @@ private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
             .clip(RoundedCornerShape(8.dp))
             .background(if (selected) AccentDim else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 5.dp)
+            .padding(horizontal = 9.dp, vertical = 7.dp)
     )
 }
 
@@ -627,6 +628,7 @@ private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 private fun FileRow(
     entry: AgentFileEntry,
+    showTime: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -655,12 +657,13 @@ private fun FileRow(
         Spacer(Modifier.width(10.dp))
         Text(
             when {
+                showTime -> formatScheduledAt(entry.modified)
                 entry.type == "link" -> "链接"
                 entry.directory -> ""
                 else -> formatFileSize(entry.size)
             },
             color = TextMuted,
-            fontSize = 9.5.sp,
+            fontSize = 10.sp,
             maxLines = 1
         )
     }
@@ -815,7 +818,7 @@ private fun FileActionsSheet(
             Text(
                 entry.path,
                 color = TextMuted,
-                fontSize = 10.sp,
+                fontSize = 10.5.sp,
                 fontFamily = FontFamily.Monospace,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis

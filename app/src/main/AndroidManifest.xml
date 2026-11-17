@@ -32,6 +32,13 @@
             android:exported="false"
             android:stopWithTask="false" />
 
+        <!-- Keeps long Kali/dsh installs alive when the activity is backgrounded. -->
+        <service
+            android:name=".agent.InstallService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"

@@ -39,17 +39,21 @@ rm -f "${'$'}req" "${'$'}res"
     fun ensureInstalled(context: Context) {
         val rootfs = File(context.filesDir, "rootfs/kali")
         if (!File(rootfs, "etc/os-release").isFile) return
-        val bin = File(rootfs, "usr/local/bin").apply { mkdirs() }
-        val target = File(bin, "kk-adb")
-        val current = runCatching {
-            if (target.isFile) target.readText() else null
-        }.getOrNull()
-        if (current != SCRIPT) {
-            runCatching { target.writeText(SCRIPT) }
-        }
-        runCatching {
-            target.setReadable(true, false)
-            target.setExecutable(true, false)
+        // Both standard PATH locations: dsh's bash tool environment is not guaranteed
+        // to include /usr/local/bin, while the interactive Kali shell usually does.
+        listOf("usr/local/bin", "usr/bin").forEach { relative ->
+            val bin = File(rootfs, relative).apply { mkdirs() }
+            val target = File(bin, "kk-adb")
+            val current = runCatching {
+                if (target.isFile) target.readText() else null
+            }.getOrNull()
+            if (current != SCRIPT) {
+                runCatching { target.writeText(SCRIPT) }
+            }
+            runCatching {
+                target.setReadable(true, false)
+                target.setExecutable(true, false)
+            }
         }
     }
 }

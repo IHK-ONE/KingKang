@@ -69,6 +69,9 @@ import com.kingkang.app.agent.AgentPluginVersions
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.components.CompactInputPlatformStyle
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.theme.Background
@@ -578,36 +581,29 @@ fun PluginsScreen(
     }
 
     confirmUninstall?.let { plugin ->
-        AlertDialog(
-            onDismissRequest = { confirmUninstall = null },
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextSecondary,
-            shape = RoundedCornerShape(20.dp),
-            title = { Text("卸载 ${plugin.displayTitle}？", style = MaterialTheme.typography.titleMedium) },
-            text = {
-                Text(
-                    "插件会从 dsh 的 profile 中移除，它的设置和相关数据可能一并删除。" +
-                        "其他插件不受影响；如果 Agent 空闲会立即重启，否则在下次重启后生效。",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp
-                )
-            },
-            confirmButton = {
+        KkDialog(onDismiss = { confirmUninstall = null }) {
+            KkDialogTitle("卸载 ${plugin.displayTitle}？", onDismiss = { confirmUninstall = null })
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "插件会从 dsh 的 profile 中移除，它的设置和相关数据可能一并删除。" +
+                    "其他插件不受影响；如果 Agent 空闲会立即重启，否则在下次重启后生效。",
+                color = TextMuted,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+            KkDialogActions {
+                TextButton(onClick = { confirmUninstall = null }) {
+                    Text("取消", color = TextMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(6.dp))
                 TextButton(onClick = {
                     vm.uninstallPlugin(plugin.name)
                     confirmUninstall = null
                 }) {
-                    Text("卸载", color = ErrorText)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmUninstall = null }) {
-                    Text("取消", color = TextSecondary)
+                    Text("卸载", color = ErrorText, fontSize = 12.sp)
                 }
             }
-        )
+        }
     }
 
 }

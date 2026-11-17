@@ -49,16 +49,6 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_PERMISSION_DEFAULT_CHOSEN, false)
         set(value) = prefs.edit().putBoolean(KEY_PERMISSION_DEFAULT_CHOSEN, value).apply()
 
-    /** Directories picked recently in a picker, most recent first. */
-    var recentDirectories: List<String>
-        get() = prefs.getString(KEY_RECENT_DIRECTORIES, null)
-            ?.split('\n')
-            ?.filter { it.isNotBlank() }
-            .orEmpty()
-        set(value) = prefs.edit()
-            .putString(KEY_RECENT_DIRECTORIES, value.distinct().take(8).joinToString("\n"))
-            .apply()
-
     private companion object {
         const val KEY_ROOT_MODE = "root_mode"
         const val KEY_ONBOARDING = "onboarding"
@@ -67,7 +57,6 @@ class SettingsStore(context: Context) {
         const val KEY_PERMISSION_DEFAULT_CHOSEN = "permission_default_chosen"
         const val KEY_NPM_REGISTRY = "npm_registry"
         const val KEY_COLLAPSED_WORKSPACES = "collapsed_workspaces"
-        const val KEY_RECENT_DIRECTORIES = "recent_directories"
         const val THEME_SYSTEM = "system"
     }
 }

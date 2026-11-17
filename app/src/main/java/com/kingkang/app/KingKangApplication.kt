@@ -20,14 +20,16 @@ class KingKangApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-            processName().endsWith(":browser")
-        ) {
+        val process = processName()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && process.endsWith(":browser")) {
             WebView.setDataDirectorySuffix("browser")
             return
         }
+        // Shizuku creates the user-service process under our package as the shell user.
+        // It must not run the app's device monitors or command queue as well.
+        if (process.endsWith(":kkadb")) return
         // Device abilities belong to the main process: its foreground service keeps them
-        // alive while the agent runs, and the browser process must not bind them twice.
+        // alive while the agent runs, and no other process should bind them twice.
         UsbMonitor.init(this)
         ShizukuManager.init(this)
         DeviceCommandBridge.start(this)

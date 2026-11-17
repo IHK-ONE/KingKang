@@ -1,7 +1,10 @@
 package com.kingkang.app
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -11,6 +14,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kingkang.app.agent.AgentEngine
 import com.kingkang.app.ui.KingKangApp
@@ -23,12 +27,14 @@ class MainActivity : ComponentActivity() {
         // Some devices stop the foreground service while backgrounded; recover the bridge
         // as soon as the app is visible again instead of leaving a dead connection.
         AgentEngine.onAppForegrounded(this)
+        com.kingkang.app.device.UsbMonitor.setActive(true)
     }
 
     override fun onStop() {
         super.onStop()
         // Only while nothing is on screen do completion notices leave the app.
         AgentEngine.onAppBackgrounded()
+        com.kingkang.app.device.UsbMonitor.setActive(false)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -48,6 +54,14 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
         )
         super.onCreate(savedInstanceState)
+        // Completion notices and the install foreground-service notification need this
+        // runtime grant on Android 13+; the manifest declaration alone is not enough.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 0x4b50)
+        }
         setContent {
             val vm: MainViewModel = viewModel()
             val mode by vm.themeMode.collectAsState()

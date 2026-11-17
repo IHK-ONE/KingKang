@@ -1,5 +1,10 @@
 package com.kingkang.app.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -67,8 +72,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -101,6 +108,7 @@ import com.kingkang.app.ui.components.KkDialogActions
 import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.keyboardLift
+import com.kingkang.app.ui.components.normalizePathInput
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.AccentDim
@@ -139,6 +147,10 @@ fun SettingsScreen(
     val harness by vm.harness.collectAsState()
     val agent by vm.agentState.collectAsState()
     val themeMode by vm.themeMode.collectAsState()
+    val appUpdateState by vm.appUpdate.collectAsState()
+    val deviceOtg by UsbMonitor.state.collectAsState()
+    val deviceShizuku by ShizukuManager.state.collectAsState()
+    var showDiagnostics by remember { mutableStateOf(false) }
     val npmRegistry by vm.npmRegistry.collectAsState()
     val settingsScroll = rememberScrollState()
     var confirmDelete by remember { mutableStateOf(false) }
@@ -154,6 +166,9 @@ fun SettingsScreen(
     val npmAnchor = remember { BringIntoViewRequester() }
     val harnessAnchor = remember { BringIntoViewRequester() }
     val deviceAnchor = remember { BringIntoViewRequester() }
+    val rootAnchor = remember { BringIntoViewRequester() }
+    val mcpAnchor = remember { BringIntoViewRequester() }
+    val aboutAnchor = remember { BringIntoViewRequester() }
     val accountAnchor = remember { BringIntoViewRequester() }
     val connectionAnchor = remember { BringIntoViewRequester() }
     val presetAnchor = remember { BringIntoViewRequester() }
@@ -236,6 +251,18 @@ fun SettingsScreen(
         },
         SettingsSearchEntry("存储与隐私", "运行位置、网络与共享目录", "storage privacy 存储 隐私 网络") {
             jumpTo(storageAnchor)
+        },
+        SettingsSearchEntry("运行方式", "Root 模式与 su 检测", "root su chroot 运行方式") {
+            jumpTo(rootAnchor)
+        },
+        SettingsSearchEntry("MCP 服务器", "添加、编辑与移除 MCP 服务器", "mcp server 服务器 模型上下文") {
+            jumpTo(mcpAnchor)
+        },
+        SettingsSearchEntry("关于", "版本、开源许可与说明", "about version 版本 许可 关于") {
+            jumpTo(aboutAnchor)
+        },
+        SettingsSearchEntry("应用更新", "检查 GitHub 上的正式版本", "update release 更新 版本 下载") {
+            jumpTo(aboutAnchor)
         },
         SettingsSearchEntry("打开 Harness", "轨迹视图与 dsh-web 的其余页面", "harness 轨迹 dsh web") {
             onOpenHarness()
@@ -421,12 +448,14 @@ fun SettingsScreen(
 
             if (agent.mcp.available) {
                 Spacer(Modifier.height(10.dp))
-                McpCard(
-                    settings = agent.mcp,
-                    onRefresh = vm::refreshMcp,
-                    onSave = vm::saveMcpServer,
-                    onRemove = vm::removeMcpServer
-                )
+                Box(Modifier.bringIntoViewRequester(mcpAnchor)) {
+                    McpCard(
+                        settings = agent.mcp,
+                        onRefresh = vm::refreshMcp,
+                        onSave = vm::saveMcpServer,
+                        onRemove = vm::removeMcpServer
+                    )
+                }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -502,7 +531,9 @@ fun SettingsScreen(
             DeviceCapabilityCard(onOpenUrl = ::openExternal)
 
             Spacer(Modifier.height(24.dp))
-            SectionLabel("运行方式")
+            Box(Modifier.bringIntoViewRequester(rootAnchor)) {
+                SectionLabel("运行方式")
+            }
             Spacer(Modifier.height(8.dp))
             RootSettingCard(
                 rootMode = rootMode,
@@ -523,9 +554,12 @@ fun SettingsScreen(
             }
 
             Spacer(Modifier.height(24.dp))
-            SectionLabel("关于")
+            Box(Modifier.bringIntoViewRequester(aboutAnchor)) {
+                SectionLabel("关于")
+            }
             Spacer(Modifier.height(8.dp))
             SettingsCard {
+                Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TerminalMark(size = 38.dp)
                     Spacer(Modifier.width(11.dp))
@@ -554,11 +588,114 @@ fun SettingsScreen(
                         Text("说明", fontSize = 11.sp)
                     }
                 }
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = Border.copy(alpha = 0.7f))
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("应用更新", color = TextPrimary, fontSize = 12.5.sp)
+                        Text(
+                            when {
+                                appUpdateState.checking -> "正在连接 GitHub…"
+                                appUpdateState.release != null ->
+                                    "发现新版本 ${appUpdateState.release?.version}"
+                                appUpdateState.error != null -> "检查失败：${appUpdateState.error}"
+                                appUpdateState.checked -> "已是最新版本"
+                                else -> "从 GitHub Releases 检查正式版本"
+                            },
+                            color = when {
+                                appUpdateState.release != null -> Success
+                                appUpdateState.error != null -> Red
+                                else -> TextMuted
+                            },
+                            fontSize = 9.5.sp,
+                            lineHeight = 14.sp
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    if (appUpdateState.release != null) {
+                        OutlinedButton(
+                            onClick = { openExternal(appUpdateState.release?.url) },
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, Border),
+                            contentPadding = PaddingValues(horizontal = 11.dp, vertical = 0.dp),
+                            modifier = Modifier.height(30.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Accent)
+                        ) {
+                            Text("下载", fontSize = 10.5.sp)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = vm::checkAppUpdate,
+                            enabled = !appUpdateState.checking,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, Border),
+                            contentPadding = PaddingValues(horizontal = 11.dp, vertical = 0.dp),
+                            modifier = Modifier.height(30.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = TextSecondary,
+                                disabledContentColor = TextMuted
+                            )
+                        ) {
+                            Text(if (appUpdateState.checking) "检查中…" else "检查", fontSize = 10.5.sp)
+                        }
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    TextButton(
+                        onClick = { showDiagnostics = true },
+                        contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp)
+                    ) {
+                        Text("诊断", color = TextMuted, fontSize = 10.5.sp)
+                    }
+                }
+                }
             }
 
             Spacer(Modifier.height(28.dp))
         }
         }
+    }
+
+    if (showDiagnostics) {
+        val diagnostics = buildString {
+            appendLine("KingKang ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+            appendLine("Agent：${agent.connection}")
+            appendLine("dsh：${agent.dshVersion ?: "未知"}")
+            appendLine("Node：${harness.nodeVersion ?: "未知"}")
+            appendLine("Kali：${environment.version ?: environment.label ?: "未安装"}")
+            appendLine("根模式：${if (rootMode) "开启" else "关闭"}")
+            val notifications = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+            appendLine("通知权限：${if (notifications) "已允许" else "未授予"}")
+            appendLine(
+                "OTG：${
+                    when {
+                        deviceOtg.interfaces.isNotEmpty() -> deviceOtg.interfaces.joinToString("、")
+                        deviceOtg.ethernet -> "以太网"
+                        else -> "未就绪"
+                    }
+                }"
+            )
+            appendLine(
+                "Shizuku：${
+                    when {
+                        deviceShizuku.connected -> "已授权"
+                        deviceShizuku.authorized -> "连接中"
+                        deviceShizuku.running -> "未授权"
+                        deviceShizuku.installed -> "未运行"
+                        else -> "未安装"
+                    }
+                }"
+            )
+            append("Kali 安装中：${environment.installing} · dsh 安装中：${harness.busy}")
+        }
+        DiagnosticsDialog(text = diagnostics, onDismiss = { showDiagnostics = false })
     }
 
     if (confirmUninstallHarness) {
@@ -1518,7 +1655,8 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
     val shizuku by ShizukuManager.state.collectAsState()
     val otg = otgState.usable
     val shizukuStatus = when {
-        shizuku.authorized -> "已授权"
+        shizuku.connected -> "已授权"
+        shizuku.authorized -> "连接中"
         !shizuku.installed -> "未安装"
         shizuku.running -> "未授权"
         else -> "未运行"
@@ -1535,7 +1673,11 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
                 Spacer(Modifier.height(2.dp))
                 Text(
                     if (otg) {
-                        "内核已创建 USB 网络接口：${otgState.interfaces.joinToString("、")}。"
+                        if (otgState.interfaces.isNotEmpty()) {
+                            "内核已创建 USB 网络接口：${otgState.interfaces.joinToString("、")}。"
+                        } else {
+                            "Android 已建立以太网连接（USB 网卡）。"
+                        }
                     } else {
                         "只有内核驱动已绑定并创建网络接口时才会就绪；仅插入 USB 网卡不会点亮。" +
                             "MT7612U、RTL8812AU 等需要设备内核包含对应驱动。"
@@ -1576,8 +1718,8 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
             Text(
                 shizukuStatus,
                 color = when {
-                    shizuku.authorized -> Success
-                    shizuku.running -> Amber
+                    shizuku.connected -> Success
+                    shizuku.authorized || shizuku.running -> Amber
                     else -> TextMuted
                 },
                 fontSize = 11.sp
@@ -1624,8 +1766,8 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
                 }
 
                 else -> Text(
-                    "kk-adb 已可用",
-                    color = Success,
+                    if (shizuku.connected) "kk-adb 已可用" else "正在连接 ADB 服务…",
+                    color = if (shizuku.connected) Success else TextMuted,
                     fontSize = 10.5.sp
                 )
             }
@@ -1875,7 +2017,7 @@ private fun EnvironmentCard(
             rootfsPath,
             color = TextMuted.copy(alpha = 0.8f),
             fontFamily = FontFamily.Monospace,
-            fontSize = 8.5.sp,
+            fontSize = 9.5.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -1883,6 +2025,13 @@ private fun EnvironmentCard(
         if (environment.installing || environment.deleting) {
             Spacer(Modifier.height(13.dp))
             val progress = if (environment.deleting) null else environment.progress
+            val phase = when {
+                environment.status?.contains("解压") == true -> "解压"
+                environment.status?.contains("校验") == true -> "校验"
+                environment.status?.contains("下载") == true ||
+                    environment.status?.contains("续传") == true -> "下载"
+                else -> "安装"
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     environment.status
@@ -1901,7 +2050,7 @@ private fun EnvironmentCard(
                     Spacer(Modifier.width(8.dp))
                 }
                 Text(
-                    if (progress != null) "${(progress * 100).toInt()}%" else "",
+                    if (progress != null) "$phase ${(progress * 100).toInt()}%" else "",
                     color = AccentSoft,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 10.sp
@@ -1924,6 +2073,18 @@ private fun EnvironmentCard(
                         .height(3.dp),
                     color = Accent,
                     trackColor = AccentDim
+                )
+            }
+            if (environment.installing && phase == "下载" &&
+                environment.downloadedBytes > 0L && environment.totalBytes > 0L
+            ) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${formatBytes(environment.downloadedBytes)} / " +
+                        formatBytes(environment.totalBytes),
+                    color = TextMuted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.5.sp
                 )
             }
             if (environment.installing) {
@@ -2197,7 +2358,15 @@ private fun HarnessCard(
                 )
             } else if (harness.latestVersion != null && !harness.checkingUpdate) {
                 Spacer(Modifier.height(4.dp))
-                Text("已是最新版本", color = Success, fontSize = 10.sp)
+                if (versionText?.contains('-') == true) {
+                    Text(
+                        "当前为预览版；正式版发布后会提示更新，不会自动降级。",
+                        color = Amber,
+                        fontSize = 10.sp
+                    )
+                } else {
+                    Text("已是最新版本", color = Success, fontSize = 10.sp)
+                }
             }
         }
 
@@ -2568,7 +2737,7 @@ private fun NpmSourceDialog(
                     BasicTextField(
                         value = input,
                         onValueChange = {
-                            input = it.take(200)
+                            input = normalizePathInput(it).take(200)
                             error = null
                         },
                         modifier = Modifier.fillMaxWidth().keyboardLift(),
@@ -2581,7 +2750,7 @@ private fun NpmSourceDialog(
                         cursorBrush = SolidColor(Accent),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Uri,
+                            keyboardType = KeyboardType.Ascii,
                             imeAction = ImeAction.Done
                         ),
                         decorationBox = { inner ->
@@ -2609,7 +2778,7 @@ private fun NpmSourceDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    val value = input.trim()
+                    val value = normalizePathInput(input).trim()
                     if (!value.startsWith("http://") && !value.startsWith("https://")) {
                         error = "地址需要以 http:// 或 https:// 开头"
                     } else {
@@ -3189,6 +3358,59 @@ private fun SettingsInfoRow(label: String, value: String) {
 }
 
 @Composable
+private fun DiagnosticsDialog(text: String, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1_500)
+            copied = false
+        }
+    }
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle(
+            title = "诊断信息",
+            subtitle = "可复制给支持人员；不包含密钥或对话内容",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 360.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceVariant)
+                .verticalScroll(rememberScrollState())
+                .padding(11.dp)
+        ) {
+            Text(
+                text,
+                color = TextSecondary,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp
+            )
+        }
+        KkDialogActions {
+            TextButton(onClick = {
+                clipboard.setText(AnnotatedString(text))
+                copied = true
+            }) {
+                Text(
+                    if (copied) "已复制" else "复制",
+                    color = if (copied) Success else Accent,
+                    fontSize = 12.sp
+                )
+            }
+            Spacer(Modifier.width(6.dp))
+            TextButton(onClick = onDismiss) {
+                Text("关闭", color = TextMuted, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConfirmDialog(
     title: String,
     text: String,
@@ -3197,29 +3419,23 @@ private fun ConfirmDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-        },
-        text = { Text(text, style = MaterialTheme.typography.bodyMedium) },
-        confirmButton = {
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle(title, onDismiss = onDismiss)
+        Spacer(Modifier.height(10.dp))
+        Text(text, color = TextSecondary, fontSize = 13.sp, lineHeight = 19.sp)
+        KkDialogActions {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(6.dp))
             TextButton(onClick = onConfirm) {
                 Text(
                     confirmLabel,
                     color = if (destructive) Red else Accent,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp
                 )
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
-            }
         }
-    )
+    }
 }

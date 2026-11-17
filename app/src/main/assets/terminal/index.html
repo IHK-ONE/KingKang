@@ -148,6 +148,12 @@
   // mutation and forward the committed text exactly once instead.
   var helperTextarea = document.querySelector('.xterm-helper-textarea');
   if (helperTextarea) {
+    // Ask the IME for a Latin layout: shell commands are ASCII, and a pinyin keyboard
+    // otherwise commits Chinese candidates into the prompt.
+    helperTextarea.setAttribute('inputmode', 'latin');
+    helperTextarea.setAttribute('autocapitalize', 'off');
+    helperTextarea.setAttribute('autocorrect', 'off');
+    helperTextarea.setAttribute('spellcheck', 'false');
     helperTextarea.addEventListener('beforeinput', function (event) {
       if (event.inputType !== 'insertText' || !event.data) {
         return;

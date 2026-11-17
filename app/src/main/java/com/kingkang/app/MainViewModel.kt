@@ -4,6 +4,7 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.kingkang.app.BuildConfig
 import com.kingkang.app.agent.AgentAnswer
 import com.kingkang.app.agent.AgentApproval
 import com.kingkang.app.agent.AgentConnection
@@ -12,6 +13,7 @@ import com.kingkang.app.agent.AgentDraftImage
 import com.kingkang.app.agent.AgentMcpServer
 import com.kingkang.app.agent.AgentEngine
 import com.kingkang.app.agent.AgentFileReference
+import com.kingkang.app.agent.InstallService
 import com.kingkang.app.agent.AgentImage
 import com.kingkang.app.agent.AgentPluginInspection
 import com.kingkang.app.agent.AgentProviderDraft
@@ -24,6 +26,8 @@ import com.kingkang.app.agent.AgentState
 import com.kingkang.app.agent.AgentSubagent
 import com.kingkang.app.data.SettingsStore
 import com.kingkang.app.device.DeviceAdbHelper
+import com.kingkang.app.update.AppRelease
+import com.kingkang.app.update.AppUpdateChecker
 import com.kingkang.app.files.FileActions
 import com.kingkang.app.runtime.ChrootEngine
 import com.kingkang.app.runtime.CommandSpec
@@ -64,6 +68,9 @@ data class EnvironmentUi(
     val approxBytes: Long? = null,
     val installing: Boolean = false,
     val progress: Float? = null,
+    /** Real bytes when the server reported a length; zero otherwise. */
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = 0L,
     val status: String? = null,
     val error: String? = null,
     val checkingUpdate: Boolean = false,
@@ -74,6 +81,13 @@ data class EnvironmentUi(
 
 /** Last plugin install outcome, kept on screen because installs outlive a snackbar. */
 data class PluginInstallNote(val text: String, val failed: Boolean = false)
+
+data class AppUpdateUi(
+    val checking: Boolean = false,
+    val release: AppRelease? = null,
+    val error: String? = null,
+    val checked: Boolean = false
+)
 
 data class HarnessUi(
     val installed: Boolean = false,
@@ -190,6 +204,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val activeSession: StateFlow<AgentSession?> = agentState
         .map { it.activeSession }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    private val _appUpdate = MutableStateFlow(AppUpdateUi())
+    val appUpdate: StateFlow<AppUpdateUi> = _appUpdate.asStateFlow()
 
     private val _uiMessages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val uiMessages: SharedFlow<String> = _uiMessages.asSharedFlow()
@@ -381,10 +398,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         installJob?.cancel()
         installJob = viewModelScope.launch {
+            InstallService.start(getApplication(), "正在安装 Kali 环境")
             _environment.update {
                 it.copy(
                     installing = true,
                     progress = 0f,
+                    downloadedBytes = 0L,
+                    totalBytes = 0L,
                     status = "准备下载…",
                     error = null,
                     notice = null
@@ -405,7 +425,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         } else {
                             null
                         }
-                        _environment.update { it.copy(progress = fraction) }
+                        _environment.update {
+                            it.copy(
+                                progress = fraction,
+                                downloadedBytes = downloaded,
+                                totalBytes = total
+                            )
+                        }
                     },
                     onStatus = { status ->
                         // Keep the bar: extraction reports its own compressed-byte
@@ -413,7 +439,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _environment.update { it.copy(status = status) }
                     },
                     onExtractProgress = { fraction ->
-                        _environment.update { it.copy(progress = fraction) }
+                        _environment.update {
+                            it.copy(
+                                progress = fraction,
+                                downloadedBytes = 0L,
+                                totalBytes = 0L
+                            )
+                        }
                     }
                 )
                 refreshEnvironment()
@@ -425,6 +457,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         installing = false,
                         progress = null,
+                        downloadedBytes = 0L,
+                        totalBytes = 0L,
                         status = "Kali 环境已安装",
                         error = null,
                         checkingUpdate = false,
@@ -446,6 +480,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         installing = false,
                         progress = null,
+                        downloadedBytes = 0L,
+                        totalBytes = 0L,
                         status = "已取消下载",
                         error = null
                     )
@@ -463,6 +499,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         installing = false,
                         progress = null,
+                        downloadedBytes = 0L,
+                        totalBytes = 0L,
                         status = null,
                         error = message
                     )
@@ -471,6 +509,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _terminalState.value = TerminalUiState.Failed(message)
                 }
                 reconnectAgentIfHarnessPresent(hadEnvironment)
+            } finally {
+                InstallService.stop(getApplication())
             }
         }
     }
@@ -683,6 +723,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             null
         }
         harnessJob = viewModelScope.launch {
+            InstallService.start(
+                getApplication(),
+                if (update) "正在更新 DeepSeek Harness" else "正在安装 DeepSeek Harness"
+            )
             _harness.update {
                 it.copy(
                     busy = true,
@@ -749,6 +793,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             } finally {
+                InstallService.stop(getApplication())
                 _harness.update { it.copy(busy = false, progress = null) }
             }
         }
@@ -1017,17 +1062,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settingsStore.collapsedWorkspaceIds = if (collapsed) current + id else current - id
     }
 
-    fun recentDirectories(): List<String> = settingsStore.recentDirectories
-
-    /** Records a confirmed pick; the picker shows these as one-tap shortcuts. */
-    fun rememberDirectory(path: String) {
-        val trimmed = path.trim()
-        if (trimmed.isBlank()) return
-        settingsStore.recentDirectories = listOf(trimmed) + settingsStore.recentDirectories.filter {
-            it != trimmed
-        }
-    }
-
     /** Switches the app palette and mirrors the choice into dsh's ui-theme setting. */
     fun setThemeMode(mode: String) {
         val value = when (mode) {
@@ -1167,7 +1201,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun newChatInWorkspace(workspaceId: String) = AgentEngine.newSession(workspaceId)
 
-    fun createWorkspace(path: String) = AgentEngine.createWorkspace(path)
+    fun createWorkspace(path: String, onResult: (Boolean) -> Unit = {}) =
+        AgentEngine.createWorkspace(path) { ok -> viewModelScope.launch { onResult(ok) } }
 
     fun renameWorkspace(id: String, title: String) = AgentEngine.renameWorkspace(id, title)
 
@@ -1532,6 +1567,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshAgentPermissions() = AgentEngine.refreshPermissions()
 
     fun notify(message: String) = emitUiMessage(message)
+
+    /** Checks the public GitHub release page; nothing is downloaded automatically. */
+    fun checkAppUpdate() {
+        if (_appUpdate.value.checking) return
+        _appUpdate.value = _appUpdate.value.copy(checking = true, error = null)
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { AppUpdateChecker.latest() }
+            }
+            result.onSuccess { release ->
+                val newer = AppUpdateChecker.isNewer(release.version, BuildConfig.VERSION_NAME)
+                _appUpdate.value = AppUpdateUi(
+                    checking = false,
+                    release = release.takeIf { newer },
+                    checked = true
+                )
+            }.onFailure { error ->
+                _appUpdate.value = AppUpdateUi(
+                    checking = false,
+                    error = error.message?.takeIf { it.isNotBlank() } ?: "检查应用更新失败",
+                    checked = true
+                )
+            }
+        }
+    }
 
     private fun removeLegacyChatStore() {
         // The old local chat list was a placeholder with no AI connected. dsh now owns

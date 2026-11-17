@@ -29,6 +29,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
@@ -47,6 +49,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
@@ -77,6 +80,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -96,6 +101,7 @@ import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.TerminalMark
 import com.kingkang.app.ui.components.keyboardLift
+import com.kingkang.app.ui.components.normalizePathInput
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Border
@@ -326,8 +332,13 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                     start = 16.dp,
                     end = 16.dp,
                     // On the chat the notice floats above the composer instead of covering
-                    // it; every other page keeps it just above the bottom edge.
-                    bottom = if (screen == AppScreen.Home) 98.dp else 12.dp
+                    // it; the terminal keeps its extra key row clear, and other pages only
+                    // need a small bottom margin.
+                    bottom = when (screen) {
+                        AppScreen.Home -> 98.dp
+                        AppScreen.Terminal -> 84.dp
+                        else -> 12.dp
+                    }
                 )
         ) { data ->
             // A themed pill instead of Material's near-black bar: same surface, border
@@ -476,6 +487,7 @@ private fun KingKangDrawer(
     var query by rememberSaveable { mutableStateOf("") }
     val drawerListState = rememberLazyListState()
     var showWorkspaceDialog by rememberSaveable { mutableStateOf(false) }
+    var creatingWorkspace by rememberSaveable { mutableStateOf(false) }
     var showDirectoryPicker by rememberSaveable { mutableStateOf(false) }
     var workspacePath by rememberSaveable { mutableStateOf("/root") }
     // Folded headers survive both drawer closes and process restarts.
@@ -546,16 +558,33 @@ private fun KingKangDrawer(
                 .navigationBarsPadding()
                 .padding(horizontal = 12.dp)
         ) {
-            Spacer(Modifier.height(18.dp))
-            Text(
-                "KINGKANG",
-                modifier = Modifier.padding(horizontal = 10.dp),
-                color = TextPrimary,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.8.sp
-            )
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(10.dp))
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "KINGKANG",
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 6.dp),
+                    color = TextPrimary,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.8.sp
+                )
+                IconButton(onClick = onOpenSettings) {
+                    Icon(
+                        Icons.Filled.Settings,
+                        contentDescription = "设置",
+                        tint = TextSecondary,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
 
             Row(
                 Modifier
@@ -660,6 +689,7 @@ private fun KingKangDrawer(
                             onTrailingClick = if (harnessAvailable) {
                                 {
                                     workspacePath = "/root"
+                                    creatingWorkspace = false
                                     showWorkspaceDialog = true
                                 }
                             } else {
@@ -858,8 +888,7 @@ private fun KingKangDrawer(
             Spacer(Modifier.height(8.dp))
             HorizontalDivider(color = Border.copy(alpha = 0.7f))
             DeviceIndicators(
-                modifier = Modifier.padding(top = 6.dp, bottom = 4.dp),
-                onOpenSettings = onOpenSettings
+                modifier = Modifier.padding(top = 6.dp, bottom = 4.dp)
             )
             Spacer(Modifier.height(12.dp))
         }
@@ -880,9 +909,25 @@ private fun KingKangDrawer(
                 lineHeight = 17.sp
             )
             Spacer(Modifier.height(10.dp))
+            val submitWorkspace = {
+                if (!creatingWorkspace && workspacePath.isNotBlank()) {
+                    creatingWorkspace = true
+                    vm.createWorkspace(normalizePathInput(workspacePath).trim()) { ok ->
+                        creatingWorkspace = false
+                        // Keep the form open on failure so the path can be corrected
+                        // instead of losing the dialog and its error behind the drawer.
+                        if (ok) showWorkspaceDialog = false
+                    }
+                }
+            }
             BasicTextField(
                 value = workspacePath,
-                onValueChange = { workspacePath = it.take(200) },
+                onValueChange = { workspacePath = normalizePathInput(it).take(200) },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Ascii,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(onDone = { submitWorkspace() }),
                 modifier = Modifier
                     .fillMaxWidth()
                     .keyboardLift()
@@ -907,7 +952,9 @@ private fun KingKangDrawer(
                     modifier = Modifier
                         .clip(RoundedCornerShape(7.dp))
                         .clickable {
-                            vm.browseDirectory(workspacePath.trim().ifBlank { "/root" })
+                            vm.browseDirectory(
+                                normalizePathInput(workspacePath).trim().ifBlank { "/root" }
+                            )
                             showDirectoryPicker = true
                         }
                         .padding(vertical = 6.dp, horizontal = 2.dp)
@@ -920,11 +967,8 @@ private fun KingKangDrawer(
                 }
                 Spacer(Modifier.width(6.dp))
                 Button(
-                    onClick = {
-                        vm.createWorkspace(workspacePath)
-                        showWorkspaceDialog = false
-                    },
-                    enabled = workspacePath.isNotBlank(),
+                    onClick = { submitWorkspace() },
+                    enabled = workspacePath.isNotBlank() && !creatingWorkspace,
                     modifier = Modifier.height(36.dp),
                     shape = RoundedCornerShape(10.dp),
                     contentPadding = PaddingValues(horizontal = 16.dp),
@@ -935,7 +979,11 @@ private fun KingKangDrawer(
                         disabledContentColor = TextMuted
                     )
                 ) {
-                    Text("添加", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    Text(
+                        if (creatingWorkspace) "添加中…" else "添加",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
         }
@@ -947,7 +995,6 @@ private fun KingKangDrawer(
             onBrowse = vm::browseDirectory,
             onPick = { path ->
                 workspacePath = path
-                vm.rememberDirectory(path)
                 showDirectoryPicker = false
                 vm.closeDirectoryBrowser()
             },

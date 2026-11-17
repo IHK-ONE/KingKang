@@ -1,7 +1,6 @@
 package com.kingkang.app.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -11,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -31,19 +29,17 @@ import com.kingkang.app.ui.theme.TextSecondary
 
 /**
  * The two device lamps: OTG network adapter and Shizuku ADB. A green dot means the
- * capability is usable right now; grey means it is not, with a short reason next to it.
- * Tapping opens the device-capability settings when a callback is supplied.
+ * capability is usable right now; grey or amber means it is not, with a short reason
+ * next to it. They are status only; the Settings → 设备能力 card owns the actions.
  */
 @Composable
-fun DeviceIndicators(
-    modifier: Modifier = Modifier,
-    onOpenSettings: (() -> Unit)? = null
-) {
+fun DeviceIndicators(modifier: Modifier = Modifier) {
     val otgState by UsbMonitor.state.collectAsState()
     val otg = otgState.usable
     val shizuku by ShizukuManager.state.collectAsState()
     val shizukuText = when {
-        shizuku.authorized -> "已授权"
+        shizuku.connected -> "已授权"
+        shizuku.authorized -> "连接中"
         !shizuku.installed -> "未安装"
         shizuku.running -> "未授权"
         else -> "未运行"
@@ -51,11 +47,7 @@ fun DeviceIndicators(
     Row(
         modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .then(
-                if (onOpenSettings != null) Modifier.clickable(onClick = onOpenSettings) else Modifier
-            )
-            .padding(horizontal = 2.dp, vertical = 5.dp),
+            .padding(horizontal = 2.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -63,8 +55,9 @@ fun DeviceIndicators(
         DeviceLamp(
             "Shizuku",
             shizukuText,
-            shizuku.authorized,
-            attention = shizuku.running && !shizuku.authorized
+            shizuku.connected,
+            attention = (shizuku.running && !shizuku.authorized) ||
+                (shizuku.authorized && !shizuku.connected)
         )
     }
 }
