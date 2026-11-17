@@ -9,15 +9,23 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import com.kingkang.app.BuildConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Tracks whether Shizuku is installed, running and authorized, and owns the user service
  * that runs device commands with the shell UID. Nothing here is root: the service is the
  * same authority `adb shell` has.
+ *
+ * Binder probes run off the main thread: a starting or busy Shizuku service must never
+ * delay the activity's first frames. Only the ServiceConnection bookkeeping stays on main.
  */
 object ShizukuManager {
 
@@ -31,12 +39,18 @@ object ShizukuManager {
     private const val REQUEST_CODE = 0x4b4b
 
     private val main = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val refreshing = AtomicBoolean(false)
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
     private var appContext: Context? = null
     private var args: Shizuku.UserServiceArgs? = null
+
+    @Volatile
     private var bound = false
+
+    @Volatile
     private var shell: IDeviceShell? = null
 
     private val connection = object : ServiceConnection {
@@ -54,32 +68,18 @@ object ShizukuManager {
         if (appContext != null) return
         appContext = context.applicationContext
         runCatching {
-            Shizuku.addBinderReceivedListenerSticky { main.post { refresh() } }
+            Shizuku.addBinderReceivedListenerSticky { scheduleRefresh() }
             Shizuku.addBinderDeadListener {
-                main.post {
-                    shell = null
-                    bound = false
-                    refresh()
-                }
+                shell = null
+                bound = false
+                scheduleRefresh()
             }
-            Shizuku.addRequestPermissionResultListener { _, _ -> main.post { refresh() } }
+            Shizuku.addRequestPermissionResultListener { _, _ -> scheduleRefresh() }
         }
-        refresh()
+        scheduleRefresh()
     }
 
-    fun refresh() {
-        val context = appContext ?: return
-        val installed = runCatching {
-            context.packageManager.getPackageInfo(MANAGER_PACKAGE, 0)
-            true
-        }.getOrDefault(false)
-        val running = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
-        val authorized = running && runCatching {
-            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-        }.getOrDefault(false)
-        _state.value = State(installed = installed, running = running, authorized = authorized)
-        if (authorized) bind() else unbind()
-    }
+    fun refresh() = scheduleRefresh()
 
     fun requestPermission() {
         if (!_state.value.running || _state.value.authorized) return
@@ -101,6 +101,31 @@ object ShizukuManager {
         if (!_state.value.authorized) throw IllegalStateException("Shizuku 未授权")
         val service = shell ?: throw IllegalStateException("Shizuku ADB 服务尚未连接")
         return service.exec(command, timeoutMs)
+    }
+
+    private fun scheduleRefresh() {
+        if (!refreshing.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                doRefresh()
+            } finally {
+                refreshing.set(false)
+            }
+        }
+    }
+
+    private fun doRefresh() {
+        val context = appContext ?: return
+        val installed = runCatching {
+            context.packageManager.getPackageInfo(MANAGER_PACKAGE, 0)
+            true
+        }.getOrDefault(false)
+        val running = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
+        val authorized = running && runCatching {
+            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        }.getOrDefault(false)
+        _state.value = State(installed = installed, running = running, authorized = authorized)
+        main.post { if (_state.value.authorized) bind() else unbind() }
     }
 
     private fun bind() {
