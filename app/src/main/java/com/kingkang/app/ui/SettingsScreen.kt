@@ -495,6 +495,13 @@ fun SettingsScreen(
             )
 
             Spacer(Modifier.height(24.dp))
+            Box(Modifier.bringIntoViewRequester(deviceAnchor)) {
+                SectionLabel("设备能力")
+            }
+            Spacer(Modifier.height(8.dp))
+            DeviceCapabilityCard(onOpenUrl = ::openExternal)
+
+            Spacer(Modifier.height(24.dp))
             SectionLabel("运行方式")
             Spacer(Modifier.height(8.dp))
             RootSettingCard(
@@ -503,13 +510,6 @@ fun SettingsScreen(
                 onToggle = vm::setRootMode,
                 onCheck = vm::checkRoot
             )
-
-            Spacer(Modifier.height(24.dp))
-            Box(Modifier.bringIntoViewRequester(deviceAnchor)) {
-                SectionLabel("设备能力")
-            }
-            Spacer(Modifier.height(8.dp))
-            DeviceCapabilityCard(onOpenUrl = ::openExternal)
 
             Spacer(Modifier.height(24.dp))
             Box(Modifier.bringIntoViewRequester(storageAnchor)) {
