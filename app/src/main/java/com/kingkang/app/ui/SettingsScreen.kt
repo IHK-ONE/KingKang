@@ -1514,8 +1514,9 @@ internal fun ChoiceSegmented(
 @Composable
 private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
     val context = LocalContext.current
-    val otg by UsbMonitor.networkPresent.collectAsState()
+    val otgState by UsbMonitor.state.collectAsState()
     val shizuku by ShizukuManager.state.collectAsState()
+    val otg = otgState.usable
     val shizukuStatus = when {
         shizuku.authorized -> "已授权"
         !shizuku.installed -> "未安装"
@@ -1526,14 +1527,19 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "OTG 网卡",
+                    "OTG 网络设备",
                     color = TextPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "插入 USB 网络适配器后自动识别；能否联网取决于 Android 是否启用了该网卡。",
+                    if (otg) {
+                        "内核已创建 USB 网络接口：${otgState.interfaces.joinToString("、")}。"
+                    } else {
+                        "只有内核驱动已绑定并创建网络接口时才会就绪；仅插入 USB 网卡不会点亮。" +
+                            "MT7612U、RTL8812AU 等需要设备内核包含对应驱动。"
+                    },
                     color = TextMuted,
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp
@@ -1541,7 +1547,7 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
             }
             Spacer(Modifier.width(10.dp))
             Text(
-                if (otg) "已接入" else "未接入",
+                if (otg) "已就绪" else "未就绪",
                 color = if (otg) Success else TextMuted,
                 fontSize = 11.sp
             )
@@ -1630,7 +1636,10 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
                 fontSize = 10.5.sp,
                 modifier = Modifier
                     .clip(RoundedCornerShape(7.dp))
-                    .clickable { ShizukuManager.refresh() }
+                    .clickable {
+                        ShizukuManager.refresh()
+                        UsbMonitor.refreshNow()
+                    }
                     .padding(horizontal = 6.dp, vertical = 4.dp)
             )
         }

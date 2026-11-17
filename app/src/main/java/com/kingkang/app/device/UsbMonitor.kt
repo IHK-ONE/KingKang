@@ -4,73 +4,91 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.hardware.usb.UsbConstants
-import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.io.File
 
 /**
- * Watches the USB bus for network adapters attached through OTG. Most dongles expose the
- * CDC communication/data classes; the few vendor-specific ones are recognised by their
- * USB vendor id. The flag is informational: KingKang cannot bring an interface up itself
- * without root, but Android and Kali can use it once the system does.
+ * Reports only USB network interfaces that the kernel has actually brought up.
+ *
+ * Presence on the USB bus, a vendor id or a CDC descriptor is not enough: NetHunter can
+ * use MT7612U / RTL8812AU only when the running kernel has their driver and firmware and
+ * has created a netdev. This check reads `/sys/class/net/<if>/device`; when the resolved
+ * device path lives under `/usb`, that interface is backed by USB and visible to Kali in
+ * the same network namespace. No vendor table is involved, so an adapter that merely
+ * enumerates but is not driven stays dark.
  */
 object UsbMonitor {
 
-    private val _networkPresent = MutableStateFlow(false)
-    val networkPresent: StateFlow<Boolean> = _networkPresent.asStateFlow()
+    data class State(val interfaces: List<String> = emptyList()) {
+        val usable: Boolean get() = interfaces.isNotEmpty()
+    }
+
+    private val _state = MutableStateFlow(State())
+    val state: StateFlow<State> = _state.asStateFlow()
 
     private var receiver: BroadcastReceiver? = null
+    private var scope: CoroutineScope? = null
 
     fun init(context: Context) {
         if (receiver != null) return
         val app = context.applicationContext
+        val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scope = it }
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
         val listener = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                refresh(context ?: app)
+                refreshNow()
             }
         }
         runCatching {
             ContextCompat.registerReceiver(app, listener, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
             receiver = listener
         }
-        refresh(app)
-    }
-
-    private fun refresh(context: Context) {
-        val manager = context.getSystemService(Context.USB_SERVICE) as? UsbManager
-        val present = manager?.deviceList?.values?.any(::isNetworkAdapter) == true
-        _networkPresent.value = present
-    }
-
-    fun isNetworkAdapter(device: UsbDevice): Boolean {
-        if (device.deviceClass == UsbConstants.USB_CLASS_COMM) return true
-        for (index in 0 until device.interfaceCount) {
-            val interfaceClass = device.getInterface(index).interfaceClass
-            if (interfaceClass == UsbConstants.USB_CLASS_COMM ||
-                interfaceClass == UsbConstants.USB_CLASS_CDC_DATA
-            ) {
-                return true
+        // A driver may bind a few seconds after the attach broadcast; keep checking so the
+        // lamp reflects the kernel state, not the cable event.
+        monitorScope.launch {
+            while (isActive) {
+                refreshNow()
+                delay(2_000)
             }
         }
-        return device.vendorId in ETHERNET_VENDORS
     }
 
-    /** Common USB Ethernet controller vendors; these often report a vendor-specific class. */
-    private val ETHERNET_VENDORS = setOf(
-        0x0B95, // ASIX
-        0x0BDA, // Realtek
-        0x0424, // Microchip / SMSC
-        0x9710, // MosChip
-        0x1D6B, // Linux Foundation (CDC Ethernet gadgets)
-        0x2357, // TP-Link
-        0x0FE6  // ICS Advent / Davicom
-    )
+    fun refreshNow() {
+        val interfaces = usbNetworkInterfaces()
+        if (_state.value.interfaces != interfaces) {
+            _state.value = State(interfaces)
+        }
+    }
+
+    /**
+     * USB-backed netdevs. A Wi-Fi dongle's wlan interface and a USB Ethernet adapter both
+     * expose `/sys/class/net/<name>/device` pointing into the USB device tree.
+     */
+    internal fun usbNetworkInterfaces(
+        sysClassNet: File = File("/sys/class/net")
+    ): List<String> {
+        val entries = runCatching { sysClassNet.listFiles() }.getOrNull() ?: return emptyList()
+        return entries.asSequence()
+            .mapNotNull { net ->
+                val device = File(net, "device")
+                if (!device.exists()) return@mapNotNull null
+                val target = runCatching { device.canonicalPath }.getOrDefault("")
+                if (target.contains("/usb")) net.name else null
+            }
+            .sorted()
+            .toList()
+    }
 }

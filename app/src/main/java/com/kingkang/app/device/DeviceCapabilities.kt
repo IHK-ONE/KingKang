@@ -10,14 +10,17 @@ object DeviceCapabilities {
     const val CONTEXT_MARKER = "[KingKang 环境]"
 
     fun promptNote(): String? {
-        val otg = UsbMonitor.networkPresent.value
+        val otg = UsbMonitor.state.value.interfaces
         val shizuku = ShizukuManager.state.value.authorized
-        if (!otg && !shizuku) return null
+        if (otg.isEmpty() && !shizuku) return null
         return buildString {
             append(CONTEXT_MARKER).append('\n')
             append("当前设备能力（仅在需要访问 Android 设备本身时使用）：\n")
-            if (otg) {
-                append("- OTG：Android 已识别到 USB 网络适配器。\n")
+            if (otg.isNotEmpty()) {
+                append(
+                    "- OTG：系统已创建 USB 网络接口 ${otg.joinToString("、")}，" +
+                        "Kali 可直接使用。\n"
+                )
             }
             if (shizuku) {
                 append(

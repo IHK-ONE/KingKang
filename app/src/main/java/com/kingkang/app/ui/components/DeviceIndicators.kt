@@ -39,7 +39,8 @@ fun DeviceIndicators(
     modifier: Modifier = Modifier,
     onOpenSettings: (() -> Unit)? = null
 ) {
-    val otg by UsbMonitor.networkPresent.collectAsState()
+    val otgState by UsbMonitor.state.collectAsState()
+    val otg = otgState.usable
     val shizuku by ShizukuManager.state.collectAsState()
     val shizukuText = when {
         shizuku.authorized -> "已授权"
@@ -58,7 +59,7 @@ fun DeviceIndicators(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        DeviceLamp("OTG", if (otg) "已接入" else "未接入", otg)
+        DeviceLamp("OTG", if (otg) "可用" else "未就绪", otg)
         DeviceLamp(
             "Shizuku",
             shizukuText,
