@@ -1281,10 +1281,12 @@ data class AgentWifiInterface(
     val phy: String,
     val type: String,
     /** `iw phy` lists monitor among this phy's supported interface modes. */
-    val monitor: Boolean
+    val monitor: Boolean,
+    /** "kali" when read inside PRoot, "shell" when read through Shizuku's shell UID. */
+    val source: String = "kali"
 )
 
-/** Result of the Kali-side wireless probe; OTG presence alone does not imply monitor mode. */
+/** Result of the wireless probe; OTG presence alone does not imply monitor mode. */
 data class AgentWifiProbe(
     val loading: Boolean = false,
     val checked: Boolean = false,

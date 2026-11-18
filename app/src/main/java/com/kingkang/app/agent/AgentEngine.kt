@@ -5185,6 +5185,39 @@ object AgentEngine {
                     checked = true,
                     reason = "检测失败：${readableError(t)}"
                 )
+            }.let { kali ->
+                // PRoot runs as an untrusted app, and Android SELinux usually blocks the
+                // netlink socket iw needs. Shizuku's shell UID can read the same kernel,
+                // so try there before telling the user the phones' radios are invisible.
+                if (kali.interfaces.isNotEmpty()) return@let kali
+                val shizuku = com.kingkang.app.device.ShizukuManager.state.value
+                if (!shizuku.connected || shizuku.disabled) return@let kali
+                val devText = runCatching {
+                    com.kingkang.app.device.ShizukuManager.exec("iw dev", 8_000)
+                }.getOrNull() ?: return@let kali
+                val interfaces = com.kingkang.app.device.IwOutput.parseDev(devText)
+                if (interfaces.isEmpty()) return@let kali
+                val monitor = mutableMapOf<String, Boolean>()
+                interfaces.map { it.phy }.distinct().take(3).forEach { phy ->
+                    if (!com.kingkang.app.device.IwOutput.isPhyName(phy)) return@forEach
+                    val info = runCatching {
+                        com.kingkang.app.device.ShizukuManager.exec("iw phy $phy info", 8_000)
+                    }.getOrNull()
+                    monitor[phy] = info?.let(com.kingkang.app.device.IwOutput::supportsMonitor) == true
+                }
+                kali.copy(
+                    available = true,
+                    reason = null,
+                    interfaces = interfaces.map { radio ->
+                        AgentWifiInterface(
+                            name = radio.name,
+                            phy = radio.phy,
+                            type = radio.type,
+                            monitor = monitor[radio.phy] == true,
+                            source = "shell"
+                        )
+                    }
+                )
             }
             _state.update { it.copy(wifiProbe = probe) }
         }

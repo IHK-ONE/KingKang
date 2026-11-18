@@ -2038,7 +2038,8 @@ private fun DeviceCapabilityCard(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "${radio.phy} · ${radio.type}",
+                            "${radio.phy} · ${radio.type}" +
+                                if (radio.source == "shell") " · 设备 shell" else "",
                             color = TextMuted,
                             fontSize = 10.sp
                         )
