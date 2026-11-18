@@ -72,6 +72,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.AnnotatedString
@@ -99,6 +101,10 @@ import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentLanguageSettings
 import com.kingkang.app.agent.AgentPresetCopy
 import com.kingkang.app.agent.AgentState
+import com.kingkang.app.agent.AgentWifiProbe
+import com.kingkang.app.agent.TaskNotifications
+import com.kingkang.app.data.SettingsStore
+import com.kingkang.app.device.DeviceAudit
 import com.kingkang.app.browser.BrowserActivity
 import com.kingkang.app.ui.components.CompactInputPlatformStyle
 import com.kingkang.app.ui.components.Dot
@@ -138,6 +144,7 @@ fun SettingsScreen(
     onOpenPlugins: () -> Unit,
     onOpenAgentSettings: (String?) -> Unit,
     onAbout: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
     focusSection: String? = null
 ) {
     val environment by vm.environment.collectAsState()
@@ -149,7 +156,6 @@ fun SettingsScreen(
     val appUpdateState by vm.appUpdate.collectAsState()
     val deviceOtg by UsbMonitor.state.collectAsState()
     val deviceShizuku by ShizukuManager.state.collectAsState()
-    var showDiagnostics by remember { mutableStateOf(false) }
     val npmRegistry by vm.npmRegistry.collectAsState()
     val settingsScroll = rememberScrollState()
     var confirmDelete by remember { mutableStateOf(false) }
@@ -159,6 +165,17 @@ fun SettingsScreen(
     var showSearch by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    var taskNotifications by remember {
+        mutableStateOf(SettingsStore(context).taskNotificationsEnabled)
+    }
+    var notificationsAllowed by remember { mutableStateOf(TaskNotifications.permitted(context)) }
+    var testNotificationNote by remember { mutableStateOf<String?>(null) }
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        notificationsAllowed = granted && TaskNotifications.permitted(context)
+        testNotificationNote = if (notificationsAllowed) null else "通知权限未授予。"
+    }
     val credentialsAnchor = remember { BringIntoViewRequester() }
     val appearanceAnchor = remember { BringIntoViewRequester() }
     val languageAnchor = remember { BringIntoViewRequester() }
@@ -172,6 +189,7 @@ fun SettingsScreen(
     val connectionAnchor = remember { BringIntoViewRequester() }
     val presetAnchor = remember { BringIntoViewRequester() }
     val storageAnchor = remember { BringIntoViewRequester() }
+    val notificationAnchor = remember { BringIntoViewRequester() }
     val environmentAnchor = remember { BringIntoViewRequester() }
     val agentSettingsAnchor = remember { BringIntoViewRequester() }
 
@@ -247,6 +265,13 @@ fun SettingsScreen(
         },
         SettingsSearchEntry("设备能力", "OTG 网卡与 Shizuku ADB 授权", "otg usb shizuku adb 网卡 设备") {
             jumpTo(deviceAnchor)
+        },
+        SettingsSearchEntry(
+            "通知",
+            "后台任务提醒、系统权限与测试通知",
+            "notification 通知 提醒 权限 测试"
+        ) {
+            jumpTo(notificationAnchor)
         },
         SettingsSearchEntry("存储与隐私", "运行位置、网络与共享目录", "storage privacy 存储 隐私 网络") {
             jumpTo(storageAnchor)
@@ -527,7 +552,11 @@ fun SettingsScreen(
                 SectionLabel("设备能力")
             }
             Spacer(Modifier.height(8.dp))
-            DeviceCapabilityCard(onOpenUrl = ::openExternal)
+            DeviceCapabilityCard(
+                wifiProbe = agent.wifiProbe,
+                onProbeWifi = vm::probeWifi,
+                onOpenUrl = ::openExternal
+            )
 
             Spacer(Modifier.height(24.dp))
             Box(Modifier.bringIntoViewRequester(rootAnchor)) {
@@ -540,6 +569,105 @@ fun SettingsScreen(
                 onToggle = vm::setRootMode,
                 onCheck = vm::checkRoot
             )
+
+            Spacer(Modifier.height(24.dp))
+            Box(Modifier.bringIntoViewRequester(notificationAnchor)) {
+                SectionLabel("通知")
+            }
+            Spacer(Modifier.height(8.dp))
+            SettingsCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "后台任务提醒",
+                            color = TextPrimary,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "应用不在前台时，任务完成或失败会发一条安静的通知；" +
+                                "锁屏只显示通用文字。",
+                            color = TextMuted,
+                            fontSize = 10.sp,
+                            lineHeight = 15.sp
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Switch(
+                        checked = taskNotifications,
+                        onCheckedChange = { enabled ->
+                            taskNotifications = enabled
+                            SettingsStore(context).taskNotificationsEnabled = enabled
+                        }
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = Border.copy(alpha = 0.7f))
+                Row(
+                    Modifier.padding(top = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("系统通知权限", color = TextSecondary, fontSize = 11.5.sp)
+                        Text(
+                            if (notificationsAllowed) "已允许" else "未开启，通知不会出现",
+                            color = if (notificationsAllowed) Success else Amber,
+                            fontSize = 10.sp
+                        )
+                    }
+                    if (!notificationsAllowed) {
+                        OutlinedButton(
+                            onClick = {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    notificationPermission.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
+                                } else {
+                                    notificationsAllowed = TaskNotifications.permitted(context)
+                                }
+                            },
+                            shape = RoundedCornerShape(11.dp),
+                            border = BorderStroke(1.dp, Border),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(32.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = TextSecondary
+                            )
+                        ) {
+                            Text("授权", fontSize = 11.sp)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = {
+                                notificationsAllowed = TaskNotifications.permitted(context)
+                                testNotificationNote = TaskNotifications.sendTest(context)
+                                if (testNotificationNote == null) {
+                                    testNotificationNote = "已发送测试通知。"
+                                }
+                            },
+                            shape = RoundedCornerShape(11.dp),
+                            border = BorderStroke(1.dp, Border),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                            modifier = Modifier.height(32.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = TextSecondary
+                            )
+                        ) {
+                            Text("发送测试", fontSize = 11.sp)
+                        }
+                    }
+                }
+                testNotificationNote?.let { note ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        note,
+                        color = if (note.startsWith("已发送")) Success else Amber,
+                        fontSize = 10.5.sp,
+                        lineHeight = 15.sp
+                    )
+                }
+            }
 
             Spacer(Modifier.height(24.dp))
             Box(Modifier.bringIntoViewRequester(storageAnchor)) {
@@ -641,7 +769,7 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.width(4.dp))
                     TextButton(
-                        onClick = { showDiagnostics = true },
+                        onClick = onOpenDiagnostics,
                         contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp)
                     ) {
                         Text("诊断", color = TextMuted, fontSize = 10.5.sp)
@@ -653,48 +781,6 @@ fun SettingsScreen(
             Spacer(Modifier.height(28.dp))
         }
         }
-    }
-
-    if (showDiagnostics) {
-        val diagnostics = buildString {
-            appendLine("KingKang ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
-            appendLine("Agent：${agent.connection}")
-            appendLine("dsh：${agent.dshVersion ?: "未知"}")
-            appendLine("Node：${harness.nodeVersion ?: "未知"}")
-            appendLine("Kali：${environment.version ?: environment.label ?: "未安装"}")
-            appendLine("根模式：${if (rootMode) "开启" else "关闭"}")
-            val notifications = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) == PackageManager.PERMISSION_GRANTED
-            } else {
-                true
-            }
-            appendLine("通知权限：${if (notifications) "已允许" else "未授予"}")
-            appendLine(
-                "OTG：${
-                    when {
-                        deviceOtg.interfaces.isNotEmpty() -> deviceOtg.interfaces.joinToString("、")
-                        deviceOtg.ethernet -> "以太网"
-                        else -> "未就绪"
-                    }
-                }"
-            )
-            appendLine(
-                "Shizuku：${
-                    when {
-                        deviceShizuku.connected -> "已授权"
-                        deviceShizuku.authorized -> "连接中"
-                        deviceShizuku.running -> "未授权"
-                        deviceShizuku.installed -> "未运行"
-                        else -> "未安装"
-                    }
-                }"
-            )
-            append("Kali 安装中：${environment.installing} · dsh 安装中：${harness.busy}")
-        }
-        DiagnosticsDialog(text = diagnostics, onDismiss = { showDiagnostics = false })
     }
 
     if (confirmUninstallHarness) {
@@ -1659,12 +1745,19 @@ internal fun ChoiceSegmented(
  * access. Neither is root; the card states exactly what the model is told.
  */
 @Composable
-private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
+private fun DeviceCapabilityCard(
+    wifiProbe: AgentWifiProbe,
+    onProbeWifi: () -> Unit,
+    onOpenUrl: (String) -> Unit
+) {
     val context = LocalContext.current
     val otgState by UsbMonitor.state.collectAsState()
     val shizuku by ShizukuManager.state.collectAsState()
     val otg = otgState.usable
+    var showAudit by remember { mutableStateOf(false) }
+    var auditEntries by remember { mutableStateOf<List<DeviceAudit.Entry>>(emptyList()) }
     val shizukuStatus = when {
+        shizuku.disabled -> "已停用"
         shizuku.connected -> "已授权"
         shizuku.authorized -> "连接中"
         !shizuku.installed -> "未安装"
@@ -1728,6 +1821,7 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
             Text(
                 shizukuStatus,
                 color = when {
+                    shizuku.disabled -> TextMuted
                     shizuku.connected -> Success
                     shizuku.authorized || shizuku.running -> Amber
                     else -> TextMuted
@@ -1738,6 +1832,19 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             when {
+                shizuku.disabled -> Button(
+                    onClick = { ShizukuManager.setDisabled(false) },
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    modifier = Modifier.height(32.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Accent,
+                        contentColor = OnAccent
+                    )
+                ) {
+                    Text("重新启用", fontSize = 11.sp)
+                }
+
                 !shizuku.installed -> OutlinedButton(
                     onClick = { onOpenUrl(SHIZUKU_SITE) },
                     shape = RoundedCornerShape(10.dp),
@@ -1782,6 +1889,17 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
                 )
             }
             Spacer(Modifier.weight(1f))
+            if (shizuku.connected) {
+                Text(
+                    "停用",
+                    color = Amber,
+                    fontSize = 10.5.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(7.dp))
+                        .clickable { ShizukuManager.setDisabled(true) }
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                )
+            }
             Text(
                 "刷新",
                 color = TextMuted,
@@ -1794,6 +1912,254 @@ private fun DeviceCapabilityCard(onOpenUrl: (String) -> Unit) {
                     }
                     .padding(horizontal = 6.dp, vertical = 4.dp)
             )
+        }
+        if (shizuku.disabled) {
+            Text(
+                "已停止使用 Shizuku：kk-adb 会立即断开，AI 也拿不到设备端 shell。" +
+                    "Shizuku 中的授权记录仍需在它自己的管理器中撤销。",
+                color = TextMuted,
+                fontSize = 10.sp,
+                lineHeight = 15.sp,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            Text(
+                "在 Shizuku 中撤销授权",
+                color = Accent,
+                fontSize = 10.5.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .clickable {
+                        if (!ShizukuManager.openManager(context)) onOpenUrl(SHIZUKU_SITE)
+                    }
+                    .padding(horizontal = 2.dp, vertical = 4.dp)
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = Border.copy(alpha = 0.7f))
+        Row(
+            Modifier.padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("kk-adb 审计", color = TextSecondary, fontSize = 11.5.sp)
+                Text(
+                    "记录 AI 执行过的设备端命令，只保存在本机，最多 200 条。",
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp
+                )
+            }
+            Text(
+                "查看",
+                color = Accent,
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .clickable {
+                        auditEntries = DeviceAudit.read(context)
+                        showAudit = true
+                    }
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = Border.copy(alpha = 0.7f))
+        Spacer(Modifier.height(10.dp))
+        // An interface existing on Android is not the same as Kali being able to use it.
+        // This section asks Kali's own iw for the phy and whether monitor is listed.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Kali 无线能力",
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "在 Kali 内读取 iw 的接口与 phy；只有驱动与内核都支持时才会显示 monitor 模式。",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "检测",
+                color = if (wifiProbe.loading) TextMuted else Accent,
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .clickable(enabled = !wifiProbe.loading, onClick = onProbeWifi)
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
+        if (wifiProbe.loading) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    color = TextMuted,
+                    strokeWidth = 1.6.dp
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("正在 Kali 内检测…", color = TextMuted, fontSize = 10.5.sp)
+            }
+        } else if (wifiProbe.checked) {
+            Spacer(Modifier.height(8.dp))
+            if (wifiProbe.interfaces.isEmpty()) {
+                Text(
+                    wifiProbe.reason ?: "Kali 内没有可用的无线接口",
+                    color = Amber,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+                if (otg) {
+                    Text(
+                        "Android 已看到接口，但 Kali 内没有对应 phy：可能是驱动没有暴露无线功能，" +
+                            "或内核不带 monitor 支持。",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(top = 3.dp)
+                    )
+                }
+            } else {
+                wifiProbe.interfaces.forEach { radio ->
+                    Row(
+                        Modifier.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            radio.name,
+                            color = TextPrimary,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "${radio.phy} · ${radio.type}",
+                            color = TextMuted,
+                            fontSize = 10.sp
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            if (radio.monitor) "支持 monitor" else "不支持 monitor",
+                            color = if (radio.monitor) Success else Amber,
+                            fontSize = 10.sp
+                        )
+                    }
+                }
+                if (wifiProbe.airmonNg) {
+                    Text(
+                        "airmon-ng 已随 Kali 提供；抓包前请确认网卡实际写入 monitor 模式。",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        }
+    }
+
+    if (showAudit) {
+        DeviceAuditDialog(
+            entries = auditEntries,
+            onClear = {
+                DeviceAudit.clear(context)
+                auditEntries = emptyList()
+            },
+            onDismiss = { showAudit = false }
+        )
+    }
+}
+
+@Composable
+private fun DeviceAuditDialog(
+    entries: List<DeviceAudit.Entry>,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val timeFormat = remember {
+        java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
+    }
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = "kk-adb 审计",
+            subtitle = "AI 通过 Shizuku 执行过的设备端命令",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        if (entries.isEmpty()) {
+            Text(
+                "还没有执行记录。用 kk-adb 运行命令后会出现在这里。",
+                color = TextMuted,
+                fontSize = 11.5.sp,
+                lineHeight = 16.sp
+            )
+        } else {
+            val auditScroll = rememberScrollState()
+            ScrollEdgeFade(canScrollForward = auditScroll.canScrollForward) {
+                Column(
+                    Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(auditScroll)
+                ) {
+                    entries.take(50).forEach { entry ->
+                        Column(Modifier.padding(vertical = 5.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    timeFormat.format(java.util.Date(entry.time)),
+                                    color = TextMuted,
+                                    fontSize = 9.5.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    if (entry.ok) "完成" else "失败",
+                                    color = if (entry.ok) Success else Amber,
+                                    fontSize = 9.5.sp
+                                )
+                                Spacer(Modifier.weight(1f))
+                                if (!entry.ok) {
+                                    Text(
+                                        entry.result.take(60),
+                                        color = TextMuted,
+                                        fontSize = 9.5.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Text(
+                                entry.command,
+                                color = TextPrimary,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 15.sp
+                            )
+                        }
+                    }
+                }
+            }
+            if (entries.size > 50) {
+                Text(
+                    "只显示最近 50 条，文件中保留 200 条。",
+                    color = TextMuted,
+                    fontSize = 9.5.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+        KkDialogActions {
+            TextButton(onClick = onClear, enabled = entries.isNotEmpty()) {
+                Text("清空记录", color = if (entries.isEmpty()) TextMuted else Amber, fontSize = 12.sp)
+            }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onDismiss) {
+                Text("关闭", color = TextMuted, fontSize = 12.sp)
+            }
         }
     }
 }
@@ -3361,59 +3727,6 @@ private fun SettingsInfoRow(label: String, value: String) {
             color = TextSecondary,
             fontSize = 12.sp
         )
-    }
-}
-
-@Composable
-private fun DiagnosticsDialog(text: String, onDismiss: () -> Unit) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    LaunchedEffect(copied) {
-        if (copied) {
-            delay(1_500)
-            copied = false
-        }
-    }
-    KkDialog(onDismiss = onDismiss) {
-        KkDialogTitle(
-            title = "诊断信息",
-            subtitle = "可复制给支持人员；不包含密钥或对话内容",
-            onDismiss = onDismiss
-        )
-        Spacer(Modifier.height(10.dp))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(max = 360.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(SurfaceVariant)
-                .verticalScroll(rememberScrollState())
-                .padding(11.dp)
-        ) {
-            Text(
-                text,
-                color = TextSecondary,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 10.5.sp,
-                lineHeight = 15.sp
-            )
-        }
-        KkDialogActions {
-            TextButton(onClick = {
-                clipboard.setText(AnnotatedString(text))
-                copied = true
-            }) {
-                Text(
-                    if (copied) "已复制" else "复制",
-                    color = if (copied) Success else Accent,
-                    fontSize = 12.sp
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            TextButton(onClick = onDismiss) {
-                Text("关闭", color = TextMuted, fontSize = 12.sp)
-            }
-        }
     }
 }
 

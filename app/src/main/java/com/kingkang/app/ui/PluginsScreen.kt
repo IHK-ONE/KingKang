@@ -219,6 +219,68 @@ fun PluginsScreen(
             SectionLabel("已安装")
             Spacer(Modifier.height(8.dp))
             SettingsLikeCard {
+                if (ready && agent.plugins.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            if (agent.pluginUpdatesChecking) {
+                                "正在检查更新…"
+                            } else {
+                                "检查插件更新"
+                            },
+                            color = if (agent.pluginUpdatesChecking) TextMuted else Accent,
+                            fontSize = 11.5.sp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = !agent.pluginUpdatesChecking) {
+                                    vm.checkPluginUpdates()
+                                }
+                                .padding(horizontal = 4.dp, vertical = 4.dp)
+                        )
+                        Spacer(Modifier.weight(1f))
+                        if (agent.pluginUpdates.isNotEmpty() && !agent.pluginBatch.running) {
+                            Text(
+                                "${agent.pluginUpdates.size} 个可更新",
+                                color = Amber,
+                                fontSize = 10.5.sp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "全部更新",
+                                color = Accent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(
+                                        enabled = installing == null && agent.pluginRemoving == null
+                                    ) { vm.updateAllPlugins() }
+                                    .padding(horizontal = 4.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                    agent.pluginUpdatesNote?.let { note ->
+                        Text(
+                            note,
+                            color = if (note.startsWith("检查插件更新失败")) Amber else TextMuted,
+                            fontSize = 10.5.sp,
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    if (agent.pluginBatch.total > 0) {
+                        Text(
+                            agent.pluginBatch.summary,
+                            color = if (agent.pluginBatch.failed.isEmpty()) TextMuted else Amber,
+                            fontSize = 10.5.sp,
+                            lineHeight = 15.sp,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 10.dp),
+                        color = Border.copy(alpha = 0.7f)
+                    )
+                }
                 if (!ready) {
                     Text(
                         if (agent.connection == AgentConnection.Starting) {
@@ -377,7 +439,11 @@ fun PluginsScreen(
                     Spacer(Modifier.height(10.dp))
                     Text(message, color = ErrorText, fontSize = 10.5.sp, lineHeight = 15.sp)
                 }
-                if (market.searched && !market.loading && market.error == null) {
+                // Keep the page visible while a "load more" is in flight; only the first
+                // search hides the list behind its spinner.
+                if (market.searched && market.error == null &&
+                    (market.results.isNotEmpty() || !market.loading)
+                ) {
                     Spacer(Modifier.height(12.dp))
                     if (market.results.isEmpty()) {
                         Text(
@@ -407,6 +473,20 @@ fun PluginsScreen(
                                 enabled = ready && installing == null &&
                                     agent.pluginRemoving == null && !alreadyInstalled,
                                 onInstall = { vm.installPlugin(marketInstallSpec(result)) }
+                            )
+                        }
+                        if (market.results.size < market.total) {
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                "加载更多（已显示 ${market.results.size}/${market.total}）",
+                                color = if (market.loading) TextMuted else Accent,
+                                fontSize = 11.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable(enabled = !market.loading) {
+                                        vm.loadMorePlugins()
+                                    }
+                                    .padding(horizontal = 4.dp, vertical = 5.dp)
                             )
                         }
                     }

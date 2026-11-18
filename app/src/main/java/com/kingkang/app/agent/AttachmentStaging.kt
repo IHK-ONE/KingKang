@@ -48,10 +48,16 @@ object AttachmentStaging {
         val uploads = File(RootfsManager(context).sharedDir, "uploads")
         if (!uploads.exists() && !uploads.mkdirs()) return StagedBatch(emptyList(), uris)
         // A crash or a cancelled copy can leave an empty batch directory behind; it holds
-        // nothing the transcript can point at.
+        // nothing the transcript can point at. Day-old uploads (including files left by a
+        // failed file-page import) are hand-off debris, not storage.
         runCatching {
-            uploads.listFiles()?.forEach { dir ->
-                if (dir.isDirectory && dir.listFiles()?.isEmpty() == true) dir.delete()
+            val staleBefore = System.currentTimeMillis() - 24L * 60L * 60L * 1_000L
+            uploads.listFiles()?.forEach { entry ->
+                if (entry.lastModified() < staleBefore) {
+                    entry.deleteRecursively()
+                } else if (entry.isDirectory && entry.listFiles()?.isEmpty() == true) {
+                    entry.delete()
+                }
             }
         }
         val batch = "${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}"

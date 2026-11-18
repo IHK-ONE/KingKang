@@ -3,6 +3,8 @@ package com.kingkang.app.ui
 import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -41,6 +43,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -88,11 +92,15 @@ import com.kingkang.app.agent.AgentWorkspaceMatch
 import com.kingkang.app.agent.AgentWorkspaceSearch
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.components.CompactInputPlatformStyle
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
+import com.kingkang.app.ui.theme.OnAccent
 import com.kingkang.app.ui.theme.Red
 import com.kingkang.app.ui.theme.Surface
 import com.kingkang.app.ui.theme.SurfaceRaised
@@ -124,6 +132,28 @@ fun FilesScreen(
     var actionsFor by remember { mutableStateOf<AgentFileEntry?>(null) }
     var showSheet by remember { mutableStateOf(false) }
     var workspaceScope by rememberSaveable { mutableStateOf(false) }
+    // Write actions are dialogs over the list, so the page never changes shape while one
+    // is open; the listing refreshes under it and the dialog closes on success.
+    var showAddSheet by remember { mutableStateOf(false) }
+    var createMode by remember { mutableStateOf<String?>(null) }
+    var createName by remember { mutableStateOf("") }
+    var renameFor by remember { mutableStateOf<AgentFileEntry?>(null) }
+    var renameName by remember { mutableStateOf("") }
+    var deleteFor by remember { mutableStateOf<AgentFileEntry?>(null) }
+    var fileBusy by remember { mutableStateOf(false) }
+    var fileActionError by remember { mutableStateOf<String?>(null) }
+    val uploadPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            fileBusy = true
+            fileActionError = null
+            vm.uploadWorkspaceFiles(uris) { error ->
+                fileBusy = false
+                if (error != null) fileActionError = error
+            }
+        }
+    }
     val workspaceSearch = state.workspaceSearch
     val fileListState = rememberLazyListState()
     val sort = FileSort.entries.firstOrNull { it.name == sortName } ?: FileSort.Name
@@ -207,7 +237,8 @@ fun FilesScreen(
                     else -> onBack()
                 }
             },
-            onRefresh = { vm.browseFiles(listing.path.ifBlank { null }) }
+            onRefresh = { vm.browseFiles(listing.path.ifBlank { null }) },
+            onAdd = { showAddSheet = true }
         )
         Row(
             Modifier
@@ -506,8 +537,276 @@ fun FilesScreen(
             onOpenTerminal = {
                 showSheet = false
                 onOpenTerminal(if (actionTarget.directory) actionTarget.path else actionTarget.path.substringBeforeLast('/'))
+            },
+            onRename = {
+                showSheet = false
+                renameName = actionTarget.name
+                renameFor = actionTarget
+            },
+            onDelete = {
+                showSheet = false
+                deleteFor = actionTarget
             }
         )
+    }
+
+    if (showAddSheet) {
+        AddFileSheet(
+            onDismiss = { showAddSheet = false },
+            onNewFile = {
+                showAddSheet = false
+                createName = ""
+                fileActionError = null
+                createMode = "file"
+            },
+            onNewFolder = {
+                showAddSheet = false
+                createName = ""
+                fileActionError = null
+                createMode = "folder"
+            },
+            onUpload = {
+                showAddSheet = false
+                fileActionError = null
+                uploadPicker.launch(arrayOf("*/*"))
+            }
+        )
+    }
+
+    val pendingCreate = createMode
+    if (pendingCreate != null) {
+        FileNameDialog(
+            title = if (pendingCreate == "folder") "新建文件夹" else "新建文件",
+            subtitle = "创建在当前目录：${listing.path.ifBlank { workspaceRoot }}",
+            initialValue = createName,
+            placeholder = if (pendingCreate == "folder") "文件夹名称" else "例如 notes.md",
+            busy = fileBusy,
+            error = fileActionError,
+            onValueChange = { createName = it.take(120); fileActionError = null },
+            onDismiss = { if (!fileBusy) { createMode = null; fileActionError = null } },
+            onConfirm = {
+                if (createName.isNotBlank() && !fileBusy) {
+                    fileBusy = true
+                    fileActionError = null
+                    val done: (String?) -> Unit = { error ->
+                        fileBusy = false
+                        if (error == null) {
+                            createMode = null
+                        } else {
+                            fileActionError = error
+                        }
+                    }
+                    if (pendingCreate == "folder") {
+                        vm.createWorkspaceFolder(createName.trim(), done)
+                    } else {
+                        vm.createWorkspaceFile(createName.trim(), done)
+                    }
+                }
+            }
+        )
+    }
+
+    renameFor?.let { entry ->
+        FileNameDialog(
+            title = "重命名",
+            subtitle = entry.path,
+            initialValue = renameName,
+            placeholder = "新名称",
+            busy = fileBusy,
+            error = fileActionError,
+            onValueChange = { renameName = it.take(120); fileActionError = null },
+            onDismiss = { if (!fileBusy) { renameFor = null; fileActionError = null } },
+            onConfirm = {
+                if (renameName.isNotBlank() && !fileBusy) {
+                    fileBusy = true
+                    fileActionError = null
+                    vm.renameWorkspaceFile(entry.path, renameName.trim()) { error ->
+                        fileBusy = false
+                        if (error == null) {
+                            renameFor = null
+                        } else {
+                            fileActionError = error
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    deleteFor?.let { entry ->
+        KkDialog(
+            onDismiss = { if (!fileBusy) { deleteFor = null; fileActionError = null } },
+            padding = PaddingValues(20.dp)
+        ) {
+            KkDialogTitle(
+                title = if (entry.directory) "删除文件夹？" else "删除文件？",
+                subtitle = if (entry.directory) "文件夹内的内容会一并删除" else "删除后无法恢复",
+                onDismiss = { if (!fileBusy) { deleteFor = null; fileActionError = null } }
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                entry.path,
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            fileActionError?.let { message ->
+                Spacer(Modifier.height(8.dp))
+                Text(message, color = Red, fontSize = 10.5.sp, lineHeight = 15.sp)
+            }
+            KkDialogActions {
+                TextButton(onClick = { if (!fileBusy) { deleteFor = null; fileActionError = null } }) {
+                    Text("取消", color = TextMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(6.dp))
+                TextButton(
+                    onClick = {
+                        if (!fileBusy) {
+                            fileBusy = true
+                            fileActionError = null
+                            vm.deleteWorkspaceFile(entry.path) { error ->
+                                fileBusy = false
+                                if (error == null) deleteFor = null else fileActionError = error
+                            }
+                        }
+                    },
+                    enabled = !fileBusy
+                ) {
+                    Text("删除", color = if (fileBusy) TextMuted else Red, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddFileSheet(
+    onDismiss: () -> Unit,
+    onNewFile: () -> Unit,
+    onNewFolder: () -> Unit,
+    onUpload: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Surface,
+        contentColor = TextPrimary,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 18.dp, end = 18.dp, bottom = 18.dp)
+        ) {
+            Text("新建或上传", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+            Text(
+                "文件会写入当前工作区目录；上传的文件先经共享目录再复制进来。",
+                color = TextMuted,
+                fontSize = 10.5.sp,
+                lineHeight = 15.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            SheetRow("新建文件", onClick = onNewFile)
+            SheetRow("新建文件夹", onClick = onNewFolder)
+            SheetRow("上传文件", onClick = onUpload)
+        }
+    }
+}
+
+/**
+ * One name editor for create and rename. Rename opens with the current name selected, so
+ * typing replaces it instead of appending to the old name.
+ */
+@Composable
+private fun FileNameDialog(
+    title: String,
+    subtitle: String,
+    initialValue: String,
+    placeholder: String,
+    busy: Boolean,
+    error: String?,
+    onValueChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    var field by remember {
+        mutableStateOf(
+            androidx.compose.ui.text.input.TextFieldValue(
+                initialValue,
+                androidx.compose.ui.text.TextRange(0, initialValue.length)
+            )
+        )
+    }
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(title = title, subtitle = subtitle, onDismiss = onDismiss)
+        Spacer(Modifier.height(10.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceVariant)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            BasicTextField(
+                value = field,
+                onValueChange = {
+                    field = it
+                    onValueChange(it.text)
+                },
+                singleLine = true,
+                textStyle = TextStyle(
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    platformStyle = CompactInputPlatformStyle,
+                    lineHeight = 13.sp
+                ),
+                cursorBrush = SolidColor(Accent),
+                modifier = Modifier.fillMaxWidth(),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (field.text.isEmpty()) {
+                            Text(
+                                placeholder,
+                                color = TextMuted,
+                                fontSize = 13.sp,
+                                lineHeight = 13.sp,
+                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                            )
+                        }
+                        inner()
+                    }
+                }
+            )
+        }
+        error?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, color = Red, fontSize = 10.5.sp, lineHeight = 15.sp)
+        }
+        KkDialogActions {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("取消", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(6.dp))
+            Button(
+                onClick = onConfirm,
+                enabled = !busy && field.text.isNotBlank(),
+                modifier = Modifier.height(36.dp),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Accent,
+                    contentColor = OnAccent,
+                    disabledContainerColor = SurfaceVariant,
+                    disabledContentColor = TextMuted
+                )
+            ) {
+                Text(if (busy) "处理中…" else "确定", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            }
+        }
     }
 }
 
@@ -516,7 +815,8 @@ private fun FilesTopBar(
     root: String,
     path: String,
     onBack: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onAdd: () -> Unit
 ) {
     Row(
         Modifier
@@ -545,6 +845,14 @@ private fun FilesTopBar(
                 contentDescription = "刷新",
                 tint = TextSecondary,
                 modifier = Modifier.size(19.dp)
+            )
+        }
+        androidx.compose.material3.IconButton(onClick = onAdd) {
+            Icon(
+                Icons.Filled.Add,
+                contentDescription = "新建或上传",
+                tint = TextSecondary,
+                modifier = Modifier.size(21.dp)
             )
         }
     }
@@ -792,7 +1100,9 @@ private fun FileActionsSheet(
     onShare: () -> Unit,
     onOpenExternally: () -> Unit,
     onCopyPath: () -> Unit,
-    onOpenTerminal: () -> Unit
+    onOpenTerminal: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -830,10 +1140,25 @@ private fun FileActionsSheet(
                 SheetRow("分享或保存", onClick = onShare)
             }
             SheetRow("复制路径", onClick = onCopyPath)
+            if (entry.type != "link") {
+                SheetRow("重命名", onClick = onRename)
+            }
             SheetRow(
                 if (entry.directory) "在终端中打开该目录" else "在终端中打开所在目录",
                 onClick = onOpenTerminal
             )
+            if (entry.type != "link") {
+                Text(
+                    "删除",
+                    color = Red,
+                    fontSize = 14.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(onClick = onDelete)
+                        .padding(horizontal = 10.dp, vertical = 13.dp)
+                )
+            }
         }
     }
 }

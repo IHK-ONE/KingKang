@@ -27,6 +27,7 @@ import {
   renameSync,
   readdirSync,
   readlinkSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -59,6 +60,11 @@ const WORKDIR = process.env.KK_WORKDIR || "/root";
 const EXPORT_DIR = "/root/.dsh/exports";
 /** Archives kept on disk; each export prunes everything beyond this. */
 const EXPORT_KEEP = 5;
+/**
+ * Hand-off area for files the app picked on Android. The app writes into its private
+ * shared dir (mounted at /root/shared); the bridge copies from here into a workspace.
+ */
+const UPLOAD_DIR = `${WORKDIR}/shared/uploads`;
 /** dsh profile the bridge starts; its directory is what pnpm reads `.npmrc` from. */
 const PROFILE_NAME = "web";
 const PROFILE_DIR = `${WORKDIR}/.dsh/profiles/${PROFILE_NAME}`;
@@ -132,8 +138,13 @@ const CAPABILITIES = [
   "workspace.files",
   "workspace.readFile",
   "workspace.mkdir",
+  "workspace.createFile",
+  "workspace.renameFile",
+  "workspace.deleteFile",
+  "workspace.importFile",
   "workspace.browse",
   "workspace.search",
+  "device.wifiProbe",
   "workspace.archiveSession",
   "workspace.unarchiveSession",
   "workspace.pinSession",
@@ -149,6 +160,7 @@ const CAPABILITIES = [
   "plugin.registry.set",
   "plugin.uninstall",
   "plugin.search",
+  "plugin.latestVersions",
   "account.state",
   "account.profile",
   "account.balance",
@@ -3022,6 +3034,206 @@ function createDirectory(rawParent, rawName) {
   return { path: target, name };
 }
 
+/** One path component a rename/create may name; separators and NUL are rejected. */
+function entryName(raw, label) {
+  const name = String(raw || "").trim();
+  if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) {
+    throw badRequest(`${label}名称无效`);
+  }
+  if (name.length > 200) throw badRequest(`${label}名称过长`);
+  return name;
+}
+
+/**
+ * Resolves one existing entry inside the workspace. The workspace root itself is never a
+ * legal target: renaming or deleting it would detach the session from its project.
+ */
+function workspaceEntry(rawRoot, rawPath) {
+  const { root, path } = workspaceScope(rawRoot, rawPath);
+  if (path === root) throw codedError("forbidden", "不能修改工作区根目录");
+  let info;
+  try {
+    info = lstatSync(path);
+  } catch {
+    throw codedError("not-found", "文件不存在或不可访问");
+  }
+  if (info.isSymbolicLink()) throw codedError("forbidden", "符号链接不操作");
+  return { root, path, info };
+}
+
+function renameWorkspaceEntry(rawRoot, rawPath, rawName) {
+  const { path, info } = workspaceEntry(rawRoot, rawPath);
+  const name = entryName(rawName, "文件");
+  const parent = posixPath.dirname(path);
+  const target = posixPath.join(parent, name);
+  if (target === path) return { path, name };
+  if (!target.startsWith(`${parent}/`)) throw badRequest("文件名称无效");
+  try {
+    lstatSync(target);
+    throw codedError("exists", "同名文件已存在");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  try {
+    renameSync(path, target);
+  } catch (error) {
+    throw codedError("file", `无法重命名：${error?.code || error}`);
+  }
+  return { path: target, name, directory: info.isDirectory() };
+}
+
+function deleteWorkspaceEntry(rawRoot, rawPath) {
+  const { path, info } = workspaceEntry(rawRoot, rawPath);
+  try {
+    if (info.isDirectory()) rmSync(path, { recursive: true, force: false });
+    else unlinkSync(path);
+  } catch (error) {
+    throw codedError("file", `无法删除：${error?.code || error}`);
+  }
+  return { deleted: true, directory: info.isDirectory() };
+}
+
+function createWorkspaceFile(rawRoot, rawDir, rawName) {
+  const { root, path: dir } = workspaceScope(rawRoot, rawDir);
+  const name = entryName(rawName, "文件");
+  let stats;
+  try {
+    stats = lstatSync(dir);
+  } catch {
+    throw codedError("not-found", "目录不存在或不可访问");
+  }
+  if (!stats.isDirectory()) throw codedError("not-directory", "当前路径不是目录");
+  const target = posixPath.join(dir, name);
+  if (!target.startsWith(`${dir}/`)) throw badRequest("文件名称无效");
+  try {
+    // wx keeps an existing file untouched; the caller gets an explicit conflict instead.
+    writeFileSync(target, "", { flag: "wx" });
+  } catch (error) {
+    if (error?.code === "EEXIST") throw codedError("exists", "同名文件已存在");
+    throw codedError("file", `无法新建文件：${error?.code || error}`);
+  }
+  return { path: target, name };
+}
+
+/**
+ * Copies one file the app staged in the shared uploads dir into the workspace. The
+ * staged path is confined to that directory: a crafted value cannot become an arbitrary
+ * read of the Kali root.
+ */
+function importWorkspaceFile(rawRoot, rawDir, rawStaged, rawName) {
+  const { root, path: dir } = workspaceScope(rawRoot, rawDir);
+  const stagedInput = String(rawStaged || "").trim();
+  if (!stagedInput.startsWith("/")) throw badRequest("上传文件路径无效");
+  const staged = posixPath.normalize(stagedInput);
+  const insideUploads = staged === UPLOAD_DIR || staged.startsWith(`${UPLOAD_DIR}/`);
+  if (!insideUploads) throw codedError("forbidden", "上传文件必须来自共享目录");
+  let source;
+  try {
+    source = lstatSync(staged);
+  } catch {
+    throw codedError("not-found", "上传文件不存在");
+  }
+  if (!source.isFile()) throw codedError("not-file", "上传的不是普通文件");
+  let stats;
+  try {
+    stats = lstatSync(dir);
+  } catch {
+    throw codedError("not-found", "目录不存在或不可访问");
+  }
+  if (!stats.isDirectory()) throw codedError("not-directory", "当前路径不是目录");
+  const fallback = posixPath.basename(staged).replace(/^[0-9a-f-]{36}-/i, "");
+  const name = entryName(rawName || fallback, "文件");
+  const target = posixPath.join(dir, name);
+  if (!target.startsWith(`${dir}/`)) throw badRequest("文件名称无效");
+  try {
+    copyFileSync(staged, target, 1 /* COPYFILE_EXCL */);
+  } catch (error) {
+    if (error?.code === "EEXIST") throw codedError("exists", "同名文件已存在");
+    throw codedError("file", `无法保存文件：${error?.code || error}`);
+  }
+  try {
+    unlinkSync(staged);
+  } catch {
+    // The staged copy is a hand-off artifact; leaving it behind is harmless and the
+    // app prunes the uploads dir on the next launch.
+  }
+  return { path: target, name, size: source.size };
+}
+
+/**
+ * Reads wireless capability from inside Kali. An OTG netdev existing on the phone does
+ * not by itself mean Kali can put it into monitor mode: the driver must expose a phy and
+ * `iw phy` must list `monitor` among the supported interface modes. Read-only probes.
+ */
+function probeWifi() {
+  const candidates = ["/sbin/iw", "/usr/sbin/iw", "/usr/bin/iw"];
+  const iw = candidates.find((path) => existsSync(path));
+  if (!iw) {
+    return {
+      available: false,
+      reason: "Kali 中没有 iw，无法检测无线能力",
+      interfaces: [],
+      airmonNg: false,
+    };
+  }
+  const run = (args) => spawnSync(iw, args, { encoding: "utf8", timeout: 12_000 });
+  const dev = run(["dev"]);
+  if (dev.error || dev.status !== 0) {
+    const detail = String(dev.stderr || dev.error?.message || "").trim();
+    return {
+      available: true,
+      reason: detail
+        ? `iw dev 无法读取：${detail.slice(0, 240)}`
+        : "Kali 内没有可用的无线接口",
+      interfaces: [],
+      airmonNg: ["/usr/sbin/airmon-ng", "/sbin/airmon-ng", "/usr/bin/airmon-ng"].some(
+        existsSync
+      ),
+    };
+  }
+  const interfaces = [];
+  let current = null;
+  for (const line of String(dev.stdout || "").split("\n")) {
+    const phy = line.match(/^\s*phy#(\d+)/);
+    if (phy) {
+      current = { phy: `phy${phy[1]}`, name: "", type: "" };
+      continue;
+    }
+    if (!current) continue;
+    const name = line.match(/^\s*Interface\s+(\S+)/);
+    if (name) {
+      current.name = name[1];
+      interfaces.push(current);
+      continue;
+    }
+    const type = line.match(/^\s*type\s+(\S+)/);
+    if (type) current.type = type[1];
+  }
+  const kept = interfaces.filter((entry) => entry.name);
+  const monitorByPhy = new Map();
+  for (const phy of new Set(kept.map((entry) => entry.phy))) {
+    const info = run(["phy", phy, "info"]);
+    const text = String(info.stdout || "");
+    monitorByPhy.set(
+      phy,
+      info.status === 0 && /Supported interface modes:/i.test(text) && /\*\s*monitor\b/.test(text)
+    );
+  }
+  return {
+    available: true,
+    reason: kept.length === 0 ? "Kali 内没有可用的无线接口" : null,
+    airmonNg: ["/usr/sbin/airmon-ng", "/sbin/airmon-ng", "/usr/bin/airmon-ng"].some(
+      existsSync
+    ),
+    interfaces: kept.map((entry) => ({
+      name: entry.name,
+      phy: entry.phy,
+      type: entry.type || "unknown",
+      monitor: monitorByPhy.get(entry.phy) === true,
+    })),
+  };
+}
+
 /** Direct children one sidebar read returns; a bigger directory reports `truncated`. */
 const WORKSPACE_FILE_MAX = 500;
 /** Bytes one preview read returns; a bigger file is cut and reports `truncated`. */
@@ -3865,6 +4077,21 @@ async function dispatch(method, params) {
       return browseDirectories(payload.path);
     case "workspace.mkdir":
       return createDirectory(payload.parent, payload.name);
+    case "device.wifiProbe":
+      return probeWifi();
+    case "workspace.createFile":
+      return createWorkspaceFile(payload.root, payload.directory, payload.name);
+    case "workspace.renameFile":
+      return renameWorkspaceEntry(payload.root, payload.path, payload.name);
+    case "workspace.deleteFile":
+      return deleteWorkspaceEntry(payload.root, payload.path);
+    case "workspace.importFile":
+      return importWorkspaceFile(
+        payload.root,
+        payload.directory,
+        payload.staged,
+        payload.name
+      );
     case "plugin.uninstall": {
       const name = String(payload.name || "").trim();
       if (!name) throw badRequest("缺少插件名称");
@@ -3891,6 +4118,8 @@ async function dispatch(method, params) {
     }
     case "plugin.search":
       return searchPluginRegistry(payload);
+    case "plugin.latestVersions":
+      return pluginLatestVersions(payload);
     case "plugin.list": {
       const bundles = await callDsh("pluginManager/listBundles", {});
       const items = Array.isArray(bundles) ? bundles : [];
@@ -4397,12 +4626,14 @@ async function searchPluginRegistry(payload) {
   const query = String(payload.text || "").trim() || "keywords:dsh-plugin";
   if (query.length > 120) throw badRequest("搜索词过长");
   const size = Math.min(Math.max(Number(payload.size) || 20, 1), 40);
+  const from = Math.min(Math.max(Number(payload.from) || 0, 0), 500);
   const registry = String(payload.registry || readPluginRegistry() || DEFAULT_PLUGIN_REGISTRY);
   if (!/^https?:\/\/\S+$/i.test(registry)) {
     throw codedError("invalid-argument", "插件源必须是 http(s) 地址");
   }
   const endpoint = new URL(
-    `${registry.replace(/\/+$/, "")}/-/v1/search?text=${encodeURIComponent(query)}&size=${size}`
+    `${registry.replace(/\/+$/, "")}/-/v1/search` +
+      `?text=${encodeURIComponent(query)}&size=${size}&from=${from}`
   );
   let response;
   try {
@@ -4464,9 +4695,48 @@ async function searchPluginRegistry(payload) {
   return {
     query,
     registry,
+    from,
     total: Number(body?.total) || results.length,
     results,
   };
+}
+
+/**
+ * Resolves the `latest` dist-tag for a handful of installed packages. The app uses this
+ * for "check updates" and batch update; a failure for one package is reported as null so
+ * one unreachable package does not hide the rest.
+ */
+async function pluginLatestVersions(payload) {
+  const names = Array.isArray(payload.names)
+    ? payload.names
+        .map((value) => String(value || "").trim())
+        .filter((value) => /^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(value))
+        .slice(0, 30)
+    : [];
+  if (names.length === 0) return { versions: {} };
+  const registry = String(payload.registry || readPluginRegistry() || DEFAULT_PLUGIN_REGISTRY);
+  if (!/^https?:\/\/\S+$/i.test(registry)) {
+    throw codedError("invalid-argument", "插件源必须是 http(s) 地址");
+  }
+  const base = registry.replace(/\/+$/, "");
+  const versions = {};
+  await Promise.all(
+    names.map(async (name) => {
+      try {
+        const response = await fetch(`${base}/${name.replace("/", "%2f")}/latest`, {
+          headers: { accept: "application/json" },
+          signal: AbortSignal.timeout(12_000),
+        });
+        if (!response.ok) return;
+        const body = await response.json();
+        const version = typeof body?.version === "string" ? body.version.trim() : "";
+        if (version) versions[name] = version;
+      } catch {
+        // Offline or a private package: leave it out instead of failing the batch.
+      }
+    })
+  );
+  return { versions, registry };
 }
 
 /** The profile's recorded dependencies; empty when the profile has no readable manifest. */
@@ -4702,6 +4972,11 @@ function shutdown(exitCode = 0) {
   setTimeout(() => process.exit(exitCode), 120);
 }
 
+/** One honest cold-start stage the app can show while it waits. */
+function startupStage(stage) {
+  emit("startup.stage", { stage });
+}
+
 async function main() {
   emit("hello", {
     bridgeVersion: BRIDGE_VERSION,
@@ -4710,11 +4985,15 @@ async function main() {
   });
 
   try {
+    startupStage("bridge");
     retireStaleDsh();
     clearIncompleteWriteLocks();
     ensurePnpmLink();
+    startupStage("dsh-web");
     const applicationUrl = await startDsh();
+    startupStage("dsh-auth");
     await authenticateDsh(applicationUrl);
+    startupStage("dsh-connect");
     ensureDefaultPluginRegistry();
     await connectTransport();
     emit("ready", {

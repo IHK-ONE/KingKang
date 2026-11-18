@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import com.kingkang.app.BuildConfig
+import com.kingkang.app.data.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -34,7 +35,9 @@ object ShizukuManager {
         val running: Boolean = false,
         val authorized: Boolean = false,
         /** The user service is bound and can execute commands. */
-        val connected: Boolean = false
+        val connected: Boolean = false,
+        /** The user turned the capability off in KingKang; the Shizuku grant may still exist. */
+        val disabled: Boolean = false
     )
 
     private const val MANAGER_PACKAGE = "moe.shizuku.privileged.api"
@@ -70,7 +73,11 @@ object ShizukuManager {
 
     fun init(context: Context) {
         if (appContext != null) return
-        appContext = context.applicationContext
+        val app = context.applicationContext
+        appContext = app
+        _state.value = _state.value.copy(
+            disabled = SettingsStore(app).adbCapabilityDisabled
+        )
         runCatching {
             Shizuku.addBinderReceivedListenerSticky { scheduleRefresh() }
             Shizuku.addBinderDeadListener {
@@ -86,8 +93,26 @@ object ShizukuManager {
     fun refresh() = scheduleRefresh()
 
     fun requestPermission() {
+        if (_state.value.disabled) return
         if (!_state.value.running || _state.value.authorized) return
         runCatching { Shizuku.requestPermission(REQUEST_CODE) }
+    }
+
+    /**
+     * Turns the capability off (or back on) inside KingKang. Off unbinds the user service
+     * immediately; the Shizuku grant itself can only be revoked in Shizuku's own manager,
+     * which [openManager] opens. On re-enable the service is bound again if authorized.
+     */
+    fun setDisabled(disabled: Boolean) {
+        val context = appContext ?: return
+        SettingsStore(context).adbCapabilityDisabled = disabled
+        if (disabled) unbind()
+        _state.value = _state.value.copy(disabled = disabled)
+        if (disabled) {
+            _state.value = _state.value.copy(connected = false, authorized = false)
+        } else {
+            scheduleRefresh()
+        }
     }
 
     /** Launches the Shizuku manager so the user can start its service or grant access. */
@@ -102,6 +127,9 @@ object ShizukuManager {
     }
 
     fun exec(command: String, timeoutMs: Int = 60_000): String {
+        if (_state.value.disabled) {
+            throw IllegalStateException("设备端 ADB 能力已在 KingKang 中停用")
+        }
         if (!_state.value.authorized) throw IllegalStateException("Shizuku 未授权")
         val service = shell ?: throw IllegalStateException("Shizuku ADB 服务尚未连接")
         return service.exec(command, timeoutMs)
@@ -125,14 +153,17 @@ object ShizukuManager {
             true
         }.getOrDefault(false)
         val running = runCatching { Shizuku.pingBinder() }.getOrDefault(false)
-        val authorized = running && runCatching {
+        val disabled = _state.value.disabled
+        val granted = running && runCatching {
             Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
         }.getOrDefault(false)
+        val authorized = granted && !disabled
         _state.value = State(
             installed = installed,
             running = running,
             authorized = authorized,
-            connected = authorized && _state.value.connected
+            connected = authorized && _state.value.connected,
+            disabled = disabled
         )
         main.post { if (_state.value.authorized) bind() else unbind() }
     }

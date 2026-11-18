@@ -1258,6 +1258,42 @@ data class AgentPluginSearch(
     val error: String? = null
 )
 
+/** Published versions newer than what is installed, keyed by bundle name. */
+data class AgentPluginBatch(
+    val running: Boolean = false,
+    val total: Int = 0,
+    val done: Int = 0,
+    val current: String? = null,
+    val failed: List<String> = emptyList()
+) {
+    val summary: String
+        get() = when {
+            running -> "正在更新 ${current ?: ""}（$done/$total）"
+            total == 0 -> ""
+            failed.isEmpty() -> "已更新 $done 个插件"
+            else -> "已更新 ${done - failed.size} 个，失败 ${failed.size} 个"
+        }
+}
+
+/** One wireless interface as Kali's own `iw` sees it. */
+data class AgentWifiInterface(
+    val name: String,
+    val phy: String,
+    val type: String,
+    /** `iw phy` lists monitor among this phy's supported interface modes. */
+    val monitor: Boolean
+)
+
+/** Result of the Kali-side wireless probe; OTG presence alone does not imply monitor mode. */
+data class AgentWifiProbe(
+    val loading: Boolean = false,
+    val checked: Boolean = false,
+    val available: Boolean = false,
+    val airmonNg: Boolean = false,
+    val reason: String? = null,
+    val interfaces: List<AgentWifiInterface> = emptyList()
+)
+
 /** Kind the native settings form renders for one dsh schema field. */
 enum class AgentSettingKind {
     Text,
@@ -1635,12 +1671,30 @@ data class AgentState(
     val account: AgentAccountSnapshot = AgentAccountSnapshot(),
     /** Latest npm marketplace search from the plugins page. */
     val pluginSearch: AgentPluginSearch = AgentPluginSearch(),
+    /** Newer published versions for installed bundles, keyed by name. */
+    val pluginUpdates: Map<String, String> = emptyMap(),
+    val pluginUpdatesChecking: Boolean = false,
+    /** Inline result of the last update check; the plugins page is the only place it shows. */
+    val pluginUpdatesNote: String? = null,
+    /** Batch "update all" progress, kept so the button can report every outcome. */
+    val pluginBatch: AgentPluginBatch = AgentPluginBatch(),
+    /** Kali-side wireless probe shown by the device capability card. */
+    val wifiProbe: AgentWifiProbe = AgentWifiProbe(),
     /** Plugin bundle currently being removed. */
     val pluginRemoving: String? = null,
     /** Loaded image bytes as `data:<mediaType>;base64,…`, keyed by `sessionId:attachmentId`. */
     val imageData: Map<String, String> = emptyMap(),
     val hasMoreHistory: Boolean = false,
     val oldestSeq: Long? = null,
+    /**
+     * Real cold-start stage: kali → bridge → dsh-web → dsh-auth → dsh-connect → history →
+     * ready. The startup screen lists these instead of showing one opaque spinner.
+     */
+    val startupStage: String = "",
+    /** When the current transcript read started, for the visible elapsed counter. */
+    val transcriptLoadingSince: Long = 0L,
+    /** The user stopped waiting for this transcript; the UI offers a reload instead. */
+    val transcriptCancelled: Boolean = false,
     val logs: List<String> = emptyList(),
     val lastEventAt: Long = 0L
 ) {

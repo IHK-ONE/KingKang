@@ -1,6 +1,8 @@
 package com.kingkang.app
 
 import android.app.Application
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -60,6 +62,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 
 data class EnvironmentUi(
     val installed: Boolean = false,
@@ -1212,6 +1215,102 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun browseFiles(path: String? = null) = AgentEngine.browseFiles(path)
 
+    /** Creates an empty file in the directory the file page shows. */
+    fun createWorkspaceFile(name: String, onDone: (String?) -> Unit = {}) =
+        AgentEngine.createFile(name, onDone)
+
+    fun createWorkspaceFolder(name: String, onDone: (String?) -> Unit = {}) =
+        AgentEngine.createFolder(name, onDone)
+
+    fun renameWorkspaceFile(path: String, name: String, onDone: (String?) -> Unit = {}) =
+        AgentEngine.renameFile(path, name, onDone)
+
+    fun deleteWorkspaceFile(path: String, onDone: (String?) -> Unit = {}) =
+        AgentEngine.deleteFile(path, onDone)
+
+    /**
+     * Copies Android documents into the workspace. Each file is first written into the
+     * app's shared uploads dir (bind-mounted at /root/shared), so multi-megabyte files
+     * never travel through the bridge's JSON line protocol.
+     */
+    fun uploadWorkspaceFiles(uris: List<Uri>, onDone: (String?) -> Unit = {}) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val staged = mutableListOf<Pair<String, String>>()
+            var failure: String? = null
+            val uploads = File(sharedDir, "uploads").apply { mkdirs() }
+            for (uri in uris) {
+                val info = readUploadInfo(uri)
+                val id = UUID.randomUUID().toString()
+                val target = File(uploads, "$id-${info.name}")
+                try {
+                    val input = getApplication<Application>().contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法读取文件")
+                    input.use { source ->
+                        target.outputStream().use { sink -> source.copyTo(sink) }
+                    }
+                    if (target.length() == 0L && info.size > 0L) {
+                        throw IllegalStateException("读取到的内容为空")
+                    }
+                    staged += "/root/shared/uploads/$id-${info.name}" to info.name
+                } catch (t: Throwable) {
+                    runCatching { target.delete() }
+                    failure = "${info.name}：${t.message ?: "读取失败"}"
+                    break
+                }
+            }
+            if (failure == null) {
+                AgentEngine.importFiles(staged) { error ->
+                    viewModelScope.launch {
+                        onDone(error ?: failure)
+                        if (error == null) emitUiMessage("已上传 ${staged.size} 个文件")
+                    }
+                }
+            } else {
+                viewModelScope.launch { onDone(failure) }
+            }
+        }
+    }
+
+    private data class UploadInfo(val name: String, val size: Long)
+
+    private fun readUploadInfo(uri: Uri): UploadInfo {
+        var name = uri.lastPathSegment?.substringAfterLast('/').orEmpty()
+        var size = -1L
+        runCatching {
+            getApplication<Application>().contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex >= 0) cursor.getString(nameIndex)?.let { name = it }
+                    val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (sizeIndex >= 0) size = cursor.getLong(sizeIndex)
+                }
+            }
+        }
+        // A name from the picker is display text, not a path: strip separators and control
+        // characters so it cannot address anything outside the upload dir.
+        val clean = name
+            .replace(Regex("[\\\\/\\u0000-\\u001f]"), "_")
+            .trim()
+            .take(120)
+            .ifBlank { "upload" }
+        return UploadInfo(clean, size)
+    }
+
+    fun probeWifi() = AgentEngine.probeWifi()
+
+    fun clearAgentLogs() = AgentEngine.clearLogs()
+
+    fun cancelTranscriptLoad() = AgentEngine.cancelTranscriptLoad()
+
+    fun reloadTranscript() = AgentEngine.reloadTranscript()
+
     fun openFilePreview(path: String) = AgentEngine.openFilePreview(path)
 
     fun closeFilePreview() = AgentEngine.closeFilePreview()
@@ -1236,6 +1335,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun signOutAccount() = AgentEngine.signOutAccount()
 
     fun searchPlugins(query: String) = AgentEngine.searchPlugins(query)
+
+    fun loadMorePlugins() = AgentEngine.loadMorePlugins()
+
+    fun checkPluginUpdates() = AgentEngine.checkPluginUpdates()
+
+    fun updateAllPlugins() = AgentEngine.updateAllPlugins()
 
     fun clearPluginSearch() = AgentEngine.clearPluginSearch()
 

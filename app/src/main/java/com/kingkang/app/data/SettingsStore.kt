@@ -49,7 +49,22 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_PERMISSION_DEFAULT_CHOSEN, false)
         set(value) = prefs.edit().putBoolean(KEY_PERMISSION_DEFAULT_CHOSEN, value).apply()
 
+    /**
+     * User-level switch for the Shizuku-backed ADB capability. It disconnects the user
+     * service; revoking the grant itself still happens in the Shizuku manager.
+     */
+    var adbCapabilityDisabled: Boolean
+        get() = prefs.getBoolean(KEY_ADB_DISABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_ADB_DISABLED, value).apply()
+
+    /** Background task completion notices; the in-app log stays on when this is off. */
+    var taskNotificationsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_TASK_NOTIFICATIONS, true)
+        set(value) = prefs.edit().putBoolean(KEY_TASK_NOTIFICATIONS, value).apply()
+
     private companion object {
+        const val KEY_ADB_DISABLED = "adb_capability_disabled"
+        const val KEY_TASK_NOTIFICATIONS = "task_notifications"
         const val KEY_ROOT_MODE = "root_mode"
         const val KEY_ONBOARDING = "onboarding"
         const val KEY_THEME = "theme_mode"

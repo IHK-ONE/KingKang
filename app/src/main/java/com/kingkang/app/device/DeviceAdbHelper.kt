@@ -21,12 +21,15 @@ fi
 id="${'$'}${'$'}-${'$'}(date +%s)"
 req="${'$'}DIR/req-${'$'}id"
 res="${'$'}DIR/res-${'$'}id"
-printf '%s' "${'$'}*" > "${'$'}req" || { echo "kk-adb: 无法写入请求队列" >&2; exit 1; }
+# Write then rename: a plain redirect creates the request empty for a moment, and a
+# watcher that reads on CREATE would see a command with no text.
+printf '%s' "${'$'}*" > "${'$'}req.tmp" || { echo "kk-adb: 无法写入请求队列" >&2; exit 1; }
+mv "${'$'}req.tmp" "${'$'}req" || { echo "kk-adb: 无法写入请求队列" >&2; exit 1; }
 i=0
 while [ ! -f "${'$'}res" ]; do
   i=${'$'}((i + 1))
   if [ "${'$'}i" -ge 600 ]; then
-    rm -f "${'$'}req"
+    rm -f "${'$'}req" "${'$'}req.tmp"
     echo "kk-adb: 超时。请确认 KingKang 正在运行且 Shizuku 已授权。" >&2
     exit 1
   fi

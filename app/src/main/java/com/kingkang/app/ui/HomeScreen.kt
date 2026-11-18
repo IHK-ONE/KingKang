@@ -935,10 +935,14 @@ private fun ConversationBody(
     Box(modifier) {
         if (state.items.isEmpty() && state.transcriptLoading) {
             // A session's history is on its way. Showing the first-run page here would be
-            // wrong and visibly stuck; a quiet line is honest until the transcript lands.
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("正在读取对话…", color = TextMuted, fontSize = 12.sp)
-            }
+            // wrong and visibly stuck; skeletons plus a real elapsed counter say what is
+            // happening, and the cancel action keeps a slow host from trapping the user.
+            TranscriptLoadingState(
+                startedAt = state.transcriptLoadingSince,
+                onCancel = vm::cancelTranscriptLoad
+            )
+        } else if (state.items.isEmpty() && state.transcriptCancelled) {
+            TranscriptCancelledState(onReload = vm::reloadTranscript)
         } else if (state.items.isEmpty()) {
             EmptyState(
                 environment = environment,
@@ -973,6 +977,128 @@ private fun ConversationBody(
                 onContinue = vm::continueConversation
             )
         }
+    }
+}
+
+/**
+ * Sketches the conversation while its history is in flight. The elapsed counter is real
+ * (it starts when dsh was asked), and cancel is a first-class action: a 15–20 second read
+ * is normal, an endless one is not, and the user should not have to leave the app.
+ */
+@Composable
+private fun TranscriptLoadingState(startedAt: Long, onCancel: () -> Unit) {
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1_000)
+            now = System.currentTimeMillis()
+        }
+    }
+    val seconds = if (startedAt > 0) {
+        ((now - startedAt) / 1_000).coerceAtLeast(0)
+    } else {
+        0
+    }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 22.dp)
+    ) {
+        SkeletonBlock(widthFraction = 0.52f, height = 13.dp)
+        Spacer(Modifier.height(14.dp))
+        SkeletonBlock(widthFraction = 0.88f, height = 10.dp)
+        Spacer(Modifier.height(7.dp))
+        SkeletonBlock(widthFraction = 0.74f, height = 10.dp)
+        Spacer(Modifier.height(7.dp))
+        SkeletonBlock(widthFraction = 0.35f, height = 10.dp)
+        Spacer(Modifier.height(26.dp))
+        SkeletonBlock(widthFraction = 0.62f, height = 12.dp, alignmentEnd = true)
+        Spacer(Modifier.height(10.dp))
+        SkeletonBlock(widthFraction = 0.44f, height = 12.dp, alignmentEnd = true)
+        Spacer(Modifier.height(30.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(14.dp),
+                color = TextMuted,
+                strokeWidth = 2.dp
+            )
+            Spacer(Modifier.width(9.dp))
+            Text(
+                if (seconds >= 3) "正在读取对话… ${seconds} 秒" else "正在读取对话…",
+                color = TextSecondary,
+                fontSize = 12.sp
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "取消",
+                color = Accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onCancel)
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "从 Kali 内的 dsh 读取这一轮的记录；对话很长时会更久。",
+            color = TextMuted,
+            fontSize = 10.5.sp,
+            lineHeight = 15.sp,
+            modifier = Modifier.padding(start = 23.dp)
+        )
+    }
+}
+
+@Composable
+private fun SkeletonBlock(
+    widthFraction: Float,
+    height: androidx.compose.ui.unit.Dp,
+    alignmentEnd: Boolean = false
+) {
+    Row(Modifier.fillMaxWidth()) {
+        if (alignmentEnd) Spacer(Modifier.weight(1f))
+        Box(
+            Modifier
+                .fillMaxWidth(widthFraction)
+                .height(height)
+                .clip(RoundedCornerShape(height / 2))
+                .background(SurfaceVariant.copy(alpha = 0.75f))
+        )
+    }
+}
+
+/** Shown after a cancel: keeps the old transcript (if any) and offers a fresh read. */
+@Composable
+private fun TranscriptCancelledState(onReload: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("已停止读取对话", color = TextSecondary, fontSize = 13.sp)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "记录仍保存在 dsh 中；可以重新读取，或直接发送消息。",
+            color = TextMuted,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "重新读取",
+            color = Accent,
+            fontSize = 12.5.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier
+                .clip(RoundedCornerShape(9.dp))
+                .clickable(onClick = onReload)
+                .padding(horizontal = 12.dp, vertical = 7.dp)
+        )
     }
 }
 
@@ -4622,8 +4748,19 @@ private fun AgentStoppedState(
     }
 }
 
+/** The cold-start path, in the order the bridge reports it. */
+private val STARTUP_STAGES = listOf(
+    "kali" to "启动 Kali 环境",
+    "bridge" to "启动桥接进程",
+    "dsh-web" to "启动 dsh Web",
+    "dsh-auth" to "验证本地会话",
+    "dsh-connect" to "连接事件流",
+    "history" to "读取对话历史"
+)
+
 @Composable
 private fun AgentLoadingState(state: AgentState, modifier: Modifier = Modifier) {
+    val stageIndex = STARTUP_STAGES.indexOfFirst { it.first == state.startupStage }
     Column(
         modifier
             .fillMaxWidth()
@@ -4631,13 +4768,48 @@ private fun AgentLoadingState(state: AgentState, modifier: Modifier = Modifier) 
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        CircularProgressIndicator(
-            modifier = Modifier.size(24.dp),
-            color = TextMuted,
-            strokeWidth = 2.dp
-        )
-        Spacer(Modifier.height(16.dp))
+        if (stageIndex < 0) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                color = TextMuted,
+                strokeWidth = 2.dp
+            )
+            Spacer(Modifier.height(16.dp))
+        }
         Text(state.status, color = TextSecondary, fontSize = 14.sp)
+        if (stageIndex >= 0) {
+            Spacer(Modifier.height(14.dp))
+            Column(Modifier.fillMaxWidth(0.72f)) {
+                STARTUP_STAGES.forEachIndexed { index, (_, label) ->
+                    val done = index < stageIndex
+                    val current = index == stageIndex
+                    Row(
+                        Modifier.padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(Modifier.width(18.dp), contentAlignment = Alignment.CenterStart) {
+                            when {
+                                done -> Text("✓", color = Success, fontSize = 11.sp)
+                                current -> CircularProgressIndicator(
+                                    modifier = Modifier.size(10.dp),
+                                    color = Accent,
+                                    strokeWidth = 1.6.dp
+                                )
+                            }
+                        }
+                        Text(
+                            label,
+                            color = when {
+                                done -> TextMuted
+                                current -> TextPrimary
+                                else -> TextMuted.copy(alpha = 0.6f)
+                            },
+                            fontSize = 11.5.sp
+                        )
+                    }
+                }
+            }
+        }
         if (!state.error.isNullOrBlank()) {
             Spacer(Modifier.height(6.dp))
             Text(
@@ -4657,7 +4829,7 @@ private fun AgentLoadingState(state: AgentState, modifier: Modifier = Modifier) 
             slowStart = true
         }
         if (slowStart) {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             Text(
                 "冷启动时 dsh 需要在 Kali 中预热，通常会超过一分钟，请稍等。",
                 color = TextMuted,
@@ -4791,6 +4963,15 @@ private fun EmptyState(
         )
         Spacer(Modifier.height(10.dp))
         DeviceIndicators()
+        // One line instead of a guide page: the two lamps above are meaningless to a new
+        // user, and this is the shortest sentence that makes them actionable.
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "OTG 网卡让 Kali 直接使用外接无线网卡；Shizuku 授权后 AI 可执行设备端 adb shell 命令。",
+            color = TextMuted,
+            fontSize = 10.5.sp,
+            lineHeight = 15.sp
+        )
         if (apiKeyMissing) {
             Spacer(Modifier.height(16.dp))
             ApiKeyPrompt(onConfigureKey)

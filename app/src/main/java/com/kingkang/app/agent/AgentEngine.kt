@@ -16,6 +16,7 @@ import com.kingkang.app.data.SettingsStore
 import com.kingkang.app.device.DeviceCapabilities
 import com.kingkang.app.files.FileActions
 import com.kingkang.app.runtime.RootfsManager
+import com.kingkang.app.update.AppUpdateChecker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,7 +52,6 @@ object AgentEngine {
     private const val TAG = "AgentEngine"
     /** Intent extra naming the conversation a completion notification opens. */
     const val EXTRA_SESSION_ID = "com.kingkang.app.extra.SESSION_ID"
-    private const val TASK_CHANNEL_ID = "kingkang_tasks"
     private const val HISTORY_LIMIT = 80
     private const val MAX_TOOL_RESULT = 100_000
     private const val MAX_TOOL_ARGS = 20_000
@@ -144,10 +144,10 @@ object AgentEngine {
      * flashing the empty state while the history request is in flight.
      */
     private val transcriptCache =
-        object : LinkedHashMap<String, List<AgentItem>>(8, 0.75f, true) {
+        object : LinkedHashMap<String, List<AgentItem>>(4, 0.75f, true) {
             override fun removeEldestEntry(
                 eldest: MutableMap.MutableEntry<String, List<AgentItem>>?
-            ): Boolean = size > 8
+            ): Boolean = size > 4
         }
 
     private val liveBlocks = LinkedHashMap<String, LinkedHashMap<Int, LiveBlock>>()
@@ -186,8 +186,6 @@ object AgentEngine {
     private val appVisible = AtomicBoolean(false)
     /** Posted task notification ids, so opening the app can clear them. */
     private val taskNotificationIds = ConcurrentHashMap.newKeySet<Int>()
-    @Volatile
-    private var taskChannelCreated = false
     /** A notification tap that arrived before the session list was loaded. */
     @Volatile
     private var pendingSessionOpen: String? = null
@@ -356,6 +354,8 @@ object AgentEngine {
                     it.copy(
                         connection = AgentConnection.Starting,
                         status = "正在启动 Agent…",
+                        startupStage = "kali",
+                        transcriptLoadingSince = 0L,
                         error = null,
                         items = emptyList(),
                         running = false,
@@ -589,6 +589,17 @@ object AgentEngine {
                 }
             }
 
+            "startup.stage" -> {
+                val stage = data.optString("stage").takeIf { it.isNotBlank() } ?: return
+                _state.update {
+                    if (it.connection == AgentConnection.Starting) {
+                        it.copy(startupStage = stage)
+                    } else {
+                        it
+                    }
+                }
+            }
+
             "ready" -> handleReady(data)
             "fatal" -> {
                 val recoverable = everReady
@@ -796,6 +807,8 @@ object AgentEngine {
             it.copy(
                 connection = AgentConnection.Ready,
                 status = "Agent 已连接",
+                // The bridge is up; opening a conversation now reads its history.
+                startupStage = "history",
                 error = null,
                 dshVersion = data.optString("dshVersion").takeIf { value -> value.isNotBlank() },
                 webPort = data.optInt("port").takeIf { port -> port > 0 },
@@ -1048,7 +1061,11 @@ object AgentEngine {
         val previousId = _state.value.activeSessionId
         val previousItems = _state.value.items
         if (previousId != null && previousItems.isNotEmpty()) {
-            synchronized(transcriptCache) { transcriptCache[previousId] = previousItems }
+            // The cached copy is a paint-ahead aid, not the transcript itself: keep its
+            // tail bounded so four cached chats cannot pin an unbounded number of rows.
+            synchronized(transcriptCache) {
+                transcriptCache[previousId] = previousItems.takeLast(600)
+            }
         }
         val cachedItems = synchronized(transcriptCache) { transcriptCache[id] }
         val keepIds = trail.mapTo(mutableSetOf()) { it.id }
@@ -1067,6 +1084,8 @@ object AgentEngine {
                 subagentsParentAvailable = true,
                 items = cachedItems.orEmpty(),
                 transcriptLoading = true,
+                transcriptLoadingSince = System.currentTimeMillis(),
+                transcriptCancelled = false,
                 running = session?.running ?: false,
                 todos = emptyList(),
                 plan = AgentPlan(),
@@ -2166,6 +2185,160 @@ object AgentEngine {
     }
 
     /**
+     * Runs one write on the file page. The bridge enforces the workspace boundary, symlink
+     * and overwrite rules; this side only supplies the root, the current directory and the
+     * user's name, then reloads the listing so the change is visible without a manual refresh.
+     */
+    private fun mutateFiles(
+        method: String,
+        params: JSONObject,
+        onDone: (String?) -> Unit
+    ) {
+        val client = bridge
+        if (client == null) {
+            scope.launch { withContext(Dispatchers.Main) { onDone("Agent 尚未连接") } }
+            return
+        }
+        val state = _state.value
+        val sessionId = state.activeSessionId
+        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() }
+        val directory = state.fileListing.path.takeIf { it.isNotBlank() }
+        if (sessionId == null || root == null || directory == null) {
+            scope.launch {
+                withContext(Dispatchers.Main) { onDone("这个对话没有可写的工作目录") }
+            }
+            return
+        }
+        params.put("root", root)
+        params.put("directory", directory)
+        // workspace.mkdir names its target parent; the other writes use `directory`.
+        params.put("parent", directory)
+        scope.launch {
+            val failure = try {
+                client.callObject(method, params, 25_000)
+                if (_state.value.activeSessionId == sessionId) browseFilesAndWait(directory)
+                null
+            } catch (t: Throwable) {
+                readableError(t)
+            }
+            withContext(Dispatchers.Main) { onDone(failure) }
+        }
+    }
+
+    /** Awaits one listing refresh so the caller's dialog closes on the new state, not before it. */
+    private suspend fun browseFilesAndWait(path: String) {
+        val client = bridge ?: return
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() } ?: return
+        val result = try {
+            client.callObject(
+                "workspace.files",
+                JSONObject().put("root", root).put("path", path),
+                15_000
+            )
+        } catch (t: Throwable) {
+            if (_state.value.activeSessionId == sessionId) {
+                _state.update {
+                    it.copy(fileListing = it.fileListing.copy(error = readableError(t)))
+                }
+            }
+            return
+        }
+        if (_state.value.activeSessionId != sessionId) return
+        val entries = result.optJSONArray("entries")?.let { array ->
+            (0 until array.length()).mapNotNull { index ->
+                val item = array.optJSONObject(index) ?: return@mapNotNull null
+                val name = item.optString("name")
+                val filePath = item.optString("path")
+                if (name.isBlank() || filePath.isBlank()) return@mapNotNull null
+                AgentFileEntry(
+                    name = name,
+                    path = filePath,
+                    type = item.optString("type").ifBlank { "file" },
+                    size = item.optLong("size"),
+                    modified = item.optLong("mtime")
+                )
+            }
+        } ?: emptyList()
+        _state.update {
+            it.copy(
+                fileListing = AgentFileListing(
+                    root = result.optString("root").ifBlank { root },
+                    path = result.optString("path").ifBlank { path },
+                    parent = result.optString("parent").takeIf { parent -> parent.isNotBlank() },
+                    entries = entries,
+                    truncated = result.optBoolean("truncated")
+                )
+            )
+        }
+    }
+
+    /** Creates an empty file in the directory the file page is showing. */
+    fun createFile(name: String, onDone: (String?) -> Unit = {}) =
+        mutateFiles("workspace.createFile", JSONObject().put("name", name), onDone)
+
+    /** Creates a folder in the directory the file page is showing. */
+    fun createFolder(name: String, onDone: (String?) -> Unit = {}) =
+        mutateFiles("workspace.mkdir", JSONObject().put("name", name), onDone)
+
+    /** Renames one file or directory inside the workspace. */
+    fun renameFile(path: String, name: String, onDone: (String?) -> Unit = {}) =
+        mutateFiles(
+            "workspace.renameFile",
+            JSONObject().put("path", path).put("name", name),
+            onDone
+        )
+
+    /** Deletes one file, or a directory tree, after the UI confirmed it. */
+    fun deleteFile(path: String, onDone: (String?) -> Unit = {}) =
+        mutateFiles("workspace.deleteFile", JSONObject().put("path", path), onDone)
+
+    /**
+     * Copies files the app staged under the shared uploads dir into the current workspace
+     * directory. Sequential so the first name conflict stops the rest and keeps its message.
+     */
+    fun importFiles(staged: List<Pair<String, String>>, onDone: (String?) -> Unit = {}) {
+        if (staged.isEmpty()) return
+        val client = bridge
+        if (client == null) {
+            scope.launch { withContext(Dispatchers.Main) { onDone("Agent 尚未连接") } }
+            return
+        }
+        val state = _state.value
+        val sessionId = state.activeSessionId
+        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() }
+        val directory = state.fileListing.path.takeIf { it.isNotBlank() }
+        if (sessionId == null || root == null || directory == null) {
+            scope.launch {
+                withContext(Dispatchers.Main) { onDone("这个对话没有可写的工作目录") }
+            }
+            return
+        }
+        scope.launch {
+            var failure: String? = null
+            for ((guest, name) in staged) {
+                try {
+                    client.callObject(
+                        "workspace.importFile",
+                        JSONObject()
+                            .put("root", root)
+                            .put("directory", directory)
+                            .put("staged", guest)
+                            .put("name", name),
+                        60_000
+                    )
+                } catch (t: Throwable) {
+                    failure = "${name}：${readableError(t)}"
+                    break
+                }
+            }
+            if (_state.value.activeSessionId == sessionId) browseFilesAndWait(directory)
+            withContext(Dispatchers.Main) { onDone(failure) }
+        }
+    }
+
+    /**
      * Searches the whole workspace through dsh's `workspaceFiles/search` (0.2.2-rc.2).
      * An older Host answers with 404/unknown-method; the panel then says the feature
      * needs a newer dsh instead of pretending the workspace is empty.
@@ -2468,12 +2641,14 @@ object AgentEngine {
                 result.optJSONObject("projections")?.let { applyProjectionsLocked(id, it) }
             }
             if (beforeSeq == null) {
-                synchronized(transcriptCache) { transcriptCache[id] = merged }
+                synchronized(transcriptCache) { transcriptCache[id] = merged.takeLast(600) }
             }
             _state.update {
                 it.copy(
                     items = merged,
                     transcriptLoading = false,
+                    transcriptCancelled = false,
+                    startupStage = if (beforeSeq == null) "ready" else it.startupStage,
                     deliverables = mergedDeliverables,
                     hasMoreHistory = result.optBoolean("hasMore"),
                     oldestSeq = oldest
@@ -3233,67 +3408,25 @@ object AgentEngine {
         isError: Boolean
     ) {
         if (appVisible.get() || !::appContext.isInitialized) return
-        val manager = appContext.getSystemService(NotificationManager::class.java) ?: return
-        if (!manager.areNotificationsEnabled()) {
+        if (!SettingsStore(appContext).taskNotificationsEnabled) {
             appendLog("通知已关闭，完成提醒仅在应用内显示")
             return
         }
-        ensureTaskChannel(manager)
-        val open = Intent(appContext, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            sessionId?.takeIf { it.isNotBlank() }?.let { putExtra(EXTRA_SESSION_ID, it) }
+        if (!TaskNotifications.permitted(appContext)) {
+            appendLog("系统通知权限未开启，完成提醒仅在应用内显示")
+            return
         }
-        val id = key.hashCode()
-        val pending = PendingIntent.getActivity(
-            appContext,
-            id,
-            open,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification = NotificationCompat.Builder(appContext, TASK_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_agent_notification)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setContentIntent(pending)
-            .setAutoCancel(true)
-            .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .setPriority(
-                if (isError) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_LOW
+        if (TaskNotifications.post(
+                appContext,
+                key,
+                title,
+                text,
+                sessionId,
+                isError
             )
-            .setSilent(true)
-            .setOnlyAlertOnce(true)
-            // The lock screen gets a neutral line; conversation and tool text stay private.
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPublicVersion(
-                NotificationCompat.Builder(appContext, TASK_CHANNEL_ID)
-                    .setSmallIcon(R.drawable.ic_agent_notification)
-                    .setContentTitle("KingKang")
-                    .setContentText(if (isError) "有任务需要查看" else "有任务已完成")
-                    .setContentIntent(pending)
-                    .setAutoCancel(true)
-                    .setSilent(true)
-                    .build()
-            )
-            .build()
-        runCatching {
-            manager.notify(id, notification)
-            taskNotificationIds += id
+        ) {
+            taskNotificationIds += key.hashCode()
         }
-    }
-
-    private fun ensureTaskChannel(manager: NotificationManager) {
-        if (taskChannelCreated) return
-        val channel = NotificationChannel(
-            TASK_CHANNEL_ID,
-            "后台任务",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "对话、定时任务与后台任务的完成提醒"
-            setShowBadge(true)
-        }
-        manager.createNotificationChannel(channel)
-        taskChannelCreated = true
     }
 
     private fun clearTaskNotifications() {
@@ -3339,6 +3472,7 @@ object AgentEngine {
 
     private fun handleSessionRemoved(id: String, keepRow: Boolean = false) {
         if (id.isBlank()) return
+        if (!keepRow) releaseSessionCaches(id)
         // dsh disposes an idle child's activation while its durable session stays
         // readable. Every level of the open trail is still valid, so keep the synthetic
         // rows instead of yanking the reader back to some ancestor.
@@ -3355,6 +3489,24 @@ object AgentEngine {
                 ?: remaining.firstOrNull { it.id != id && it.id !in archived }
             if (next != null) activateSession(next.id, forceLoad = true) else scope.launch {
                 createSessionInternal()
+            }
+        }
+    }
+
+    /**
+     * Drops everything that was kept only for one session: its cached transcript, its
+     * image bytes (the heaviest cache), and the capability note signature. Archived rows
+     * keep their caches so restoring a chat still paints instantly.
+     */
+    private fun releaseSessionCaches(id: String) {
+        synchronized(transcriptCache) { transcriptCache.remove(id) }
+        synchronized(capabilityNotesSent) { capabilityNotesSent.remove(id) }
+        _state.update { state ->
+            val prefix = "$id:"
+            if (state.imageData.keys.none { it.startsWith(prefix) }) {
+                state
+            } else {
+                state.copy(imageData = state.imageData.filterKeys { !it.startsWith(prefix) })
             }
         }
     }
@@ -4893,13 +5045,24 @@ object AgentEngine {
     }
 
     /** Searches the configured npm registry; results are display data until inspected. */
-    fun searchPlugins(query: String) {
+    fun searchPlugins(query: String) = searchPlugins(query, append = false)
+
+    /** Fetches the next registry page and appends it to the current result list. */
+    fun loadMorePlugins() {
+        val search = _state.value.pluginSearch
+        if (search.loading || search.results.size >= search.total) return
+        searchPlugins(search.query, append = true)
+    }
+
+    private fun searchPlugins(query: String, append: Boolean) {
         val text = query.trim()
         val client = bridge ?: return
         if (_state.value.connection != AgentConnection.Ready) {
             notifyState("Agent 尚未连接")
             return
         }
+        val previous = _state.value.pluginSearch
+        val from = if (append) previous.results.size else 0
         _state.update {
             it.copy(
                 pluginSearch = it.pluginSearch.copy(
@@ -4914,7 +5077,10 @@ object AgentEngine {
             try {
                 val result = client.callObject(
                     "plugin.search",
-                    JSONObject().put("text", text).put("size", 30),
+                    JSONObject()
+                        .put("text", text)
+                        .put("size", 30)
+                        .put("from", from),
                     40_000
                 )
                 val rows = mutableListOf<AgentPluginMarketResult>()
@@ -4943,13 +5109,18 @@ object AgentEngine {
                         )
                     }
                 }
+                val merged = if (append) {
+                    (previous.results + rows).distinctBy { it.name }
+                } else {
+                    rows
+                }
                 _state.update {
                     it.copy(
                         pluginSearch = AgentPluginSearch(
                             query = result.optText("query") ?: text,
                             registry = result.optText("registry") ?: "",
-                            total = result.optInt("total", rows.size),
-                            results = rows,
+                            total = maxOf(result.optInt("total", merged.size), merged.size),
+                            results = merged,
                             searched = true
                         )
                     )
@@ -4971,6 +5142,52 @@ object AgentEngine {
 
     fun clearPluginSearch() {
         _state.update { it.copy(pluginSearch = AgentPluginSearch()) }
+    }
+
+    /**
+     * Asks Kali's own `iw` what it can do with the attached radios. This is the honest
+     * answer to "interface exists ≠ monitor mode": only `iw phy … info` listing monitor
+     * counts, and airmon-ng 只作为附加信息展示.
+     */
+    fun probeWifi() {
+        val client = bridge ?: run {
+            notifyState("Agent 尚未连接，无法在 Kali 内检测")
+            return
+        }
+        if (_state.value.wifiProbe.loading) return
+        _state.update { it.copy(wifiProbe = it.wifiProbe.copy(loading = true, reason = null)) }
+        scope.launch {
+            val probe = try {
+                val result = client.callObject("device.wifiProbe", JSONObject(), 40_000)
+                val interfaces = mutableListOf<AgentWifiInterface>()
+                result.optJSONArray("interfaces")?.let { array ->
+                    for (index in 0 until array.length()) {
+                        val item = array.optJSONObject(index) ?: continue
+                        val name = item.optString("name")
+                        if (name.isBlank()) continue
+                        interfaces += AgentWifiInterface(
+                            name = name,
+                            phy = item.optString("phy"),
+                            type = item.optString("type").ifBlank { "unknown" },
+                            monitor = item.optBoolean("monitor")
+                        )
+                    }
+                }
+                AgentWifiProbe(
+                    checked = true,
+                    available = result.optBoolean("available"),
+                    airmonNg = result.optBoolean("airmonNg"),
+                    reason = result.optString("reason").takeIf { it.isNotBlank() },
+                    interfaces = interfaces
+                )
+            } catch (t: Throwable) {
+                AgentWifiProbe(
+                    checked = true,
+                    reason = "检测失败：${readableError(t)}"
+                )
+            }
+            _state.update { it.copy(wifiProbe = probe) }
+        }
     }
 
     /**
@@ -6011,14 +6228,21 @@ object AgentEngine {
                     ?: image.mediaType
                 val dataUrl = "data:$mediaType;base64,$data"
                 _state.update { current ->
-                    val next = current.imageData + (cacheKey to dataUrl)
-                    // Bound the cache: a long session should not pin every image forever.
-                    val bounded = if (next.size > 24) {
-                        next.entries.drop(next.size - 24).associate { it.key to it.value }
-                    } else {
-                        next
+                    val next = LinkedHashMap(current.imageData)
+                    next[cacheKey] = dataUrl
+                    // Bound by both count and bytes: a handful of 4K screenshots can weigh
+                    // more than a hundred thumbnails, and the transcript only needs the
+                    // newest images while scrolling back.
+                    var bytes = next.values.sumOf { it.length.toLong() }
+                    while (next.size > 24) {
+                        val oldest = next.keys.first()
+                        bytes -= next.remove(oldest)?.length?.toLong() ?: 0L
                     }
-                    current.copy(imageData = bounded)
+                    while (bytes > 48L * 1024L * 1024L && next.isNotEmpty()) {
+                        val oldest = next.keys.first()
+                        bytes -= next.remove(oldest)?.length?.toLong() ?: 0L
+                    }
+                    current.copy(imageData = next)
                 }
             } catch (t: Throwable) {
                 appendLog("读取图片失败：${readableError(t)}")
@@ -6206,9 +6430,17 @@ object AgentEngine {
         }
     }
 
+    /** Newest model/effort pick; an older in-flight request must not roll state back. */
+    private val modelChangeStamp = AtomicLong(0)
+    private var modelChangeJob: Job? = null
+
     fun selectModel(provider: String, model: String, effort: String?) {
         val sessionId = _state.value.activeSessionId ?: return
         val client = bridge ?: return
+        val stamp = modelChangeStamp.incrementAndGet()
+        // Rapid slider settles and model taps collapse into the last choice instead of
+        // racing each other; the 180 ms window is below perception for a deliberate pick.
+        modelChangeJob?.cancel()
         // Reflect the pick immediately. The catalog already holds every model and its
         // effort list, so no round-trip is needed to redraw the chip or the slider; waiting
         // for one made rapid slider changes snap back and model switches feel stuck.
@@ -6222,7 +6454,8 @@ object AgentEngine {
                 )
             )
         }
-        scope.launch {
+        modelChangeJob = scope.launch {
+            delay(180)
             try {
                 val params = JSONObject()
                     .put("sessionId", sessionId)
@@ -6231,11 +6464,18 @@ object AgentEngine {
                 if (!effort.isNullOrBlank()) params.put("reasoningEffort", effort)
                 client.callObject("session.selectModel", params, 45_000)
             } catch (t: Throwable) {
+                if (t is CancellationException) return@launch
+                // A newer pick owns the state now; its result (or failure) is the one that
+                // should decide what the chip shows.
+                if (stamp != modelChangeStamp.get()) return@launch
                 // Put the authoritative state back; the optimistic value must not survive
                 // a rejected change.
                 loadModels(sessionId)
                 eventMutex.withLock {
-                    addNotice("切换模型失败：${readableError(t)}", isError = true)
+                    addNotice(
+                        "切换模型失败：${readableError(t)}（已恢复原来的选择）",
+                        isError = true
+                    )
                 }
             }
         }
@@ -6249,6 +6489,42 @@ object AgentEngine {
         historyLoadingFor = sessionId
         val token = loadToken
         scope.launch { loadHistory(sessionId, before, token) }
+    }
+
+    /**
+     * Stops waiting for the initial transcript. The page request cannot be cancelled on the
+     * dsh side, so its reply is simply ignored by moving the load token; the user gets the
+     * cached tail (if any) and a reload action instead of a spinner that never ends.
+     */
+    fun cancelTranscriptLoad() {
+        if (_state.value.activeSessionId == null) return
+        loadToken += 1
+        historyLoadingFor = null
+        _state.update {
+            if (it.transcriptLoading) {
+                it.copy(transcriptLoading = false, transcriptCancelled = true)
+            } else {
+                it
+            }
+        }
+        appendLog("已取消读取历史")
+    }
+
+    /** Re-runs the initial transcript read after a cancel or a stalled request. */
+    fun reloadTranscript() {
+        val state = _state.value
+        val sessionId = state.activeSessionId ?: return
+        if (state.transcriptLoading) return
+        val token = loadToken
+        historyLoadingFor = sessionId
+        _state.update {
+            it.copy(
+                transcriptLoading = true,
+                transcriptLoadingSince = System.currentTimeMillis(),
+                transcriptCancelled = false
+            )
+        }
+        scope.launch { loadHistory(sessionId, beforeSeq = null, token = token) }
     }
 
     fun archiveSession(id: String) {
@@ -6773,6 +7049,118 @@ object AgentEngine {
                 "changed=${update.changed} version=${update.version ?: "unknown"}"
         )
         return update
+    }
+
+    /**
+     * Asks the registry for the `latest` tag of every installed third-party bundle and
+     * keeps only the ones that are newer than the installed version. Official bundles ship
+     * with dsh and are updated with it, so they are not part of an npm update batch.
+     */
+    fun checkPluginUpdates() {
+        val client = bridge ?: return
+        if (_state.value.pluginUpdatesChecking) return
+        val names = _state.value.plugins
+            .filter { !it.official && it.name.isNotBlank() }
+            .map { it.name }
+        if (names.isEmpty()) {
+            _state.update {
+                it.copy(
+                    pluginUpdatesNote = "已安装的插件都随 dsh 提供，不需要单独更新。",
+                    pluginUpdates = emptyMap()
+                )
+            }
+            return
+        }
+        _state.update { it.copy(pluginUpdatesChecking = true, pluginUpdatesNote = null) }
+        scope.launch {
+            try {
+                val result = client.callObject(
+                    "plugin.latestVersions",
+                    JSONObject().put("names", JSONArray(names)),
+                    60_000
+                )
+                val versions = result.optJSONObject("versions")
+                val updates = mutableMapOf<String, String>()
+                _state.value.plugins.forEach { plugin ->
+                    if (plugin.official) return@forEach
+                    val latest = versions?.optString(plugin.name)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: return@forEach
+                    val installed = plugin.version ?: return@forEach
+                    if (AppUpdateChecker.isNewer(latest, installed)) {
+                        updates[plugin.name] = latest
+                    }
+                }
+                _state.update {
+                    it.copy(
+                        pluginUpdates = updates,
+                        pluginUpdatesNote = if (updates.isEmpty()) {
+                            "第三方插件都是最新版本。"
+                        } else {
+                            null
+                        }
+                    )
+                }
+            } catch (t: Throwable) {
+                _state.update {
+                    it.copy(pluginUpdatesNote = "检查插件更新失败：${readableError(t)}")
+                }
+            } finally {
+                _state.update { it.copy(pluginUpdatesChecking = false) }
+            }
+        }
+    }
+
+    /** Updates every bundle found by [checkPluginUpdates], one at a time with real progress. */
+    fun updateAllPlugins() {
+        if (_state.value.pluginBatch.running) return
+        val updates = _state.value.pluginUpdates.toList().sortedBy { it.first }
+        if (updates.isEmpty()) return
+        scope.launch {
+            _state.update {
+                it.copy(
+                    pluginBatch = AgentPluginBatch(
+                        running = true,
+                        total = updates.size
+                    )
+                )
+            }
+            val failed = mutableListOf<String>()
+            var done = 0
+            for ((name, version) in updates) {
+                _state.update {
+                    it.copy(
+                        pluginBatch = it.pluginBatch.copy(current = name, done = done)
+                    )
+                }
+                try {
+                    val result = updatePlugin(name, version)
+                    if (result.error != null) failed += name
+                } catch (t: Throwable) {
+                    failed += name
+                    appendLog("批量更新 $name 失败：${readableError(t)}")
+                }
+                done += 1
+                _state.update {
+                    it.copy(
+                        pluginBatch = it.pluginBatch.copy(done = done, failed = failed.toList())
+                    )
+                }
+            }
+            _state.update {
+                it.copy(
+                    pluginUpdates = it.pluginUpdates -
+                        updates.map { entry -> entry.first }.toSet(),
+                    pluginBatch = AgentPluginBatch(
+                        running = false,
+                        total = updates.size,
+                        done = done,
+                        failed = failed.toList()
+                    )
+                )
+            }
+            loadPlugins()
+        }
     }
 
     /** Loads the published version list for one plugin, keeping failures on the entry. */
@@ -7834,6 +8222,11 @@ object AgentEngine {
         _state.update {
             it.copy(logs = (it.logs + cleaned).takeLast(200))
         }
+    }
+
+    /** Clears only the in-app rolling log; files and dsh logs are untouched. */
+    fun clearLogs() {
+        _state.update { it.copy(logs = emptyList()) }
     }
 
     /**

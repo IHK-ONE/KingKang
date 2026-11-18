@@ -124,7 +124,8 @@ private enum class AppScreen {
     Plugins,
     Settings,
     AgentSettings,
-    Providers
+    Providers,
+    Diagnostics
 }
 
 @Composable
@@ -171,6 +172,9 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
     // Workspace actions live at the window root for the same reason: a sheet composed in
     // the drawer would inherit its width and stop reading as a system sheet.
     var pendingWorkspace by remember { mutableStateOf<AgentWorkspace?>(null) }
+    // Long-pressed archived chat: dsh offers restore/export but no delete, so this sheet
+    // explains the real scope instead of hiding it.
+    var pendingArchived by remember { mutableStateOf<AgentSession?>(null) }
     var workspaceRenaming by remember { mutableStateOf(false) }
     var workspaceRenameText by remember { mutableStateOf("") }
     var workspaceDeleting by remember { mutableStateOf(false) }
@@ -227,6 +231,7 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                             renaming = false
                             renameText = session.displayTitle
                         },
+                        onArchivedLongPress = { session -> pendingArchived = session },
                         onWorkspaceLongPress = { workspace ->
                             pendingWorkspace = workspace
                             workspaceRenaming = false
@@ -304,8 +309,11 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                     agentSettingsGroup = group
                     navigate(AppScreen.AgentSettings)
                 },
-                onAbout = { showAbout = true }
+                onAbout = { showAbout = true },
+                onOpenDiagnostics = { navigate(AppScreen.Diagnostics) }
             )
+
+            AppScreen.Diagnostics -> DiagnosticsScreen(vm = vm, onBack = { goBack() })
 
             AppScreen.AgentSettings -> AgentSettingsScreen(
                 vm = vm,
@@ -400,6 +408,39 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
         )
     }
 
+    pendingArchived?.let { session ->
+        KkDialog(onDismiss = { pendingArchived = null }) {
+            KkDialogTitle(
+                title = "已归档对话",
+                subtitle = session.displayTitle,
+                onDismiss = { pendingArchived = null }
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "dsh 0.2.x 没有删除会话的接口，归档是它能表达的收起方式；对话仍保存在 Kali 中。" +
+                    "需要清理时先导出，再在 Harness 或终端里自行处理。",
+                color = TextSecondary,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+            KkDialogActions {
+                TextButton(onClick = {
+                    vm.exportSession(session.id)
+                    pendingArchived = null
+                }) {
+                    Text("导出会话", color = TextMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(6.dp))
+                TextButton(onClick = {
+                    vm.unarchiveChat(session.id)
+                    pendingArchived = null
+                }) {
+                    Text("恢复", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+    }
+
     pendingWorkspace?.let { workspace ->
         // Read once per open: moving a workspace closes the sheet, so a stale list cannot
         // produce a second move against the old order.
@@ -480,6 +521,7 @@ private fun KingKangDrawer(
     onOpenPlugins: () -> Unit,
     onOpenSettings: () -> Unit,
     onSessionLongPress: (AgentSession, Boolean) -> Unit,
+    onArchivedLongPress: (AgentSession) -> Unit,
     onWorkspaceLongPress: (AgentWorkspace) -> Unit
 ) {
     val agent by vm.agentState.collectAsState()
@@ -800,13 +842,17 @@ private fun KingKangDrawer(
                         item(key = "archived:label") {
                             DrawerSectionLabel(
                                 "已归档",
-                                trailing = "${archived.size} 个 · 点按恢复"
+                                // dsh 0.2.x has no delete RPC; the drawer says where the
+                                // conversation actually lives instead of offering a fake
+                                // delete that would silently do nothing.
+                                trailing = "${archived.size} 个 · dsh 暂不支持删除"
                             )
                         }
                         items(archived, key = { "archived:${it.id}" }) { session ->
                             ArchivedRow(
                                 session = session,
-                                onClick = { vm.unarchiveChat(session.id) }
+                                onClick = { vm.unarchiveChat(session.id) },
+                                onLongClick = { onArchivedLongPress(session) }
                             )
                         }
                     }
@@ -1358,9 +1404,10 @@ private fun SessionActionsSheet(
             } else {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "归档后仍保存在 dsh 中，不会删除 Kali 文件；可在抽屉的「已归档」中恢复。",
+                    "归档后仍保存在 dsh 中，可在「已归档」里恢复或导出；dsh 0.2.x 不提供删除会话的接口。",
                     color = TextMuted,
-                    fontSize = 10.5.sp
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
                 )
                 Spacer(Modifier.height(8.dp))
                 SessionSheetAction("重命名", onClick = onStartRename)
@@ -1467,17 +1514,19 @@ private fun HistoryRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ArchivedRow(
     session: AgentSession,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .padding(vertical = 1.dp)
             .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 12.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

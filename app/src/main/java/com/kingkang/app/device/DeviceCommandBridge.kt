@@ -42,26 +42,44 @@ object DeviceCommandBridge {
                     CREATE or MOVED_TO
                 ) {
                     override fun onEvent(event: Int, path: String?) {
-                        scope.launch { synchronized(pollLock) { runCatching { poll(dir) } } }
+                        scope.launch {
+                            synchronized(pollLock) { runCatching { poll(dir, app) } }
+                        }
                     }
                 }.also { it.startWatching() }
             }
             while (isActive) {
-                runCatching { synchronized(pollLock) { poll(dir) } }
+                runCatching { synchronized(pollLock) { poll(dir, app) } }
                 delay(2_000)
             }
         }
     }
 
-    private fun poll(dir: File) {
-        val requests = dir.listFiles { file -> file.isFile && file.name.startsWith("req-") }
-            ?.sortedBy { it.lastModified() }
-            ?: return
+    private fun poll(dir: File, context: Context) {
+        // `req-*.tmp` is the helper's half-written file; treating it as a request would
+        // run the same command twice (once as .tmp, once after the rename).
+        val requests = dir.listFiles { file ->
+            file.isFile && file.name.startsWith("req-") && !file.name.endsWith(".tmp")
+        }?.sortedBy { it.lastModified() } ?: return
         if (requests.isEmpty()) return
         for (request in requests.take(2)) {
             val id = request.name.removePrefix("req-")
             val command = runCatching { request.readText().take(MAX_COMMAND_CHARS) }
                 .getOrDefault("")
+            // An older helper creates the request before writing into it. A blank file
+            // younger than a second is still being filled, so leave it for the next poll
+            // instead of answering "missing command" and deleting the request.
+            if (command.isBlank() &&
+                System.currentTimeMillis() - request.lastModified() < 1_000
+            ) {
+                continue
+            }
+            val result = File(dir, "res-$id")
+            if (result.exists()) {
+                // A previous poll already answered this request; never run it again.
+                runCatching { request.delete() }
+                continue
+            }
             val reply = try {
                 when {
                     !ShizukuManager.state.value.authorized ->
@@ -72,7 +90,9 @@ object DeviceCommandBridge {
             } catch (t: Throwable) {
                 "kk-adb: ${t.message ?: "执行失败"}"
             }
-            val result = File(dir, "res-$id")
+            // The audit line is written before the reply so a very fast script cannot
+            // observe a result that never appeared in the log.
+            DeviceAudit.record(context, command.trim(), reply)
             if (!result.exists()) {
                 val tmp = File(dir, "res-$id.tmp")
                 runCatching {
