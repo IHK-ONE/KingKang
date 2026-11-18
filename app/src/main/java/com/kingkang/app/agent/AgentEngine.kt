@@ -5736,8 +5736,11 @@ object AgentEngine {
         files: List<AgentDraftFile>
     ): String {
         val base = attachmentText(text, files)
-        val device = DeviceCapabilities.promptNote() ?: return base
-        val signature = DeviceCapabilities.signature()
+        // Root mode runs through su/chroot and keeps CAP_NET_RAW; PRoot does not, so the
+        // model is told which networking tools are simply unavailable there.
+        val limited = !SettingsStore(appContext).rootMode
+        val device = DeviceCapabilities.promptNote(limited) ?: return base
+        val signature = DeviceCapabilities.signature(limited)
         if (sessionId != null) {
             val previous = synchronized(capabilityNotesSent) { capabilityNotesSent[sessionId] }
             if (previous == signature) return base
@@ -7082,6 +7085,75 @@ object AgentEngine {
                 "changed=${update.changed} version=${update.version ?: "unknown"}"
         )
         return update
+    }
+
+    /**
+     * Measures the sandbox's real networking surface. The result explains why nmap and
+     * tcpdump fail even though Kali ships them: Android's SELinux profile denies raw and
+     * packet sockets to an ordinary app, regardless of the Linux distribution on top.
+     */
+    fun probeEnvironment() {
+        val client = bridge ?: run {
+            notifyState("Agent 尚未连接，无法在 Kali 内检测")
+            return
+        }
+        if (_state.value.envProbe.loading) return
+        _state.update { it.copy(envProbe = it.envProbe.copy(loading = true, reason = null)) }
+        scope.launch {
+            val probe = try {
+                val result = client.callObject("device.envProbe", JSONObject(), 60_000)
+                val checks = mutableListOf(
+                    AgentEnvCheck(
+                        "出站 TCP / HTTPS",
+                        result.optBoolean("tcp"),
+                        "curl、nc、nikto、sqlmap 等网络工具依赖"
+                    ),
+                    AgentEnvCheck(
+                        "DNS 解析",
+                        result.optBoolean("dns"),
+                        "域名解析；失败时检查 resolv.conf 与网络"
+                    ),
+                    AgentEnvCheck(
+                        "原始套接字",
+                        result.optBoolean("raw"),
+                        "nmap SYN/主机发现、arp-scan、hping3 依赖"
+                    ),
+                    AgentEnvCheck(
+                        "数据包捕获",
+                        result.optBoolean("packet"),
+                        "tcpdump、tshark、bettercap 依赖"
+                    ),
+                    AgentEnvCheck(
+                        "nl80211 无线",
+                        result.optBoolean("nl80211"),
+                        "iw、airmon-ng、monitor 模式与注入依赖"
+                    ),
+                    AgentEnvCheck(
+                        "ARP 表可读",
+                        result.optBoolean("arpTable"),
+                        "读取 /proc/net/arp；失败时内网邻居发现受限"
+                    ),
+                    AgentEnvCheck(
+                        "路由表可读",
+                        result.optBoolean("routeTables"),
+                        "普通 ip route 看不到默认路由是 Android 的正常行为"
+                    )
+                )
+                val iw = result.optString("iw").takeIf { it.isNotBlank() }
+                if (iw != null) {
+                    checks += AgentEnvCheck("iw 工具", true, "已随 Kali 提供：$iw")
+                }
+                AgentEnvProbe(
+                    checked = true,
+                    checks = checks,
+                    // optString turns a JSON null into the text "null".
+                    reason = (result.opt("error") as? String)?.takeIf { it.isNotBlank() }
+                )
+            } catch (t: Throwable) {
+                AgentEnvProbe(checked = true, reason = "自检失败：${readableError(t)}")
+            }
+            _state.update { it.copy(envProbe = probe) }
+        }
     }
 
     /**

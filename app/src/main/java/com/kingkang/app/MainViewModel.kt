@@ -1305,6 +1305,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun probeWifi() = AgentEngine.probeWifi()
 
+    fun probeEnvironment() = AgentEngine.probeEnvironment()
+
     fun clearAgentLogs() = AgentEngine.clearLogs()
 
     fun cancelTranscriptLoad() = AgentEngine.cancelTranscriptLoad()

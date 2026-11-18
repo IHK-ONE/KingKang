@@ -145,6 +145,7 @@ const CAPABILITIES = [
   "workspace.browse",
   "workspace.search",
   "device.wifiProbe",
+  "device.envProbe",
   "workspace.archiveSession",
   "workspace.unarchiveSession",
   "workspace.pinSession",
@@ -3234,6 +3235,51 @@ function probeWifi() {
   };
 }
 
+/**
+ * Measures what PRoot can actually do on this Android build. The questions are fixed —
+ * this never takes a caller-supplied command — and every check is a single short attempt
+ * with a timeout, so the page stays responsive on a broken network.
+ */
+function probeEnvironment() {
+  const script = [
+    "raw=no",
+    "python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)' >/dev/null 2>&1 && raw=yes",
+    "packet=no",
+    "python3 -c 'import socket; socket.socket(socket.AF_PACKET, socket.SOCK_RAW)' >/dev/null 2>&1 && packet=yes",
+    "nl=no",
+    "iw dev >/dev/null 2>&1 && nl=yes",
+    "dns=no",
+    "getent hosts registry.npmjs.org >/dev/null 2>&1 && dns=yes",
+    "tcp=no",
+    "timeout 8 bash -c 'exec 3<>/dev/tcp/registry.npmmirror.com/443' >/dev/null 2>&1 && tcp=yes",
+    "route=no",
+    "ip route show table all 2>/dev/null | grep -q '^default' && route=yes",
+    "arp=no",
+    "cat /proc/net/arp >/dev/null 2>&1 && arp=yes",
+    "iwp=$(command -v iw 2>/dev/null || echo '')",
+    'echo "RESULT raw=$raw packet=$packet nl=$nl dns=$dns tcp=$tcp route=$route arp=$arp iw=$iwp"',
+  ].join("\n");
+  const result = spawnSync("sh", ["-c", script], {
+    encoding: "utf8",
+    timeout: 40_000,
+  });
+  const text = String(result.stdout || "");
+  const line = /RESULT\s+(.*)/.exec(text)?.[1] || "";
+  const value = (name) => new RegExp(`(?:^|\\s)${name}=([^\\s]+)`).exec(line)?.[1] || "";
+  const yes = (name) => value(name) === "yes";
+  return {
+    raw: yes("raw"),
+    packet: yes("packet"),
+    nl80211: yes("nl"),
+    dns: yes("dns"),
+    tcp: yes("tcp"),
+    routeTables: yes("route"),
+    arpTable: yes("arp"),
+    iw: value("iw") || null,
+    error: result.error ? String(result.error.message || result.error) : null,
+  };
+}
+
 /** Direct children one sidebar read returns; a bigger directory reports `truncated`. */
 const WORKSPACE_FILE_MAX = 500;
 /** Bytes one preview read returns; a bigger file is cut and reports `truncated`. */
@@ -4079,6 +4125,8 @@ async function dispatch(method, params) {
       return createDirectory(payload.parent, payload.name);
     case "device.wifiProbe":
       return probeWifi();
+    case "device.envProbe":
+      return probeEnvironment();
     case "workspace.createFile":
       return createWorkspaceFile(payload.root, payload.directory, payload.name);
     case "workspace.renameFile":

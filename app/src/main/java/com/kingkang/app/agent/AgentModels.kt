@@ -1286,6 +1286,21 @@ data class AgentWifiInterface(
     val source: String = "kali"
 )
 
+/** One line of the PRoot capability self-check. */
+data class AgentEnvCheck(
+    val label: String,
+    val ok: Boolean,
+    val detail: String
+)
+
+/** What the Kali sandbox can really do with Android's kernel; measured, not assumed. */
+data class AgentEnvProbe(
+    val loading: Boolean = false,
+    val checked: Boolean = false,
+    val checks: List<AgentEnvCheck> = emptyList(),
+    val reason: String? = null
+)
+
 /** Result of the wireless probe; OTG presence alone does not imply monitor mode. */
 data class AgentWifiProbe(
     val loading: Boolean = false,
@@ -1682,6 +1697,8 @@ data class AgentState(
     val pluginBatch: AgentPluginBatch = AgentPluginBatch(),
     /** Kali-side wireless probe shown by the device capability card. */
     val wifiProbe: AgentWifiProbe = AgentWifiProbe(),
+    /** PRoot networking self-check shown beneath the wireless probe. */
+    val envProbe: AgentEnvProbe = AgentEnvProbe(),
     /** Plugin bundle currently being removed. */
     val pluginRemoving: String? = null,
     /** Loaded image bytes as `data:<mediaType>;base64,…`, keyed by `sessionId:attachmentId`. */

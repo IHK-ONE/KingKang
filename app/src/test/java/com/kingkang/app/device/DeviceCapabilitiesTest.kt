@@ -8,8 +8,15 @@ import org.junit.Test
 class DeviceCapabilitiesTest {
 
     @Test
-    fun `no capabilities produce no prompt note`() {
-        assertNull(DeviceCapabilities.buildNote(emptyList(), ethernet = false, shizuku = false))
+    fun `root mode without device capabilities produces no prompt note`() {
+        assertNull(
+            DeviceCapabilities.buildNote(
+                emptyList(),
+                ethernet = false,
+                shizuku = false,
+                limitedNetwork = false
+            )
+        )
     }
 
     @Test
@@ -39,5 +46,32 @@ class DeviceCapabilitiesTest {
         requireNotNull(note)
         assertTrue(note.contains("/usr/local/bin/kk-adb"))
         assertTrue(note.contains("不是 root"))
+    }
+
+    @Test
+    fun `pRoot mode tells the model that raw networking is unavailable`() {
+        val note = DeviceCapabilities.buildNote(
+            emptyList(),
+            ethernet = false,
+            shizuku = false,
+            limitedNetwork = true
+        )
+        requireNotNull(note)
+        assertTrue(note.contains("PRoot"))
+        assertTrue(note.contains("原始套接字"))
+        assertTrue(note.contains("nc"))
+    }
+
+    @Test
+    fun `an OTG interface in pRoot mode carries the networking caveat`() {
+        val note = DeviceCapabilities.buildNote(
+            listOf("wlan1"),
+            ethernet = false,
+            shizuku = false,
+            limitedNetwork = true
+        )
+        requireNotNull(note)
+        assertTrue(note.contains("wlan1"))
+        assertTrue(note.contains("PRoot 网络限制"))
     }
 }

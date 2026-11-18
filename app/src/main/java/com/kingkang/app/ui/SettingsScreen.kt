@@ -101,6 +101,7 @@ import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.agent.AgentLanguageSettings
 import com.kingkang.app.agent.AgentPresetCopy
 import com.kingkang.app.agent.AgentState
+import com.kingkang.app.agent.AgentEnvProbe
 import com.kingkang.app.agent.AgentWifiProbe
 import com.kingkang.app.agent.TaskNotifications
 import com.kingkang.app.data.SettingsStore
@@ -555,6 +556,8 @@ fun SettingsScreen(
             DeviceCapabilityCard(
                 wifiProbe = agent.wifiProbe,
                 onProbeWifi = vm::probeWifi,
+                envProbe = agent.envProbe,
+                onProbeEnvironment = vm::probeEnvironment,
                 onOpenUrl = ::openExternal
             )
 
@@ -1748,6 +1751,8 @@ internal fun ChoiceSegmented(
 private fun DeviceCapabilityCard(
     wifiProbe: AgentWifiProbe,
     onProbeWifi: () -> Unit,
+    envProbe: AgentEnvProbe,
+    onProbeEnvironment: () -> Unit,
     onOpenUrl: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -2014,6 +2019,16 @@ private fun DeviceCapabilityCard(
                     fontSize = 10.5.sp,
                     lineHeight = 15.sp
                 )
+                if (wifiProbe.reason?.contains("netlink", ignoreCase = true) == true) {
+                    Text(
+                        "iw 已随 Kali 提供；这次失败来自 Android 对 nl80211 的权限限制，" +
+                            "不是缺少工具。下面的环境自检会给出同一结论。",
+                        color = TextMuted,
+                        fontSize = 10.sp,
+                        lineHeight = 15.sp,
+                        modifier = Modifier.padding(top = 3.dp)
+                    )
+                }
                 if (otg) {
                     Text(
                         "Android 已看到接口，但 Kali 内没有对应 phy：可能是驱动没有暴露无线功能，" +
@@ -2061,6 +2076,93 @@ private fun DeviceCapabilityCard(
                     )
                 }
             }
+        }
+        Spacer(Modifier.height(10.dp))
+        HorizontalDivider(color = Border.copy(alpha = 0.7f))
+        Spacer(Modifier.height(10.dp))
+        // Kali's tools exist; what differs is what Android lets them do. Measure that
+        // instead of letting the user discover it through opaque tool errors.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "运行环境自检",
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "检查 PRoot 实际可用的网络能力；结果只代表这台设备当前的内核权限。",
+                    color = TextMuted,
+                    fontSize = 10.5.sp,
+                    lineHeight = 15.sp
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "检测",
+                color = if (envProbe.loading) TextMuted else Accent,
+                fontSize = 11.sp,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .clickable(enabled = !envProbe.loading, onClick = onProbeEnvironment)
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+            )
+        }
+        if (envProbe.loading) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    color = TextMuted,
+                    strokeWidth = 1.6.dp
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("正在运行固定检查…", color = TextMuted, fontSize = 10.5.sp)
+            }
+        } else if (envProbe.checked) {
+            envProbe.reason?.let { reason ->
+                Spacer(Modifier.height(8.dp))
+                Text(reason, color = Amber, fontSize = 10.5.sp, lineHeight = 15.sp)
+            }
+            Spacer(Modifier.height(8.dp))
+            envProbe.checks.forEach { check ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (check.ok) "✓" else "✗",
+                        color = if (check.ok) Success else Amber,
+                        fontSize = 11.sp,
+                        modifier = Modifier.width(16.dp)
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(check.label, color = TextPrimary, fontSize = 11.5.sp)
+                        Text(
+                            check.detail,
+                            color = TextMuted,
+                            fontSize = 9.5.sp,
+                            lineHeight = 13.sp
+                        )
+                    }
+                    Text(
+                        if (check.ok) "可用" else "不可用",
+                        color = if (check.ok) Success else Amber,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+            Text(
+                "原始套接字、抓包与 nl80211 的限制来自 Android，不是 Kali 缺工具：" +
+                    "nmap/tcpdump/iw 在安装包里，但普通应用权限下无法调用。",
+                color = TextMuted,
+                fontSize = 10.sp,
+                lineHeight = 15.sp,
+                modifier = Modifier.padding(top = 6.dp)
+            )
         }
     }
 
