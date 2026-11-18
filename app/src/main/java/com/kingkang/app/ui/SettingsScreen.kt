@@ -44,7 +44,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -1142,20 +1141,19 @@ private fun McpServerDialog(
     val valid = name.trim().isNotEmpty() &&
         if (transport == "stdio") command.trim().isNotEmpty() else url.trim().isNotEmpty()
     val formScroll = rememberScrollState()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                if (initial == null) "添加 MCP 服务器" else "编辑 MCP 服务器",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary
-            )
-        },
-        text = {
-            ScrollEdgeFade(canScrollForward = formScroll.canScrollForward) {
-            Column(Modifier.heightIn(max = 420.dp).verticalScroll(formScroll)) {
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = if (initial == null) "添加 MCP 服务器" else "编辑 MCP 服务器",
+            subtitle = if (transport == "stdio") {
+                "命令由 Kali 内启动，参数用空格分隔"
+            } else {
+                "连接已在运行的 HTTP MCP 服务"
+            },
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        ScrollEdgeFade(canScrollForward = formScroll.canScrollForward) {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(formScroll)) {
                 McpField("名称", name, enabledField = initial == null) { name = it.take(32) }
                 Spacer(Modifier.height(8.dp))
                 Row {
@@ -1167,11 +1165,11 @@ private fun McpServerDialog(
                 }
                 Spacer(Modifier.height(8.dp))
                 if (transport == "stdio") {
-                    McpField("命令", command) { command = it }
+                    McpField("命令", command, ascii = true) { command = it }
                     Spacer(Modifier.height(8.dp))
-                    McpField("参数（空格分隔）", args) { args = it }
+                    McpField("参数（空格分隔）", args, ascii = true) { args = it }
                 } else {
-                    McpField("URL", url) { url = it }
+                    McpField("URL", url, ascii = true) { url = it }
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1180,10 +1178,13 @@ private fun McpServerDialog(
                     Switch(checked = enabled, onCheckedChange = { enabled = it })
                 }
             }
+        }
+        KkDialogActions {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextMuted, fontSize = 12.sp)
             }
-        },
-        confirmButton = {
-            TextButton(
+            Spacer(Modifier.width(6.dp))
+            Button(
                 onClick = {
                     onSave(
                         AgentMcpServer(
@@ -1197,17 +1198,21 @@ private fun McpServerDialog(
                         )
                     )
                 },
-                enabled = valid
+                enabled = valid,
+                modifier = Modifier.height(36.dp),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Accent,
+                    contentColor = OnAccent,
+                    disabledContainerColor = SurfaceVariant,
+                    disabledContentColor = TextMuted
+                )
             ) {
-                Text("保存", color = if (valid) Accent else TextMuted)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
+                Text("保存", fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -1215,14 +1220,19 @@ private fun McpField(
     label: String,
     value: String,
     enabledField: Boolean = true,
+    ascii: Boolean = false,
     onChange: (String) -> Unit
 ) {
     Column {
         Text(label, color = TextMuted, fontSize = 10.sp)
         BasicTextField(
             value = value,
-            onValueChange = onChange,
+            onValueChange = { onChange(if (ascii) normalizePathInput(it) else it) },
             enabled = enabledField,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = if (ascii) KeyboardType.Ascii else KeyboardType.Text,
+                imeAction = ImeAction.Next
+            ),
             modifier = Modifier
                 .fillMaxWidth()
                 .keyboardLift()
@@ -2711,72 +2721,65 @@ private fun NpmSourceDialog(
     var input by remember { mutableStateOf(if (known) "" else initial) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("自定义 NPM 源", style = MaterialTheme.typography.titleMedium) },
-        text = {
-            Column {
-                Text(
-                    "填写 http(s) 地址，例如公司内网的 Verdaccio。",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp
-                )
-                Spacer(Modifier.height(12.dp))
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(SurfaceVariant)
-                        .padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    BasicTextField(
-                        value = input,
-                        onValueChange = {
-                            input = normalizePathInput(it).take(200)
-                            error = null
-                        },
-                        modifier = Modifier.fillMaxWidth().keyboardLift(),
-                        textStyle = MaterialTheme.typography.bodySmall.copy(
-                            color = TextPrimary,
-                            fontSize = 12.sp,
-                            platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
-                            lineHeight = 12.sp,
-                        ),
-                        cursorBrush = SolidColor(Accent),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Ascii,
-                            imeAction = ImeAction.Done
-                        ),
-                        decorationBox = { inner ->
-                            Box(contentAlignment = Alignment.CenterStart) {
-                                if (input.isEmpty()) {
-                                    Text(
-                                        "https://npm.example.com/",
-                                        color = TextMuted,
-                                        fontSize = 12.sp,
-                                        lineHeight = 12.sp,
-                                        style = TextStyle(platformStyle = CompactInputPlatformStyle)
-                                    )
-                                }
-                                inner()
-                            }
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = "自定义 NPM 源",
+            subtitle = "填写 http(s) 地址，例如公司内网的 Verdaccio",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(12.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceVariant)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            BasicTextField(
+                value = input,
+                onValueChange = {
+                    input = normalizePathInput(it).take(200)
+                    error = null
+                },
+                modifier = Modifier.fillMaxWidth().keyboardLift(),
+                textStyle = MaterialTheme.typography.bodySmall.copy(
+                    color = TextPrimary,
+                    fontSize = 12.sp,
+                    platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
+                    lineHeight = 12.sp,
+                ),
+                cursorBrush = SolidColor(Accent),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Ascii,
+                    imeAction = ImeAction.Done
+                ),
+                decorationBox = { inner ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (input.isEmpty()) {
+                            Text(
+                                "https://npm.example.com/",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                                lineHeight = 12.sp,
+                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                            )
                         }
-                    )
+                        inner()
+                    }
                 }
-                error?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(it, color = ErrorText, fontSize = 10.5.sp)
-                }
+            )
+        }
+        error?.let {
+            Spacer(Modifier.height(10.dp))
+            Text(it, color = ErrorText, fontSize = 10.5.sp)
+        }
+        KkDialogActions {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextMuted, fontSize = 12.sp)
             }
-        },
-        confirmButton = {
-            TextButton(
+            Spacer(Modifier.width(6.dp))
+            Button(
                 onClick = {
                     val value = normalizePathInput(input).trim()
                     if (!value.startsWith("http://") && !value.startsWith("https://")) {
@@ -2784,17 +2787,21 @@ private fun NpmSourceDialog(
                     } else {
                         onSave(value)
                     }
-                }
+                },
+                modifier = Modifier.height(36.dp),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Accent,
+                    contentColor = OnAccent,
+                    disabledContainerColor = SurfaceVariant,
+                    disabledContentColor = TextMuted
+                )
             ) {
-                Text("保存", color = Accent)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
+                Text("保存", fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
-    )
+    }
 }
 
 @Composable

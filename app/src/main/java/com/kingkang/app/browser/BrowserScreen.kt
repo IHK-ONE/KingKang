@@ -32,7 +32,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -62,6 +61,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.theme.Background
@@ -405,56 +407,44 @@ fun BrowserScreen(
     }
 
     pendingConfirm?.let { target ->
-        AlertDialog(
-            onDismissRequest = { pendingConfirm = null },
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextSecondary,
-            shape = RoundedCornerShape(20.dp),
-            title = { Text("打开外部页面？") },
-            text = {
-                Column {
-                    Text(
-                        "这个地址不在本机，页面内容来自网络。",
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        target,
-                        color = TextMuted,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (!BrowserPolicy.isLoopback(target)) {
-                        Text(
-                            "主机：${BrowserPolicy.hostOf(target)}",
-                            color = TextMuted,
-                            fontSize = 10.sp
-                        )
-                    }
+        KkDialog(onDismiss = { pendingConfirm = null }) {
+            KkDialogTitle(
+                title = "打开外部页面？",
+                subtitle = "这个地址不在本机，页面内容来自网络",
+                onDismiss = { pendingConfirm = null }
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                target,
+                color = TextMuted,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!BrowserPolicy.isLoopback(target)) {
+                Text(
+                    "主机：${BrowserPolicy.hostOf(target)}",
+                    color = TextMuted,
+                    fontSize = 10.sp
+                )
+            }
+            KkDialogActions {
+                TextButton(onClick = {
+                    pendingConfirm = null
+                    openExternally(target)
+                }) {
+                    Text("系统浏览器", color = TextMuted, fontSize = 12.sp)
                 }
-            },
-            confirmButton = {
+                Spacer(Modifier.width(6.dp))
                 TextButton(onClick = {
                     pendingConfirm = null
                     web.loadUrl(target)
                 }) {
                     Text("在应用内打开", color = Accent, fontWeight = FontWeight.Medium, fontSize = 12.sp)
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    pendingConfirm = null
-                    openExternally(target)
-                }) {
-                    Text("系统浏览器", color = TextSecondary, fontSize = 12.sp)
-                }
             }
-        )
+        }
     }
 
     if (showMenu) {

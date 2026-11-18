@@ -391,9 +391,11 @@ object AgentEngine {
                 try {
                     client.start()
                     startupTimeout = scope.launch {
-                        delay(150_000)
+                        // The bridge gives a cold start up to four minutes; keep the outer
+                        // watchdog just past that so it only catches a lost process.
+                        delay(270_000)
                         if (_state.value.connection == AgentConnection.Starting) {
-                            appendLog("启动超时：dsh 未在 150 秒内就绪")
+                            appendLog("启动超时：dsh 未在 4 分 30 秒内就绪")
                             _state.update {
                                 it.copy(
                                     connection = AgentConnection.Failed,

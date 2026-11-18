@@ -42,7 +42,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DrawerValue
@@ -1712,23 +1711,16 @@ private fun OnboardingStep(index: Int, title: String, detail: String) {
 @Composable
 private fun AboutDialog(onDismiss: () -> Unit) {
     val scroll = rememberScrollState()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                "关于 KingKang",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary
-            )
-        },
-        text = {
-            ScrollEdgeFade(
-                canScrollForward = scroll.canScrollForward,
-            ) {
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = "关于 KingKang",
+            subtitle = "本地运行，仅连接本机 Kali",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        ScrollEdgeFade(
+            canScrollForward = scroll.canScrollForward,
+        ) {
             Column(
                 Modifier
                     .verticalScroll(scroll)
@@ -1744,36 +1736,52 @@ private fun AboutDialog(onDismiss: () -> Unit) {
                 Text(
                     "KingKang 把对话界面和 Kali 终端放在同一台 Android 设备上。" +
                         "Agent 通过应用内的 Node 桥接连接 Kali 中的 DeepSeek Harness（dsh），" +
-                        "流式文本、工具调用、审批、提问、计划与模型选择都在原生界面中完成。"
+                        "流式文本、工具调用、审批、提问、计划与模型选择都在原生界面中完成。",
+                    color = TextSecondary,
+                    fontSize = 12.5.sp,
+                    lineHeight = 18.sp
                 )
                 Text(
-                    "运行环境仅在本机执行，dsh 只监听 Kali 内的回环地址；终端不会自动连接远程 Kali 或云主机。"
+                    "运行环境仅在本机执行，dsh 只监听 Kali 内的回环地址；终端不会自动连接远程 Kali 或云主机。",
+                    color = TextSecondary,
+                    fontSize = 12.5.sp,
+                    lineHeight = 18.sp
                 )
                 Text(
                     "Kali Linux 是 Offensive Security 的商标。本应用与 Offensive Security " +
-                        "没有隶属或背书关系。内置根文件系统来自 Kali NetHunter 官方 rootless 构建。"
+                        "没有隶属或背书关系。内置根文件系统来自 Kali NetHunter 官方 rootless 构建。",
+                    color = TextSecondary,
+                    fontSize = 12.5.sp,
+                    lineHeight = 18.sp
                 )
                 Text(
-                    "仅可将本应用用于你已经获得明确授权的目标与环境。用户对本地及网络中的所有操作负责。"
+                    "仅可将本应用用于你已经获得明确授权的目标与环境。用户对本地及网络中的所有操作负责。",
+                    color = TextSecondary,
+                    fontSize = 12.5.sp,
+                    lineHeight = 18.sp
                 )
                 Text(
                     "本项目以 Apache License 2.0 开源：可自由使用、修改与再分发，" +
                         "商用与二次开发同样允许，但须保留版权与许可声明。" +
                         "「KingKang」名称与图标不在许可范围内。不得用于未经授权的测试目标。",
+                    color = TextSecondary,
+                    fontSize = 12.5.sp,
+                    lineHeight = 18.sp,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
                     "第三方组件：PRoot (GPLv2)、xterm.js (MIT)、libtalloc (LGPL-3.0)、" +
                         "Android NDK 运行库。相关许可证随应用发行说明提供。",
-                    fontSize = 12.sp
+                    color = TextMuted,
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
                 )
             }
-            }
-        },
-        confirmButton = {
+        }
+        KkDialogActions {
             TextButton(onClick = onDismiss) {
-                Text("知道了", color = TextSecondary)
+                Text("知道了", color = TextMuted, fontSize = 12.sp)
             }
         }
-    )
+    }
 }

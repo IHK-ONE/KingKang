@@ -69,7 +69,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -2052,36 +2053,31 @@ private fun GoalClearDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                "清除目标",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary
-            )
-        },
-        text = {
-            Text(
-                "清除后自动推进也会停止，这条目标不再出现在工作台。\n\n${goal.objective}",
-                color = TextSecondary,
-                fontSize = 13.sp,
-                lineHeight = 19.sp
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm, enabled = !busy) {
-                Text("清除", color = if (busy) TextMuted else Red)
-            }
-        },
-        dismissButton = {
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = "清除目标",
+            subtitle = "清除后自动推进也会停止，这条目标不再出现在工作台",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            goal.objective,
+            color = TextSecondary,
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
+            maxLines = 6,
+            overflow = TextOverflow.Ellipsis
+        )
+        KkDialogActions {
             TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
+                Text("取消", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(6.dp))
+            TextButton(onClick = onConfirm, enabled = !busy) {
+                Text("清除", color = if (busy) TextMuted else Red, fontSize = 12.sp)
             }
         }
-    )
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2364,22 +2360,17 @@ private fun ScheduleFormDialog(
     }
     val canSave = !busy && title.isNotBlank() && prompt.isNotBlank() && timingValid
     val formScroll = rememberScrollState()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                if (edit) "编辑定时任务" else "新建定时任务",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary
-            )
-        },
-        text = {
-            ScrollEdgeFade(canScrollForward = formScroll.canScrollForward) {
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = if (edit) "编辑定时任务" else "新建定时任务",
+            subtitle = "到点后按任务内容执行，结果显示在工作台",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        ScrollEdgeFade(canScrollForward = formScroll.canScrollForward) {
             Column(
                 Modifier
-                    .heightIn(max = 420.dp)
+                    .heightIn(max = 360.dp)
                     .verticalScroll(formScroll)
             ) {
                 ScheduleInput(
@@ -2530,10 +2521,13 @@ private fun ScheduleFormDialog(
                     )
                 }
             }
+        }
+        KkDialogActions {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextMuted, fontSize = 12.sp)
             }
-        },
-        confirmButton = {
-            TextButton(
+            Spacer(Modifier.width(6.dp))
+            Button(
                 onClick = {
                     onSave(
                         ScheduleDraft(
@@ -2549,17 +2543,21 @@ private fun ScheduleFormDialog(
                         )
                     )
                 },
-                enabled = canSave
+                enabled = canSave,
+                modifier = Modifier.height(36.dp),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Accent,
+                    contentColor = OnAccent,
+                    disabledContainerColor = SurfaceVariant,
+                    disabledContentColor = TextMuted
+                )
             ) {
-                Text("保存", color = if (canSave) Accent else TextMuted)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
+                Text("保存", fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -2646,32 +2644,19 @@ private fun ScheduleDetailDialog(
     onLoadMore: () -> Unit
 ) {
     val scroll = rememberScrollState()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Column {
-                Text(
-                    schedule.title.ifBlank { "定时任务" },
-                    style = MaterialTheme.typography.titleMedium,
-                    color = TextPrimary
-                )
-                Text(
-                    scheduleFrequency(schedule),
-                    modifier = Modifier.padding(top = 3.dp),
-                    color = TextSecondary,
-                    fontSize = 11.sp
-                )
-            }
-        },
-        text = {
-            ScrollEdgeFade(
-                canScrollForward = scroll.canScrollForward,
-            ) {
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = schedule.title.ifBlank { "定时任务" },
+            subtitle = scheduleFrequency(schedule),
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        ScrollEdgeFade(
+            canScrollForward = scroll.canScrollForward,
+        ) {
             Column(
                 Modifier
-                    .heightIn(max = 440.dp)
+                    .heightIn(max = 400.dp)
                     .verticalScroll(scroll)
             ) {
                 Text(
@@ -2781,29 +2766,25 @@ private fun ScheduleDetailDialog(
                     }
                 }
             }
+        }
+        KkDialogActions {
+            if (schedule.active) {
+                TextButton(onClick = onRun, enabled = !busy) {
+                    Text("立即运行", color = TextMuted, fontSize = 12.sp)
+                }
             }
-        },
-        confirmButton = {
+            TextButton(onClick = onDelete, enabled = !busy) {
+                Text("删除", color = if (busy) TextMuted else Red, fontSize = 12.sp)
+            }
+            TextButton(onClick = onDismiss) {
+                Text("关闭", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(4.dp))
             TextButton(onClick = onEdit, enabled = !busy) {
-                Text("编辑", color = if (busy) TextMuted else Accent)
-            }
-        },
-        dismissButton = {
-            Row {
-                if (schedule.active) {
-                    TextButton(onClick = onRun, enabled = !busy) {
-                        Text("立即运行", color = if (busy) TextMuted else TextSecondary)
-                    }
-                }
-                TextButton(onClick = onDelete, enabled = !busy) {
-                    Text("删除", color = if (busy) TextMuted else Red)
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("关闭", color = TextSecondary)
-                }
+                Text("编辑", color = if (busy) TextMuted else Accent, fontSize = 12.sp)
             }
         }
-    )
+    }
 }
 
 /** Deletion is permanent in dsh; a queued delivery is not retracted, so say so. */
@@ -2814,36 +2795,29 @@ private fun ScheduleDeleteDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                "删除定时任务",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary
-            )
-        },
-        text = {
-            Text(
-                "删除后不再触发，已排队的提醒消息也不会撤回。\n\n${schedule.title}",
-                color = TextSecondary,
-                fontSize = 13.sp,
-                lineHeight = 19.sp
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm, enabled = !busy) {
-                Text("删除", color = if (busy) TextMuted else Red)
-            }
-        },
-        dismissButton = {
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = "删除定时任务",
+            subtitle = "删除后不再触发，已排队的提醒消息也不会撤回",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            schedule.title,
+            color = TextSecondary,
+            fontSize = 13.sp,
+            lineHeight = 19.sp
+        )
+        KkDialogActions {
             TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
+                Text("取消", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(6.dp))
+            TextButton(onClick = onConfirm, enabled = !busy) {
+                Text("删除", color = if (busy) TextMuted else Red, fontSize = 12.sp)
             }
         }
-    )
+    }
 }
 
 /**
@@ -4674,6 +4648,24 @@ private fun AgentLoadingState(state: AgentState, modifier: Modifier = Modifier) 
                 lineHeight = 18.sp
             )
         }
+        // A cold start can spend a minute in PRoot before dsh prints its address. Saying so
+        // keeps the user from killing the app while it is doing exactly what it should.
+        var slowStart by remember(state.status) { mutableStateOf(false) }
+        LaunchedEffect(state.status) {
+            slowStart = false
+            delay(15_000)
+            slowStart = true
+        }
+        if (slowStart) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "冷启动时 dsh 需要在 Kali 中预热，通常会超过一分钟，请稍等。",
+                color = TextMuted,
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center,
+                lineHeight = 16.sp
+            )
+        }
     }
 }
 
@@ -5259,63 +5251,69 @@ private fun QueueEditDialog(
     onSave: (String) -> Unit
 ) {
     var draft by rememberSaveable(item.id) { mutableStateOf(item.text) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("编辑排队消息", style = MaterialTheme.typography.titleMedium, color = TextPrimary) },
-        text = {
-            Column {
-                BasicTextField(
-                    value = draft,
-                    onValueChange = { if (it.length <= 4000) draft = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(SurfaceRaised)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        color = TextPrimary,
-                        fontSize = 14.sp,
-                        platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
-                        lineHeight = 20.sp
-                    ),
-                    cursorBrush = SolidColor(Accent),
-                    maxLines = 6
-                )
-                if (item.images.isNotEmpty()) {
-                    Text(
-                        if (item.images.size == 1) "保存后保留原图片" else "保存后保留原 ${item.images.size} 张图片",
-                        color = TextMuted,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(top = 6.dp, start = 2.dp)
-                    )
-                }
-                if (item.files.isNotEmpty()) {
-                    Text(
-                        "保存后保留 ${item.files.size} 个文件的 Kali 路径",
-                        color = TextMuted,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(top = 4.dp, start = 2.dp)
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            val canSave = draft.isNotBlank() || item.images.isNotEmpty() || item.files.isNotEmpty()
-            TextButton(
-                onClick = { onSave(draft) },
-                enabled = canSave
-            ) {
-                Text("保存", color = if (canSave) Accent else TextMuted)
-            }
-        },
-        dismissButton = {
+    val canSave = draft.isNotBlank() || item.images.isNotEmpty() || item.files.isNotEmpty()
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = "编辑排队消息",
+            subtitle = "发送前会按这里的内容投递",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        BasicTextField(
+            value = draft,
+            onValueChange = { if (it.length <= 4000) draft = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(SurfaceRaised)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                color = TextPrimary,
+                fontSize = 14.sp,
+                platformStyle = com.kingkang.app.ui.components.CompactInputPlatformStyle,
+                lineHeight = 20.sp
+            ),
+            cursorBrush = SolidColor(Accent),
+            maxLines = 6
+        )
+        if (item.images.isNotEmpty()) {
+            Text(
+                if (item.images.size == 1) "保存后保留原图片" else "保存后保留原 ${item.images.size} 张图片",
+                color = TextMuted,
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 6.dp, start = 2.dp)
+            )
+        }
+        if (item.files.isNotEmpty()) {
+            Text(
+                "保存后保留 ${item.files.size} 个文件的 Kali 路径",
+                color = TextMuted,
+                fontSize = 10.sp,
+                modifier = Modifier.padding(top = 4.dp, start = 2.dp)
+            )
+        }
+        KkDialogActions {
             TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
+                Text("取消", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(6.dp))
+            Button(
+                onClick = { onSave(draft) },
+                enabled = canSave,
+                modifier = Modifier.height(36.dp),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Accent,
+                    contentColor = OnAccent,
+                    disabledContainerColor = SurfaceVariant,
+                    disabledContentColor = TextMuted
+                )
+            ) {
+                Text("保存", fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
-    )
+    }
 }
 
 @Composable
@@ -6135,90 +6133,81 @@ private fun FeedbackEditorDialog(
 ) {
     var category by remember { mutableStateOf(existing?.category) }
     var note by remember { mutableStateOf(existing?.note.orEmpty()) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Text(
-                if (rating == "negative") "哪里可以更好？" else "记录这次好评",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary
-            )
-        },
-        text = {
-            Column {
-                Text("原因（可选）", color = TextMuted, fontSize = 10.5.sp)
-                Spacer(Modifier.height(8.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    FeedbackCategories.forEach { (id, label) ->
-                        val selected = category == id
-                        Text(
-                            label,
-                            color = if (selected) Accent else TextSecondary,
-                            fontSize = 11.sp,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(if (selected) Accent.copy(alpha = 0.12f) else SurfaceVariant)
-                                .clickable { category = if (selected) null else id }
-                                .padding(horizontal = 9.dp, vertical = 5.dp)
-                        )
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                Text("补充说明（可选）", color = TextMuted, fontSize = 10.5.sp)
-                Spacer(Modifier.height(6.dp))
-                BasicTextField(
-                    value = note,
-                    onValueChange = { if (it.length <= 600) note = it },
-                    textStyle = TextStyle(
-                        color = TextPrimary,
-                        fontSize = 13.sp,
-                        lineHeight = 19.sp,
-                        platformStyle = CompactInputPlatformStyle
-                    ),
-                    cursorBrush = SolidColor(Accent),
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = if (rating == "negative") "哪里可以更好？" else "记录这次好评",
+            subtitle = "反馈会随这条回复保存",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("原因（可选）", color = TextMuted, fontSize = 10.5.sp)
+        Spacer(Modifier.height(8.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            FeedbackCategories.forEach { (id, label) ->
+                val selected = category == id
+                Text(
+                    label,
+                    color = if (selected) Accent else TextSecondary,
+                    fontSize = 11.sp,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 64.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(SurfaceVariant)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    decorationBox = { inner ->
-                        if (note.isBlank()) {
-                            Text(
-                                if (rating == "negative") {
-                                    "写下具体哪里不好，或希望怎么改"
-                                } else {
-                                    "这次哪里做得好，可以补充说明"
-                                },
-                                color = TextMuted,
-                                fontSize = 13.sp,
-                                lineHeight = 19.sp,
-                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
-                            )
-                        }
-                        inner()
-                    }
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (selected) Accent.copy(alpha = 0.12f) else SurfaceVariant)
+                        .clickable { category = if (selected) null else id }
+                        .padding(horizontal = 9.dp, vertical = 5.dp)
                 )
             }
-        },
-        confirmButton = {
+        }
+        Spacer(Modifier.height(12.dp))
+        Text("补充说明（可选）", color = TextMuted, fontSize = 10.5.sp)
+        Spacer(Modifier.height(6.dp))
+        BasicTextField(
+            value = note,
+            onValueChange = { if (it.length <= 600) note = it },
+            textStyle = TextStyle(
+                color = TextPrimary,
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+                platformStyle = CompactInputPlatformStyle
+            ),
+            cursorBrush = SolidColor(Accent),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 64.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfaceVariant)
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            decorationBox = { inner ->
+                if (note.isBlank()) {
+                    Text(
+                        if (rating == "negative") {
+                            "写下具体哪里不好，或希望怎么改"
+                        } else {
+                            "这次哪里做得好，可以补充说明"
+                        },
+                        color = TextMuted,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp,
+                        style = TextStyle(platformStyle = CompactInputPlatformStyle)
+                    )
+                }
+                inner()
+            }
+        )
+        KkDialogActions {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(6.dp))
             TextButton(
                 onClick = { onSubmit(category, note.trim().ifBlank { null }) }
             ) {
-                Text("提交", color = Accent)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消", color = TextSecondary)
+                Text("提交", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
-    )
+    }
 }
 
 /** Why "从这里分支" is greyed out, mirroring dsh-web's rule against forking mid-turn. */
@@ -7575,22 +7564,14 @@ private fun PermissionDialog(
     onDismiss: () -> Unit,
     onPick: (String) -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("对话权限", style = MaterialTheme.typography.titleMedium) },
-        text = {
-            Column {
-                Text(
-                    "仅影响当前对话；每次切换都由 dsh 记录在会话里。",
-                    color = TextMuted,
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp
-                )
-                Spacer(Modifier.height(10.dp))
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = "对话权限",
+            subtitle = "仅影响当前对话；每次切换都由 dsh 记录在会话里",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        Column {
                 state.permissionCatalog.options.forEach { option ->
                     val selected = option.value == state.permissionMode
                     Row(
@@ -7634,14 +7615,13 @@ private fun PermissionDialog(
                         }
                     }
                 }
-            }
-        },
-        confirmButton = {
+        }
+        KkDialogActions {
             TextButton(onClick = onDismiss) {
-                Text("关闭", color = TextSecondary)
+                Text("关闭", color = TextMuted, fontSize = 12.sp)
             }
         }
-    )
+    }
 }
 
 /** A quiet text control for the composer toolbar; it stays flat so the input owns the eye. */

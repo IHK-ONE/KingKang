@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,9 +32,14 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kingkang.app.agent.AgentSpeechProvider
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
+import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.AccentDim
 import com.kingkang.app.ui.theme.AccentSoft
 import com.kingkang.app.ui.theme.Border
@@ -289,37 +293,40 @@ internal fun SpeechSetupDialog(
     onCancelPreparation: (AgentSpeechProvider) -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = { Text("语音识别", fontSize = 16.sp) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (provider == null) {
-                    Text("dsh 没有可用的语音识别提供方。", fontSize = 13.sp)
-                } else {
-                    Text(provider.name, color = TextPrimary, fontSize = 13.sp)
-                    Text(speechPhaseText(provider), fontSize = 12.5.sp, lineHeight = 18.sp)
-                    speechEstimateText(provider)?.let {
-                        Text(it, color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
-                    }
-                    if (provider.ready) {
-                        Text("已就绪，关闭后点麦克风开始录音。", color = TextMuted, fontSize = 11.sp)
-                    }
+    KkDialog(onDismiss = onDismiss) {
+        KkDialogTitle(
+            title = "语音识别",
+            subtitle = "在本机转写，录音不会上传",
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (provider == null) {
+                Text("dsh 没有可用的语音识别提供方。", color = TextSecondary, fontSize = 13.sp)
+            } else {
+                Text(provider.name, color = TextPrimary, fontSize = 13.sp)
+                Text(
+                    speechPhaseText(provider),
+                    color = TextSecondary,
+                    fontSize = 12.5.sp,
+                    lineHeight = 18.sp
+                )
+                speechEstimateText(provider)?.let {
+                    Text(it, color = TextMuted, fontSize = 11.sp, lineHeight = 16.sp)
+                }
+                if (provider.ready) {
+                    Text("已就绪，关闭后点麦克风开始录音。", color = TextMuted, fontSize = 11.sp)
                 }
             }
-        },
-        confirmButton = {
+        }
+        KkDialogActions {
             val current = provider
             when {
                 current == null -> Unit
                 current.preparing -> TextButton(
                     onClick = { onCancelPreparation(current) }
                 ) {
-                    Text("取消准备", color = TextSecondary, fontSize = 12.sp)
+                    Text("取消准备", color = TextMuted, fontSize = 12.sp)
                 }
                 current.needsSetup -> TextButton(
                     onClick = { onPrepare(current) }
@@ -328,13 +335,12 @@ internal fun SpeechSetupDialog(
                 }
                 else -> Unit
             }
-        },
-        dismissButton = {
+            Spacer(Modifier.width(6.dp))
             TextButton(onClick = onDismiss) {
-                Text("关闭", color = TextSecondary, fontSize = 12.sp)
+                Text("关闭", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
-    )
+    }
 }
 
 private fun speechPhaseText(provider: AgentSpeechProvider): String = when (provider.phase) {

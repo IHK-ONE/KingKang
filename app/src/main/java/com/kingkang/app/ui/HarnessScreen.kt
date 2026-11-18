@@ -47,7 +47,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -83,6 +82,9 @@ import com.kingkang.app.agent.AgentConnection
 import com.kingkang.app.files.FileActions
 import com.kingkang.app.files.HarnessDownload
 import com.kingkang.app.files.HarnessDownloads
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Background
 import com.kingkang.app.ui.theme.Border
@@ -823,201 +825,162 @@ fun HarnessScreen(
     val external = pendingExternal
     if (external != null) {
         val uri = Uri.parse(external)
-        AlertDialog(
-            onDismissRequest = { pendingExternal = null },
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextMuted,
-            title = {
-                Text("在浏览器中打开？", fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            },
-            text = {
-                // Host and path only: query strings can carry launch tokens or other
-                // credentials that must not be put on screen.
-                Text(
-                    externalLabel(uri),
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp
-                )
-            },
-            confirmButton = {
+        KkDialog(onDismiss = { pendingExternal = null }) {
+            KkDialogTitle(
+                title = "在浏览器中打开？",
+                subtitle = "将离开 Harness，交给系统浏览器",
+                onDismiss = { pendingExternal = null }
+            )
+            Spacer(Modifier.height(10.dp))
+            // Host and path only: query strings can carry launch tokens or other
+            // credentials that must not be put on screen.
+            Text(
+                externalLabel(uri),
+                color = TextMuted,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+            KkDialogActions {
+                TextButton(onClick = { pendingExternal = null }) {
+                    Text("取消", color = TextMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(6.dp))
                 TextButton(onClick = {
                     pendingExternal = null
                     openExternal(context, uri) { vm.notify(it) }
                 }) {
-                    Text("打开", color = Accent)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingExternal = null }) {
-                    Text("取消", color = TextMuted)
+                    Text("打开", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
-        )
+        }
     }
 
     pendingDownload?.let { request ->
-        AlertDialog(
-            onDismissRequest = { pendingDownload = null },
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextMuted,
-            title = {
-                Text("下载文件？", fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            },
-            text = {
-                Column {
-                    Text(
-                        request.fileName,
-                        color = TextPrimary,
-                        fontSize = 12.5.sp,
-                        lineHeight = 17.sp
-                    )
-                    Text(
-                        if (request.size > 0) formatSize(request.size) else "大小未知",
-                        modifier = Modifier.padding(top = 4.dp),
-                        color = TextMuted,
-                        fontSize = 11.sp
-                    )
-                    Text(
-                        "来自本机 Harness，确认后下载到应用缓存。",
-                        modifier = Modifier.padding(top = 8.dp),
-                        color = TextMuted,
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp
-                    )
+        KkDialog(onDismiss = { pendingDownload = null }) {
+            KkDialogTitle(
+                title = "下载文件？",
+                subtitle = "来自本机 Harness，确认后下载到应用缓存",
+                onDismiss = { pendingDownload = null }
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                request.fileName,
+                color = TextPrimary,
+                fontSize = 12.5.sp,
+                lineHeight = 17.sp
+            )
+            Text(
+                if (request.size > 0) formatSize(request.size) else "大小未知",
+                modifier = Modifier.padding(top = 4.dp),
+                color = TextMuted,
+                fontSize = 11.sp
+            )
+            KkDialogActions {
+                TextButton(onClick = { pendingDownload = null }) {
+                    Text("取消", color = TextMuted, fontSize = 12.sp)
                 }
-            },
-            confirmButton = {
+                Spacer(Modifier.width(6.dp))
                 TextButton(onClick = {
                     pendingDownload = null
                     startDownload(request)
                 }) {
-                    Text("下载", color = Accent)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDownload = null }) {
-                    Text("取消", color = TextMuted)
+                    Text("下载", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
-        )
+        }
     }
 
     activeDownload?.let { request ->
-        AlertDialog(
-            onDismissRequest = {},
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextMuted,
-            title = {
-                Text("正在下载", fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            },
-            text = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(
-                        color = Accent,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        request.fileName,
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            },
-            confirmButton = {}
-        )
+        KkDialog(onDismiss = {}) {
+            KkDialogTitle(title = "正在下载", subtitle = "完成后会提示打开或保存")
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    color = Accent,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    request.fileName,
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 
     failedDownload?.let { (request, message) ->
-        AlertDialog(
-            onDismissRequest = { failedDownload = null },
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextMuted,
-            title = {
-                Text("下载失败", fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            },
-            text = {
-                Text(message, fontSize = 12.sp, lineHeight = 17.sp)
-            },
-            confirmButton = {
+        KkDialog(onDismiss = { failedDownload = null }) {
+            KkDialogTitle(
+                title = "下载失败",
+                onDismiss = { failedDownload = null }
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(message, color = TextSecondary, fontSize = 12.sp, lineHeight = 17.sp)
+            KkDialogActions {
+                TextButton(onClick = { failedDownload = null }) {
+                    Text("关闭", color = TextMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(6.dp))
                 TextButton(onClick = {
                     failedDownload = null
                     startDownload(request)
                 }) {
-                    Text("重试", color = Accent)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { failedDownload = null }) {
-                    Text("关闭", color = TextMuted)
+                    Text("重试", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
-        )
+        }
     }
 
     downloadedFile?.let { file ->
-        AlertDialog(
-            onDismissRequest = { downloadedFile = null },
-            containerColor = Surface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextMuted,
-            title = {
-                Text("下载完成", fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            },
-            text = {
-                Column {
-                    Text(
-                        file.name,
-                        color = TextPrimary,
-                        fontSize = 12.5.sp,
-                        lineHeight = 17.sp
-                    )
-                    Text(
-                        formatSize(file.length()),
-                        modifier = Modifier.padding(top = 4.dp),
-                        color = TextMuted,
-                        fontSize = 11.sp
-                    )
+        KkDialog(onDismiss = { downloadedFile = null }) {
+            KkDialogTitle(
+                title = "下载完成",
+                subtitle = "已保存到应用缓存，可打开、保存或分享",
+                onDismiss = { downloadedFile = null }
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                file.name,
+                color = TextPrimary,
+                fontSize = 12.5.sp,
+                lineHeight = 17.sp
+            )
+            Text(
+                formatSize(file.length()),
+                modifier = Modifier.padding(top = 4.dp),
+                color = TextMuted,
+                fontSize = 11.sp
+            )
+            KkDialogActions {
+                TextButton(onClick = {
+                    downloadedFile = null
+                    FileActions.share(context, file)?.let(vm::notify)
+                }) {
+                    Text("分享", color = TextMuted, fontSize = 12.sp)
                 }
-            },
-            confirmButton = {
-                Row {
-                    TextButton(onClick = {
-                        downloadedFile = null
-                        FileActions.open(context, file)?.let(vm::notify)
-                    }) {
-                        Text("打开", color = Accent)
-                    }
-                    TextButton(onClick = {
-                        pendingSaveDownload = file
-                        downloadedFile = null
-                        saveDownload.launch(file.name)
-                    }) {
-                        Text("保存", color = Accent)
-                    }
+                TextButton(onClick = {
+                    pendingSaveDownload = file
+                    downloadedFile = null
+                    saveDownload.launch(file.name)
+                }) {
+                    Text("保存", color = TextMuted, fontSize = 12.sp)
                 }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        downloadedFile = null
-                        FileActions.share(context, file)?.let(vm::notify)
-                    }) {
-                        Text("分享", color = Accent)
-                    }
-                    TextButton(onClick = { downloadedFile = null }) {
-                        Text("完成", color = TextMuted)
-                    }
+                TextButton(onClick = { downloadedFile = null }) {
+                    Text("完成", color = TextMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(4.dp))
+                TextButton(onClick = {
+                    downloadedFile = null
+                    FileActions.open(context, file)?.let(vm::notify)
+                }) {
+                    Text("打开", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 }
             }
-        )
+        }
     }
 }
 

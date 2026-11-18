@@ -30,7 +30,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -71,6 +70,9 @@ import com.kingkang.app.agent.AgentState
 import com.kingkang.app.ui.theme.Accent
 import com.kingkang.app.ui.theme.Amber
 import com.kingkang.app.ui.components.CompactInputPlatformStyle
+import com.kingkang.app.ui.components.KkDialog
+import com.kingkang.app.ui.components.KkDialogActions
+import com.kingkang.app.ui.components.KkDialogTitle
 import com.kingkang.app.ui.components.ScrollEdgeFade
 import com.kingkang.app.ui.components.keyboardLift
 import com.kingkang.app.ui.theme.Background
@@ -891,25 +893,31 @@ private fun ProviderEditor(
     if (confirmDelete && existing != null) {
         val inUse = agent.models?.provider == existing.provider ||
             providers.defaultProvider == existing.provider
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("删除 ${existing.displayName}？", fontSize = 16.sp) },
-            text = {
-                Text(
-                    if (inUse) {
-                        "这个供应商正在提供当前或默认模型。删除后 dsh 会保留一个无法解析的选择，" +
-                            "需要重新选择模型才能继续对话。" +
-                            if (deleteKey) "已保存的密钥也会被清除。" else ""
-                    } else {
-                        "供应商配置会从 dsh 中移除。模型列表和对话记录不受影响。" +
-                            if (deleteKey) "已保存的密钥也会被清除。" else ""
-                    },
-                    color = TextSecondary,
-                    fontSize = 12.5.sp,
-                    lineHeight = 18.sp
-                )
-            },
-            confirmButton = {
+        KkDialog(onDismiss = { confirmDelete = false }, padding = PaddingValues(20.dp)) {
+            KkDialogTitle(
+                title = "删除 ${existing.displayName}？",
+                subtitle = if (inUse) "它正在提供当前或默认模型" else "模型列表和对话记录不受影响",
+                onDismiss = { confirmDelete = false }
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                if (inUse) {
+                    "这个供应商正在提供当前或默认模型。删除后 dsh 会保留一个无法解析的选择，" +
+                        "需要重新选择模型才能继续对话。" +
+                        if (deleteKey) "已保存的密钥也会被清除。" else ""
+                } else {
+                    "供应商配置会从 dsh 中移除。模型列表和对话记录不受影响。" +
+                        if (deleteKey) "已保存的密钥也会被清除。" else ""
+                },
+                color = TextSecondary,
+                fontSize = 12.5.sp,
+                lineHeight = 18.sp
+            )
+            KkDialogActions {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text("取消", color = TextMuted, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(6.dp))
                 TextButton(
                     onClick = {
                         confirmDelete = false
@@ -920,15 +928,10 @@ private fun ProviderEditor(
                         )
                     }
                 ) {
-                    Text("删除", color = Red)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDelete = false }) {
-                    Text("取消", color = TextMuted)
+                    Text("删除", color = Red, fontSize = 12.sp)
                 }
             }
-        )
+        }
     }
 }
 

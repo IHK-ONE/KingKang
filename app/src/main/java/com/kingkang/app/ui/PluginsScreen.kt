@@ -27,7 +27,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -620,41 +619,22 @@ private fun PluginDetailDialog(
     onUninstall: () -> Unit
 ) {
     val scroll = rememberScrollState()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        shape = RoundedCornerShape(20.dp),
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    plugin.displayTitle,
-                    modifier = Modifier.weight(1f, fill = false),
-                    style = MaterialTheme.typography.titleMedium
-                )
-                plugin.version?.let { version ->
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        version,
-                        color = TextMuted,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp
-                    )
-                }
-                if (plugin.official) {
-                    Spacer(Modifier.width(6.dp))
-                    MonoTag("官方")
-                }
-            }
-        },
-        text = {
-            ScrollEdgeFade(
-                canScrollForward = scroll.canScrollForward,
-            ) {
+    KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
+        KkDialogTitle(
+            title = plugin.displayTitle,
+            subtitle = listOfNotNull(
+                plugin.version,
+                "官方".takeIf { plugin.official }
+            ).joinToString(" · ").ifBlank { null },
+            onDismiss = onDismiss
+        )
+        Spacer(Modifier.height(10.dp))
+        ScrollEdgeFade(
+            canScrollForward = scroll.canScrollForward,
+        ) {
             Column(
                 Modifier
-                    .heightIn(max = 460.dp)
+                    .heightIn(max = 400.dp)
                     .verticalScroll(scroll)
             ) {
                 Text(
@@ -785,36 +765,32 @@ private fun PluginDetailDialog(
                     )
                 }
             }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onOpenHarness) {
-                Text("打开 Harness", color = Accent)
-            }
-        },
-        dismissButton = {
-            Row {
-                if (plugin.removable) {
-                    if (removing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier
-                                .padding(horizontal = 14.dp)
-                                .size(14.dp),
-                            color = TextMuted,
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        TextButton(onClick = onUninstall) {
-                            Text("卸载", color = ErrorText)
-                        }
+        }
+        KkDialogActions {
+            if (plugin.removable) {
+                if (removing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .padding(horizontal = 14.dp)
+                            .size(14.dp),
+                        color = TextMuted,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    TextButton(onClick = onUninstall) {
+                        Text("卸载", color = ErrorText, fontSize = 12.sp)
                     }
                 }
-                TextButton(onClick = onDismiss) {
-                    Text("关闭", color = TextSecondary)
-                }
+            }
+            TextButton(onClick = onDismiss) {
+                Text("关闭", color = TextMuted, fontSize = 12.sp)
+            }
+            Spacer(Modifier.width(4.dp))
+            TextButton(onClick = onOpenHarness) {
+                Text("打开 Harness", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
-    )
+    }
 }
 
 /**

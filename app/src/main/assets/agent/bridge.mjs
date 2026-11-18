@@ -2107,6 +2107,9 @@ function startDsh() {
     // does not look like a crash worth respawning.
     let abandoned = false;
     let output = "";
+    // A cold boot can keep PRoot busy for well over two minutes before dsh prints its
+    // address, while a broken install exits and rejects at once. Give the slow case room
+    // instead of failing a healthy start.
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
@@ -2117,7 +2120,7 @@ function startDsh() {
         // ignore
       }
       reject(codedError("startup", "dsh web 启动超时"));
-    }, 120_000);
+    }, 240_000);
 
     const inspect = (chunk) => {
       const text = String(chunk);
