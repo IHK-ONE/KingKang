@@ -2101,15 +2101,22 @@ private fun DeviceActionRow(
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = TextSecondary, fontSize = 11.5.sp)
+            // These are first-level capability entries, on the same hierarchy as OTG and
+            // Shizuku ADB, not secondary settings.
+            Text(
+                title,
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
             Spacer(Modifier.height(2.dp))
-            Text(detail, color = TextMuted, fontSize = 10.sp, lineHeight = 14.sp)
+            Text(detail, color = TextMuted, fontSize = 10.5.sp, lineHeight = 15.sp)
         }
         Spacer(Modifier.width(10.dp))
         Text(
             action,
             color = if (enabled) Accent else TextMuted,
-            fontSize = 10.5.sp,
+            fontSize = 11.sp,
             modifier = Modifier
                 .clip(RoundedCornerShape(7.dp))
                 .clickable(enabled = enabled, onClick = onClick)

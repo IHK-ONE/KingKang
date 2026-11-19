@@ -4793,7 +4793,9 @@ private fun AgentLoadingState(state: AgentState, modifier: Modifier = Modifier) 
         Text(state.status, color = TextSecondary, fontSize = 14.sp)
         if (stageIndex >= 0) {
             Spacer(Modifier.height(14.dp))
-            Column(Modifier.fillMaxWidth(0.72f)) {
+            // Each step is its own centered row: the checklist reads as one centered block
+            // instead of a left-aligned column under a centered title.
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 STARTUP_STAGES.forEachIndexed { index, (_, label) ->
                     val done = index < stageIndex
                     val current = index == stageIndex

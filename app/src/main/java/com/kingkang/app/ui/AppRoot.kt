@@ -1197,16 +1197,17 @@ private fun WorkspaceHeader(
             )
             Spacer(Modifier.width(6.dp))
         }
-        Icon(
-            Icons.Filled.Add,
-            contentDescription = "在此工作区新建对话",
-            tint = TextMuted,
-            modifier = Modifier
-                .size(18.dp)
+        // A text plus sits on the same optical centre as the 12sp workspace title; the
+        // 14dp vector inside an 18dp icon box read as one line too high.
+        Box(
+            Modifier
+                .size(24.dp)
                 .clip(RoundedCornerShape(6.dp))
-                .clickable(onClick = onNewChat)
-                .padding(2.dp)
-        )
+                .clickable(onClick = onNewChat),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("+", color = TextMuted, fontSize = 17.sp, lineHeight = 17.sp)
+        }
     }
 }
 

@@ -24,6 +24,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -139,6 +140,7 @@ fun DirectoryPickerDialog(
                     modifier = Modifier.weight(1f).keyboardLift()
                 )
                 Spacer(Modifier.width(8.dp))
+                // Up one level lives in the list as ".."; this card only offers the jump.
                 if (pathDraft.trim() != current) {
                     Text(
                         "前往",
@@ -148,16 +150,6 @@ fun DirectoryPickerDialog(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .clickable(enabled = !listing.loading) { submitPath() }
-                            .padding(horizontal = 6.dp, vertical = 5.dp)
-                    )
-                } else if (parent != null) {
-                    Text(
-                        "↑ 上一级",
-                        color = Accent,
-                        fontSize = 11.sp,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable(enabled = !listing.loading) { onBrowse(parent) }
                             .padding(horizontal = 6.dp, vertical = 5.dp)
                     )
                 }
@@ -269,6 +261,30 @@ fun DirectoryPickerDialog(
         Spacer(Modifier.height(4.dp))
         Text("子目录", color = TextMuted, fontSize = 9.5.sp)
         Spacer(Modifier.height(2.dp))
+        // Same ".." affordance as the workspace file page: one row at the top of the list.
+        if (parent != null) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = !listing.loading) { onBrowse(parent) }
+                    .padding(horizontal = 6.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "..",
+                    color = Accent,
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.width(24.dp)
+                )
+                Text("返回上级目录", color = TextSecondary, fontSize = 12.sp)
+            }
+            HorizontalDivider(
+                color = Border.copy(alpha = 0.6f),
+                modifier = Modifier.padding(horizontal = 6.dp)
+            )
+        }
         when {
             listing.loading -> Row(
                 Modifier.padding(vertical = 8.dp),
