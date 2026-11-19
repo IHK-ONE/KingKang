@@ -2,67 +2,101 @@
 
 在一台 Android 手机上运行完整的 Kali Linux，并直接和安全研究 Agent 对话。
 
-不需要电脑、不需要刷机、不需要 root。Kali、终端、DeepSeek Harness 和原生对话界面都在同一台设备里；命令、文件与对话记录留在本机，只有发给模型的请求会离开设备。
+不需要电脑、不需要刷机、不需要 root。Kali、终端、DeepSeek Harness 与原生对话界面都在同一台设备里；对话、文件和命令结果留在本机，只有发给模型的请求会离开设备。
 
 <table>
   <tr>
     <td align="center"><img src="docs/screenshots/chat.png" width="240" alt="对话"></td>
     <td align="center"><img src="docs/screenshots/terminal.png" width="240" alt="Kali 终端"></td>
+    <td align="center"><img src="docs/screenshots/files.png" width="240" alt="工作区文件"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>对话</b><br><sub>流式回复、工具卡片与审批</sub></td>
+    <td align="center"><b>Kali 终端</b><br><sub>与 Agent 同一个 Kali</sub></td>
+    <td align="center"><b>工作区文件</b><br><sub>浏览、上传与编辑</sub></td>
+  </tr>
+  <tr>
     <td align="center"><img src="docs/screenshots/plugins.png" width="240" alt="插件"></td>
-  </tr>
-  <tr>
-    <td align="center"><b>对话</b><br><sub>原生界面，工具与审批都在这里</sub></td>
-    <td align="center"><b>Kali 终端</b><br><sub>随时接手 Agent 的命令</sub></td>
-    <td align="center"><b>插件</b><br><sub>安装、更新与卸载 dsh 插件</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/screenshots/harness.png" width="240" alt="DeepSeek Harness"></td>
     <td align="center"><img src="docs/screenshots/settings.png" width="240" alt="设置"></td>
-    <td align="center"><img src="docs/screenshots/credentials.png" width="240" alt="模型与凭据"></td>
+    <td align="center"><img src="docs/screenshots/harness.png" width="240" alt="DeepSeek Harness"></td>
   </tr>
   <tr>
+    <td align="center"><b>插件</b><br><sub>开关、市场与批量更新</sub></td>
+    <td align="center"><b>设备能力</b><br><sub>审计、无线检测与自检</sub></td>
     <td align="center"><b>DeepSeek Harness</b><br><sub>完整的 dsh-web 界面</sub></td>
-    <td align="center"><b>设置</b><br><sub>搜索直达每一项</sub></td>
-    <td align="center"><b>模型与凭据</b><br><sub>API Key 只写不读</sub></td>
   </tr>
 </table>
 
-## 功能
+## 目录
+
+- [功能说明](#功能说明)
+- [系统要求](#系统要求)
+- [安装](#安装)
+- [首次使用](#首次使用)
+- [使用技巧](#使用技巧)
+- [已知限制](#已知限制)
+- [常见问题](#常见问题)
+- [开发](#开发)
+- [安全与授权](#安全与授权)
+- [许可](#许可)
+
+## 功能说明
 
 ### 对话与 Agent
 
-- 流式回复、思考过程、工具调用卡片、审批与提问、子 Agent 下钻。
-- 模型与推理等级合并为一个控件；可随时切换权限预设、停止或继续当前回合。
-- 会话按 Kali 目录分组，支持搜索、置顶、重命名、分叉、归档与恢复；归档区可折叠。
-- 工作台集中查看后台任务、长期目标、定时任务、工作流与交付物。
+KingKang 用原生界面承载 DeepSeek Harness 的对话：回复逐字流出，思考过程、工具调用、审批与提问都出现在对话流里，不需要在浏览器和终端之间来回切换。工具卡片可以看到参数、耗时和结果；子 Agent 可以逐层下钻；长回答可以停止、继续，或从某条消息分叉。
+
+输入框上方有一组常用控件：
+
+- **权限**：决定这次对话能读写哪些位置，切换记录在会话里。
+- **模型 · 推理等级**：点开先选模型，再用滑块调整推理等级，选择立即生效。
+- **上下文用量**：查看上下文占比与明细。
+
+长按会话可以重命名、分叉、置顶或归档；归档区可折叠，展开后点一下即可恢复。工作台集中展示后台任务、长期目标、定时任务、工作流和交付物；长任务完成后可以发通知。
 
 ### Kali 与终端
 
-- 通过 PRoot 在用户空间运行 Kali，不改系统分区，也不需要 root。
-- 终端提供 ESC / TAB / CTRL / 方向键与粘贴；命令输入框使用英文键盘，避免输入法把命令转成中文。
-- 对话、终端、文件与 Harness 之间可以互相跳转，上下文不丢。
+Kali 运行在应用私有目录里的 PRoot 用户空间，不修改系统分区，也不需要 root。Agent 的每条命令都在同一个 Kali 里执行，你随时可以打开「Kali 终端」接手。
+
+终端提供 ESC、TAB、CTRL、方向键和粘贴；需要输入长命令时使用「命令」输入框，它使用英文键盘，避免中文输入法把命令转成拼音。对话、终端、文件页之间可以互相跳转，并带上当前目录。
 
 ### 文件与工作区
 
-- 浏览整个 Kali 根目录，以 `/` 为顶层，任何目录都能用 `..` 逐级返回。
-- 新建文件与文件夹、上传、重命名、删除；预览文本与图片，复制路径，分享或交给其他应用打开。
-- 按名称、大小或时间排序；文件页与对话中的交付物直接联动。
+「工作区文件」以 Kali 的 `/` 为顶层：点目录进入，用 `..` 返回上级。支持新建文件与文件夹、上传、重命名、删除，也可以预览文本和图片、复制路径、分享或交给其他应用打开。
 
-### 插件、设备与通知
+工作区本质上是 Kali 里的一个目录。在左侧「工作区 → 添加」选择目录后，从该工作区新建的对话会以它为当前目录，Agent 读写文件、执行命令都围绕这个目录展开。长按工作区可以重命名、调整顺序或移除；移除只取消分组，不会删除 Kali 里的文件。
 
-- npm 插件市场支持分页、检查更新与批量更新；已安装插件可单独开关或卸载。
-- 通过 OTG 接入的 USB 网卡会显示状态；Shizuku 授权后，Agent 可用 `kk-adb` 执行设备端 adb shell 命令（shell 权限，不是 root）。
-- 设备能力页可查看 kk-adb 审计、运行 Kali 无线能力检测与运行环境自检。
-- 后台任务通知可以开关；设置中提供脱敏诊断与可复制的桥接日志。
+### 插件
+
+插件由 Kali 里的 dsh 管理，应用内可以开关、安装、更新和卸载。插件市场从当前 npm 源搜索，支持分页加载；已安装的第三方插件可以检查更新并一次性全部更新，失败项会单独列出。官方插件随 dsh 提供，不参与批量更新。
+
+### 设备能力
+
+通过 OTG 接入的 USB 网卡，只有内核驱动绑定并创建网络接口后才会亮灯；接口存在不代表 Kali 一定能用它抓包。设置里的「Kali 无线能力」会在 Kali 内读取 `iw` 的接口与 phy，并显示是否支持 monitor 模式。
+
+授权 Shizuku 后，Agent 可以用 `kk-adb` 在设备端执行 adb shell 命令（shell 权限，不是 root）。每条命令都会写入本机审计记录，可查看、清空；也可以一键停用这项能力。「运行环境自检」会实测出站 TCP、DNS、原始套接字、抓包、nl80211 等能力，告诉你这台设备实际能做什么。
+
+### 通知、诊断与更新
+
+应用不在前台时，任务完成或失败可以发一条安静的通知；锁屏只显示通用文字。设置里可以关闭通知并查看系统权限。
+
+诊断页提供脱敏的环境摘要和最近的桥接日志，可一键复制或清空；「关于」里可以检查 GitHub 上的新版本。所有输入框、搜索框与弹窗使用同一套样式，设置页顶部可以搜索并直达具体设置项。
+
+## 系统要求
+
+| 项目 | 要求 |
+| --- | --- |
+| Android | 8.0（API 26）及以上 |
+| 架构 | arm64-v8a / x86_64（含常见模拟器） |
+| 存储 | Kali 与 Agent 合计数 GB，建议至少预留 10 GB |
+| 网络 | 仅模型请求需要外网；Kali 只在应用内回环运行 |
 
 ## 安装
 
 1. 从 [Releases](https://github.com/IHK-ONE/KingKang/releases/latest) 下载 `app-debug.apk`。
 2. 在手机上允许「安装未知应用」，然后安装。
 
-要求：Android 8.0 及以上，支持 arm64-v8a 与 x86_64（含常见模拟器）。Kali 与 Agent 合计会占用数 GB 空间，建议至少预留 10 GB。
-
-当前安装包使用 debug 签名，可直接覆盖安装升级。
+当前安装包使用 debug 签名，可以直接覆盖安装升级。
 
 ## 首次使用
 
@@ -82,19 +116,27 @@ API Key 只写入本机的 dsh 凭据存储，应用不会回读明文。
 
 完成后回到首页新建对话；想直接敲命令，就打开「Kali 终端」。
 
-## 使用提示
+## 使用技巧
 
-- 输入框上方可切换权限、模型与推理等级；点「停止」结束当前回合。
-- 输入 `/` 会列出可用命令与技能。
-- 长按会话可重命名、分叉、置顶或归档；长按工作区可重命名、排序或移除。
-- 切到后台再回来会自动重连；任务完成或失败可以发通知。
+- 输入 `/` 会列出可用命令与技能；输入框上方可切换权限、模型与推理等级。
+- 长按消息可以复制、引用、分支或打分；长按会话可以重命名、分叉、置顶或归档。
+- 在「工作区 → 添加」里选择 Kali 目录，之后从该工作区新建的对话会自动使用这个目录。
+- 切到后台再回来会自动重连 Agent；任务完成或失败可以收到通知。
 - 设置页顶部可搜索并直达具体设置项；「关于」里能检查应用更新。
+- 不确定某台设备能做什么时，先运行「设置 → 设备能力 → 运行环境自检」。
 
 ### 关于 PRoot 的网络限制
 
 PRoot 模式下，普通联网、HTTP、DNS 和端口连接可用；但 Android 不允许普通应用使用原始套接字、抓包和无线 monitor 模式，因此 `nmap` 的常规扫描、`tcpdump` 等工具可能无法工作。
 
 这不是 Kali 缺少工具。可以在「设置 → 设备能力 → 运行环境自检」查看这台设备实际可用的能力。若设备已自行授权 root，可在「运行方式」中切换到 chroot，能力范围会不同。
+
+## 已知限制
+
+- 默认不获取 root；PRoot 内无法使用原始套接字、抓包和无线 monitor 模式。
+- OTG 网卡需要设备内核包含对应驱动；只有驱动绑定并创建网络接口后才会显示就绪。
+- 语音与拍照功能需要系统权限，且仅在 Harness 页面内使用。
+- 当前安装包为 debug 签名，面向体验与测试。
 
 ## 常见问题
 
@@ -114,9 +156,22 @@ PRoot 模式下，普通联网、HTTP、DNS 和端口连接可用；但 Android 
 
 不会。默认始终使用 PRoot；只有设备已自行授权 root 时，才可以在设置里选用 chroot。
 
+**nmap / tcpdump 为什么用不了？**
+
+Android 的普通应用权限不允许原始套接字与抓包，即使 Kali 里已经安装了这些工具。改用 `nc`、`curl`、`bash /dev/tcp` 或 Python 的 socket 做连接测试；具体能力可在「运行环境自检」里查看。
+
 **为什么安装包是 debug 签名？**
 
 当前版本面向体验与测试，没有配置正式签名，因此可以直接覆盖安装升级。
+
+## 开发
+
+- 环境：JDK 17、Android SDK（compileSdk 34）。
+- 构建：`./gradlew assembleDebug`
+- 单元测试：`./gradlew testDebugUnitTest`
+- 发布：`scripts/release.ps1` 会构建、提取 CHANGELOG 说明，并在显式传入 `-Push` / `-Publish` 时推送标签与创建 Release。
+
+欢迎提交 Issue 与 Pull Request。
 
 ## 安全与授权
 
@@ -124,8 +179,6 @@ PRoot 模式下，普通联网、HTTP、DNS 和端口连接可用；但 Android 
 
 运行时不会连接远程 Kali，也不会上传对话或文件；Kali 是 Offensive Security 的商标，本项目与其无隶属关系。
 
-## 开发与许可
+## 许可
 
-- 构建：JDK 17 + Android SDK，运行 `./gradlew assembleDebug`。
-- 单元测试：`./gradlew testDebugUnitTest`。
-- 本项目以 [Apache License 2.0](LICENSE) 发布；随应用分发或运行的第三方组件（PRoot、Termux 运行库、Kali NetHunter、xterm.js 等）沿用各自许可，详见 [NOTICE.md](NOTICE.md)。
+本项目以 [Apache License 2.0](LICENSE) 发布。随应用分发或运行的第三方组件（PRoot、Termux 运行库、Kali NetHunter、xterm.js 等）沿用各自的许可，详见 [NOTICE.md](NOTICE.md)。
