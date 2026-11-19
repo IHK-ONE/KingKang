@@ -4782,47 +4782,50 @@ private fun AgentLoadingState(state: AgentState, modifier: Modifier = Modifier) 
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        if (stageIndex < 0) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(24.dp),
-                color = TextMuted,
-                strokeWidth = 2.dp
-            )
-            Spacer(Modifier.height(16.dp))
-        }
+        // The spinner stays at the top so the checklist below can be pure centred text.
+        CircularProgressIndicator(
+            modifier = Modifier.size(24.dp),
+            color = TextMuted,
+            strokeWidth = 2.dp
+        )
+        Spacer(Modifier.height(16.dp))
         Text(state.status, color = TextSecondary, fontSize = 14.sp)
         if (stageIndex >= 0) {
             Spacer(Modifier.height(14.dp))
-            // Each step is its own centered row: the checklist reads as one centered block
-            // instead of a left-aligned column under a centered title.
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // One centred line per stage, glyph included, so the text itself is centred on
+            // the screen instead of a left-aligned label inside a centred row.
+            Column(Modifier.fillMaxWidth()) {
                 STARTUP_STAGES.forEachIndexed { index, (_, label) ->
                     val done = index < stageIndex
                     val current = index == stageIndex
-                    Row(
-                        Modifier.padding(vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(Modifier.width(18.dp), contentAlignment = Alignment.CenterStart) {
-                            when {
-                                done -> Text("✓", color = Success, fontSize = 11.sp)
-                                current -> CircularProgressIndicator(
-                                    modifier = Modifier.size(10.dp),
-                                    color = Accent,
-                                    strokeWidth = 1.6.dp
-                                )
-                            }
-                        }
-                        Text(
-                            label,
-                            color = when {
-                                done -> TextMuted
-                                current -> TextPrimary
-                                else -> TextMuted.copy(alpha = 0.6f)
-                            },
-                            fontSize = 11.5.sp
-                        )
+                    val glyph = when {
+                        done -> "✓"
+                        current -> "•"
+                        else -> "○"
                     }
+                    val glyphColor = when {
+                        done -> Success
+                        current -> Accent
+                        else -> TextMuted.copy(alpha = 0.6f)
+                    }
+                    val labelColor = when {
+                        done -> TextMuted
+                        current -> TextPrimary
+                        else -> TextMuted.copy(alpha = 0.6f)
+                    }
+                    Text(
+                        buildAnnotatedString {
+                            withStyle(SpanStyle(color = glyphColor)) { append(glyph) }
+                            append("  ")
+                            withStyle(SpanStyle(color = labelColor)) { append(label) }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                        fontSize = 11.5.sp,
+                        lineHeight = 17.sp,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }

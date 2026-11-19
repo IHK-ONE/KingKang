@@ -1909,7 +1909,6 @@ private fun DeviceCapabilityCard(
                     .padding(horizontal = 2.dp, vertical = 4.dp)
             )
         }
-        Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = Border.copy(alpha = 0.7f))
         DeviceActionRow(
             title = "kk-adb 审计",
@@ -1920,7 +1919,6 @@ private fun DeviceCapabilityCard(
                 showAudit = true
             }
         )
-        Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = Border.copy(alpha = 0.7f))
         // An interface existing on Android is not the same as Kali being able to use it.
         // This section asks Kali's own iw for the phy and whether monitor is listed.
@@ -2009,9 +2007,7 @@ private fun DeviceCapabilityCard(
                 }
             }
         }
-        Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = Border.copy(alpha = 0.7f))
-        Spacer(Modifier.height(10.dp))
         // Kali's tools exist; what differs is what Android lets them do. Measure that
         // instead of letting the user discover it through opaque tool errors.
         DeviceActionRow(
@@ -2099,7 +2095,15 @@ private fun DeviceActionRow(
     enabled: Boolean = true,
     onClick: () -> Unit
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        // One vertical rhythm for every capability entry: the row owns its breathing room,
+        // so a one-line and a two-line description still start at the same offset and the
+        // dividers do not need per-section spacers.
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Column(Modifier.weight(1f)) {
             // These are first-level capability entries, on the same hierarchy as OTG and
             // Shizuku ADB, not secondary settings.
@@ -2107,6 +2111,7 @@ private fun DeviceActionRow(
                 title,
                 color = TextPrimary,
                 fontSize = 13.sp,
+                lineHeight = 17.sp,
                 fontWeight = FontWeight.Medium
             )
             Spacer(Modifier.height(2.dp))
