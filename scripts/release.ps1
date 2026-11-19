@@ -1,4 +1,4 @@
-# Builds the current version and, when explicitly asked, pushes the tag and publishes the
+﻿# Builds the current version and, when explicitly asked, pushes the tag and publishes the
 # GitHub release. Without -Push/-Publish it only builds and prints the exact commands.
 param(
     [switch]$Push,
