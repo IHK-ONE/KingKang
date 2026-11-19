@@ -38,8 +38,11 @@ Write-Host "说明：$notes"
 
 if ($Push) {
     git tag -f $tag
+    if ($LASTEXITCODE -ne 0) { throw "创建标签失败" }
     git push origin main
+    if ($LASTEXITCODE -ne 0) { throw "推送 main 失败，未创建 Release" }
     git push origin $tag
+    if ($LASTEXITCODE -ne 0) { throw "推送标签失败，未创建 Release" }
     Write-Host "已推送 $tag"
 } else {
     Write-Host "未推送。确认后运行：git tag $tag; git push origin main; git push origin $tag"
@@ -47,6 +50,7 @@ if ($Push) {
 
 if ($Publish) {
     gh release create $tag $apk --title "KingKang $version" --notes-file $notes --target main
+    if ($LASTEXITCODE -ne 0) { throw "创建 GitHub Release 失败" }
     Write-Host "已创建 GitHub Release $tag"
 } else {
     Write-Host "未发布。确认后运行：gh release create $tag $apk --title `"KingKang $version`" --notes-file `"$notes`" --target main"
