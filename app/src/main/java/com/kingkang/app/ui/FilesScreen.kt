@@ -157,22 +157,18 @@ fun FilesScreen(
     val workspaceSearch = state.workspaceSearch
     val fileListState = rememberLazyListState()
     val sort = FileSort.entries.firstOrNull { it.name == sortName } ?: FileSort.Name
-    // The workspace root is the floor of the browser: back/right-swipe climb one directory
-    // at a time and only leave for the home screen once this floor is reached.
-    val workspaceRoot = (root ?: listing.root).trimEnd('/').ifBlank { "/" }
-    val currentPath = listing.path.trimEnd('/').ifBlank { workspaceRoot }
-    val insideWorkspace = workspaceRoot == "/" || currentPath == workspaceRoot ||
-        currentPath.startsWith("$workspaceRoot/")
-    val upPath = if (insideWorkspace && currentPath != workspaceRoot) {
-        currentPath.substringBeforeLast('/').ifBlank { "/" }.let { parent ->
-            if (workspaceRoot == "/" || parent == workspaceRoot ||
-                parent.startsWith("$workspaceRoot/")
-            ) {
-                parent
-            } else {
-                workspaceRoot
-            }
-        }
+    // Kali's root is the floor of the browser: ".." climbs out of the workspace too, so
+    // the file page can inspect any readable path the terminal could reach.
+    val currentPath = when {
+        listing.path.isBlank() -> (listing.root.ifBlank { root ?: "/" })
+            .trimEnd('/').ifBlank { "/" }
+        // trimEnd("/") on the root itself is empty; it must stay "/", not fall back to
+        // the session cwd (which would offer a ".." that climbs out of the top level).
+        listing.path == "/" -> "/"
+        else -> listing.path.trimEnd('/')
+    }
+    val upPath = if (currentPath != "/") {
+        currentPath.substringBeforeLast('/').ifBlank { "/" }
     } else {
         null
     }
@@ -577,7 +573,7 @@ fun FilesScreen(
     if (pendingCreate != null) {
         FileNameDialog(
             title = if (pendingCreate == "folder") "新建文件夹" else "新建文件",
-            subtitle = "创建在当前目录：${listing.path.ifBlank { workspaceRoot }}",
+            subtitle = "创建在当前目录：${listing.path.ifBlank { currentPath }}",
             initialValue = createName,
             placeholder = if (pendingCreate == "folder") "文件夹名称" else "例如 notes.md",
             busy = fileBusy,

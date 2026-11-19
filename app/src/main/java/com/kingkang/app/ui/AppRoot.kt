@@ -237,7 +237,6 @@ fun KingKangApp(vm: MainViewModel = viewModel()) {
                             workspaceRenaming = false
                             workspaceRenameText = workspace.displayTitle
                             workspaceDeleting = false
-                            scope.launch { drawerState.close() }
                         }
                     )
                 }
@@ -583,6 +582,8 @@ private fun KingKangDrawer(
     // the transcript a strip of scrim to tap instead of covering the whole window.
     val windowWidth = LocalConfiguration.current.screenWidthDp.dp
     val drawerWidth = minOf(304.dp, windowWidth - 56.dp).coerceAtLeast(248.dp)
+    // Archived chats are out of the way by default; the header remembers the choice.
+    var archivedCollapsed by rememberSaveable { mutableStateOf(false) }
 
     ModalDrawerSheet(
         modifier = Modifier
@@ -616,14 +617,6 @@ private fun KingKangDrawer(
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 1.8.sp
                 )
-                IconButton(onClick = onOpenSettings) {
-                    Icon(
-                        Icons.Filled.Settings,
-                        contentDescription = "设置",
-                        tint = TextSecondary,
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
             }
             Spacer(Modifier.height(8.dp))
 
@@ -840,20 +833,27 @@ private fun KingKangDrawer(
 
                     if (archived.isNotEmpty()) {
                         item(key = "archived:label") {
-                            DrawerSectionLabel(
-                                "已归档",
-                                // dsh 0.2.x has no delete RPC; the drawer says where the
-                                // conversation actually lives instead of offering a fake
-                                // delete that would silently do nothing.
-                                trailing = "${archived.size} 个 · dsh 暂不支持删除"
-                            )
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { archivedCollapsed = !archivedCollapsed }
+                            ) {
+                                DrawerSectionLabel(
+                                    "已归档",
+                                    trailing = "${archived.size} 个 · 点按" +
+                                        if (archivedCollapsed) "展开" else "收起"
+                                )
+                            }
                         }
-                        items(archived, key = { "archived:${it.id}" }) { session ->
-                            ArchivedRow(
-                                session = session,
-                                onClick = { vm.unarchiveChat(session.id) },
-                                onLongClick = { onArchivedLongPress(session) }
-                            )
+                        if (!archivedCollapsed) {
+                            items(archived, key = { "archived:${it.id}" }) { session ->
+                                ArchivedRow(
+                                    session = session,
+                                    onClick = { vm.unarchiveChat(session.id) },
+                                    onLongClick = { onArchivedLongPress(session) }
+                                )
+                            }
                         }
                     }
 

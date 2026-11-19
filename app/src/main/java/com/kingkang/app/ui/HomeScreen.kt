@@ -932,8 +932,19 @@ private fun ConversationBody(
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
+    // A fast history read used to flash the skeleton for a frame or two on every switch.
+    // Keep the previous surface until the read has lasted long enough to be worth showing.
+    var showLoadingState by remember(state.transcriptLoadingSince) { mutableStateOf(false) }
+    LaunchedEffect(state.transcriptLoading, state.transcriptLoadingSince) {
+        if (!state.transcriptLoading) {
+            showLoadingState = false
+            return@LaunchedEffect
+        }
+        delay(600)
+        showLoadingState = state.transcriptLoading
+    }
     Box(modifier) {
-        if (state.items.isEmpty() && state.transcriptLoading) {
+        if (state.items.isEmpty() && state.transcriptLoading && showLoadingState) {
             // A session's history is on its way. Showing the first-run page here would be
             // wrong and visibly stuck; skeletons plus a real elapsed counter say what is
             // happening, and the cancel action keeps a slow host from trapping the user.
@@ -941,6 +952,9 @@ private fun ConversationBody(
                 startedAt = state.transcriptLoadingSince,
                 onCancel = vm::cancelTranscriptLoad
             )
+        } else if (state.items.isEmpty() && state.transcriptLoading) {
+            // Still inside the grace window: the first-run page would be a lie here.
+            Box(Modifier.fillMaxSize())
         } else if (state.items.isEmpty() && state.transcriptCancelled) {
             TranscriptCancelledState(onReload = vm::reloadTranscript)
         } else if (state.items.isEmpty()) {

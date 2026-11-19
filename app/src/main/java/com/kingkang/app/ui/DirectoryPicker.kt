@@ -82,15 +82,26 @@ fun DirectoryPickerDialog(
     val listState = rememberLazyListState()
     var newFolder by remember { mutableStateOf(false) }
     var folderName by remember { mutableStateOf("") }
-    var pathInput by remember { mutableStateOf("") }
+    // The current-directory card is the path editor: there is no second input row.
+    var pathDraft by remember(current) { mutableStateOf(current) }
     var pathError by remember { mutableStateOf(false) }
     val parent = listing.parent
     val canPick = listing.path.isNotBlank() && !listing.loading && listing.error == null
 
+    fun submitPath() {
+        val target = normalizePathInput(pathDraft).trim()
+        if (target.startsWith("/")) {
+            onBrowse(target)
+            pathError = false
+        } else {
+            pathError = true
+        }
+    }
+
     KkDialog(onDismiss = onDismiss, padding = PaddingValues(20.dp)) {
         KkDialogTitle(
             title = "选择工作区目录",
-            subtitle = "点目录进入下一层，选好后用底部按钮确认",
+            subtitle = "点路径可直接输入并跳转，或点目录逐层进入",
             onDismiss = onDismiss
         )
         Spacer(Modifier.height(12.dp))
@@ -102,21 +113,44 @@ fun DirectoryPickerDialog(
                 .background(SurfaceVariant)
                 .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
-            Text("当前目录", color = TextMuted, fontSize = 9.5.sp)
-            Spacer(Modifier.height(2.dp))
+            Text("当前目录 · 可直接输入", color = TextMuted, fontSize = 9.5.sp)
+            Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    current,
-                    modifier = Modifier.weight(1f),
-                    color = TextPrimary,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.5.sp,
-                    lineHeight = 17.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                BasicTextField(
+                    value = pathDraft,
+                    onValueChange = {
+                        pathDraft = normalizePathInput(it).take(200)
+                        pathError = false
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Ascii,
+                        imeAction = ImeAction.Go
+                    ),
+                    keyboardActions = KeyboardActions(onGo = { submitPath() }),
+                    textStyle = TextStyle(
+                        color = TextPrimary,
+                        fontSize = 12.5.sp,
+                        lineHeight = 17.sp,
+                        fontFamily = FontFamily.Monospace,
+                        platformStyle = CompactInputPlatformStyle
+                    ),
+                    cursorBrush = SolidColor(Accent),
+                    modifier = Modifier.weight(1f).keyboardLift()
                 )
-                if (parent != null) {
-                    Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(8.dp))
+                if (pathDraft.trim() != current) {
+                    Text(
+                        "前往",
+                        color = if (listing.loading) TextMuted else Accent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = !listing.loading) { submitPath() }
+                            .padding(horizontal = 6.dp, vertical = 5.dp)
+                    )
+                } else if (parent != null) {
                     Text(
                         "↑ 上一级",
                         color = Accent,
@@ -127,89 +161,6 @@ fun DirectoryPickerDialog(
                             .padding(horizontal = 6.dp, vertical = 5.dp)
                     )
                 }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(SurfaceRaised)
-                    .border(1.dp, Border, RoundedCornerShape(9.dp))
-                    .padding(horizontal = 10.dp, vertical = 8.dp)
-            ) {
-                BasicTextField(
-                    value = pathInput,
-                    onValueChange = {
-                        pathInput = normalizePathInput(it).take(200)
-                        pathError = false
-                    },
-                    singleLine = true,
-                    // A Chinese IME otherwise converts letters typed after "/" into pinyin
-                    // words, which looks like the field is fighting the user. Asking for an
-                    // ASCII keyboard keeps the punctuation a path needs.
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Ascii,
-                        imeAction = ImeAction.Go
-                    ),
-                    keyboardActions = KeyboardActions(
-                        onGo = {
-                            val target = normalizePathInput(pathInput).trim()
-                            if (target.startsWith("/")) {
-                                onBrowse(target)
-                                pathInput = ""
-                                pathError = false
-                            } else {
-                                pathError = true
-                            }
-                        }
-                    ),
-                    textStyle = TextStyle(
-                        color = TextPrimary,
-                        fontSize = 12.sp,
-                        lineHeight = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        platformStyle = CompactInputPlatformStyle
-                    ),
-                    cursorBrush = SolidColor(Accent),
-                    modifier = Modifier.fillMaxWidth().keyboardLift(),
-                    decorationBox = { inner ->
-                        if (pathInput.isEmpty()) {
-                            Text(
-                                "跳转到路径，例如 /root/tools",
-                                color = TextMuted,
-                                fontSize = 12.sp,
-                                lineHeight = 12.sp,
-                                style = TextStyle(platformStyle = CompactInputPlatformStyle)
-                            )
-                        }
-                        inner()
-                    }
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            TextButton(
-                onClick = {
-                    val target = normalizePathInput(pathInput).trim()
-                    if (target.startsWith("/")) {
-                        onBrowse(target)
-                        pathInput = ""
-                        pathError = false
-                    } else {
-                        pathError = true
-                    }
-                },
-                enabled = pathInput.isNotBlank() && !listing.loading,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Text(
-                    "前往",
-                    color = if (pathInput.isNotBlank() && !listing.loading) Accent else TextMuted,
-                    fontSize = 11.5.sp,
-                    fontWeight = FontWeight.Medium
-                )
             }
         }
         if (pathError) {

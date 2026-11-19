@@ -104,6 +104,12 @@ object AgentEngine {
     private val eventMutex = Mutex()
 
     private var historyLoadingFor: String? = null
+    /**
+     * Session whose transcript was already read once (success, failure or cancel). A
+     * background `session.added` refresh must not re-open an empty chat and flash the
+     * loading skeleton again; only a real switch or a reconnect reloads it.
+     */
+    private var transcriptLoadedFor: String? = null
     /** Session whose transcript failed to load, so a reconnect can retry it once. */
     private var historyLoadFailedFor: String? = null
     /** Recovery notice held back while the transcript reload wipes the transcript. */
@@ -1011,7 +1017,9 @@ object AgentEngine {
             ?: live.firstOrNull()
         if (target == null) {
             requestCreateSession()
-        } else if (forceReloadActive || target.id != current.activeSessionId || current.items.isEmpty()) {
+        } else if (forceReloadActive || target.id != current.activeSessionId ||
+            (current.items.isEmpty() && transcriptLoadedFor != target.id)
+        ) {
             activateSession(target.id, forceLoad = true)
         }
     }
@@ -2131,19 +2139,22 @@ object AgentEngine {
             notifyState("先打开一个对话")
             return
         }
-        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() } ?: run {
+        val sessionCwd = state.activeSession?.cwd?.takeIf { it.isNotBlank() } ?: run {
             notifyState("这个对话没有工作目录")
             return
         }
+        // The file page browses the whole Kali root: "/" is the floor, so any directory
+        // can be reached with "..". The bridge still refuses system pseudo-filesystems.
+        val browseRoot = "/"
         val target = path?.takeIf { it.isNotBlank() }
             ?: state.fileListing.path.takeIf { it.isNotBlank() }
-            ?: root
+            ?: sessionCwd
         _state.update { it.copy(fileListing = it.fileListing.copy(loading = true, error = null)) }
         scope.launch {
             val result = try {
                 client.callObject(
                     "workspace.files",
-                    JSONObject().put("root", root).put("path", target),
+                    JSONObject().put("root", browseRoot).put("path", target),
                     25_000
                 )
             } catch (t: Throwable) {
@@ -2173,7 +2184,7 @@ object AgentEngine {
             _state.update {
                 it.copy(
                     fileListing = AgentFileListing(
-                        root = result.optString("root").ifBlank { root },
+                        root = result.optString("root").ifBlank { browseRoot },
                         path = result.optString("path").ifBlank { target },
                         parent = result.optString("parent").takeIf { parent -> parent.isNotBlank() },
                         entries = entries,
@@ -2201,15 +2212,16 @@ object AgentEngine {
         }
         val state = _state.value
         val sessionId = state.activeSessionId
-        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() }
         val directory = state.fileListing.path.takeIf { it.isNotBlank() }
-        if (sessionId == null || root == null || directory == null) {
+        if (sessionId == null || state.activeSession?.cwd.isNullOrBlank() || directory == null) {
             scope.launch {
                 withContext(Dispatchers.Main) { onDone("这个对话没有可写的工作目录") }
             }
             return
         }
-        params.put("root", root)
+        // The file page writes anywhere the browser can go; the bridge still refuses
+        // pseudo-filesystems and the root itself.
+        params.put("root", "/")
         params.put("directory", directory)
         // workspace.mkdir names its target parent; the other writes use `directory`.
         params.put("parent", directory)
@@ -2230,11 +2242,11 @@ object AgentEngine {
         val client = bridge ?: return
         val state = _state.value
         val sessionId = state.activeSessionId ?: return
-        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() } ?: return
+        val browseRoot = "/"
         val result = try {
             client.callObject(
                 "workspace.files",
-                JSONObject().put("root", root).put("path", path),
+                JSONObject().put("root", browseRoot).put("path", path),
                 15_000
             )
         } catch (t: Throwable) {
@@ -2264,7 +2276,7 @@ object AgentEngine {
         _state.update {
             it.copy(
                 fileListing = AgentFileListing(
-                    root = result.optString("root").ifBlank { root },
+                    root = result.optString("root").ifBlank { browseRoot },
                     path = result.optString("path").ifBlank { path },
                     parent = result.optString("parent").takeIf { parent -> parent.isNotBlank() },
                     entries = entries,
@@ -2307,9 +2319,8 @@ object AgentEngine {
         }
         val state = _state.value
         val sessionId = state.activeSessionId
-        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() }
         val directory = state.fileListing.path.takeIf { it.isNotBlank() }
-        if (sessionId == null || root == null || directory == null) {
+        if (sessionId == null || state.activeSession?.cwd.isNullOrBlank() || directory == null) {
             scope.launch {
                 withContext(Dispatchers.Main) { onDone("这个对话没有可写的工作目录") }
             }
@@ -2322,7 +2333,7 @@ object AgentEngine {
                     client.callObject(
                         "workspace.importFile",
                         JSONObject()
-                            .put("root", root)
+                            .put("root", "/")
                             .put("directory", directory)
                             .put("staged", guest)
                             .put("name", name),
@@ -2404,7 +2415,7 @@ object AgentEngine {
         val client = bridge ?: return
         val state = _state.value
         val sessionId = state.activeSessionId ?: return
-        val root = state.activeSession?.cwd?.takeIf { it.isNotBlank() } ?: run {
+        if (state.activeSession?.cwd.isNullOrBlank()) {
             notifyState("这个对话没有工作目录")
             return
         }
@@ -2413,7 +2424,8 @@ object AgentEngine {
             val result = try {
                 client.callObject(
                     "workspace.readFile",
-                    JSONObject().put("root", root).put("path", path),
+                    // Same floor as the browser: the preview may be outside the workspace.
+                    JSONObject().put("root", "/").put("path", path),
                     40_000
                 )
             } catch (t: Throwable) {
@@ -2574,6 +2586,7 @@ object AgentEngine {
                 if (token == loadToken && historyLoadingFor == id) {
                     historyLoadingFor = null
                     historyLoadFailedFor = id
+                    transcriptLoadedFor = id
                     _state.update { it.copy(transcriptLoading = false) }
                     // A reconnect reloads the transcript on recovery (see stream.recovered),
                     // so an outage here is not something the user has to act on.
@@ -2670,6 +2683,7 @@ object AgentEngine {
             // leaving `historyLoadingFor` set on an older page would block every later
             // `loadOlder()` and strand the frames that arrived meanwhile.
             historyLoadingFor = null
+            transcriptLoadedFor = id
             val buffered = bufferedLiveEvents.toList()
             bufferedLiveEvents.clear()
             buffered.forEach { handleSessionEventLocked(it) }
@@ -3499,6 +3513,7 @@ object AgentEngine {
      * keep their caches so restoring a chat still paints instantly.
      */
     private fun releaseSessionCaches(id: String) {
+        if (transcriptLoadedFor == id) transcriptLoadedFor = null
         synchronized(transcriptCache) { transcriptCache.remove(id) }
         synchronized(capabilityNotesSent) { capabilityNotesSent.remove(id) }
         _state.update { state ->
@@ -6533,9 +6548,10 @@ object AgentEngine {
      * cached tail (if any) and a reload action instead of a spinner that never ends.
      */
     fun cancelTranscriptLoad() {
-        if (_state.value.activeSessionId == null) return
+        val id = _state.value.activeSessionId ?: return
         loadToken += 1
         historyLoadingFor = null
+        transcriptLoadedFor = id
         _state.update {
             if (it.transcriptLoading) {
                 it.copy(transcriptLoading = false, transcriptCancelled = true)

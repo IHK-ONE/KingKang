@@ -170,12 +170,10 @@ fun SettingsScreen(
         mutableStateOf(SettingsStore(context).taskNotificationsEnabled)
     }
     var notificationsAllowed by remember { mutableStateOf(TaskNotifications.permitted(context)) }
-    var testNotificationNote by remember { mutableStateOf<String?>(null) }
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         notificationsAllowed = granted && TaskNotifications.permitted(context)
-        testNotificationNote = if (notificationsAllowed) null else "通知权限未授予。"
     }
     val credentialsAnchor = remember { BringIntoViewRequester() }
     val appearanceAnchor = remember { BringIntoViewRequester() }
@@ -640,35 +638,7 @@ fun SettingsScreen(
                         ) {
                             Text("授权", fontSize = 11.sp)
                         }
-                    } else {
-                        OutlinedButton(
-                            onClick = {
-                                notificationsAllowed = TaskNotifications.permitted(context)
-                                testNotificationNote = TaskNotifications.sendTest(context)
-                                if (testNotificationNote == null) {
-                                    testNotificationNote = "已发送测试通知。"
-                                }
-                            },
-                            shape = RoundedCornerShape(11.dp),
-                            border = BorderStroke(1.dp, Border),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                            modifier = Modifier.height(32.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = TextSecondary
-                            )
-                        ) {
-                            Text("发送测试", fontSize = 11.sp)
-                        }
                     }
-                }
-                testNotificationNote?.let { note ->
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        note,
-                        color = if (note.startsWith("已发送")) Success else Amber,
-                        fontSize = 10.5.sp,
-                        lineHeight = 15.sp
-                    )
                 }
             }
 
@@ -1941,64 +1911,26 @@ private fun DeviceCapabilityCard(
         }
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = Border.copy(alpha = 0.7f))
-        Row(
-            Modifier.padding(top = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("kk-adb 审计", color = TextSecondary, fontSize = 11.5.sp)
-                Text(
-                    "记录 AI 执行过的设备端命令，只保存在本机，最多 200 条。",
-                    color = TextMuted,
-                    fontSize = 10.sp,
-                    lineHeight = 14.sp
-                )
+        DeviceActionRow(
+            title = "kk-adb 审计",
+            detail = "记录 AI 执行过的设备端命令，只保存在本机，最多 200 条。",
+            action = "查看",
+            onClick = {
+                auditEntries = DeviceAudit.read(context)
+                showAudit = true
             }
-            Text(
-                "查看",
-                color = Accent,
-                fontSize = 11.sp,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(7.dp))
-                    .clickable {
-                        auditEntries = DeviceAudit.read(context)
-                        showAudit = true
-                    }
-                    .padding(horizontal = 6.dp, vertical = 4.dp)
-            )
-        }
+        )
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = Border.copy(alpha = 0.7f))
-        Spacer(Modifier.height(10.dp))
         // An interface existing on Android is not the same as Kali being able to use it.
         // This section asks Kali's own iw for the phy and whether monitor is listed.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "Kali 无线能力",
-                    color = TextPrimary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "在 Kali 内读取 iw 的接口与 phy；只有驱动与内核都支持时才会显示 monitor 模式。",
-                    color = TextMuted,
-                    fontSize = 10.5.sp,
-                    lineHeight = 15.sp
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "检测",
-                color = if (wifiProbe.loading) TextMuted else Accent,
-                fontSize = 11.sp,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(7.dp))
-                    .clickable(enabled = !wifiProbe.loading, onClick = onProbeWifi)
-                    .padding(horizontal = 6.dp, vertical = 4.dp)
-            )
-        }
+        DeviceActionRow(
+            title = "Kali 无线能力",
+            detail = "在 Kali 内读取 iw 的接口与 phy；只有驱动与内核都支持时才会显示 monitor 模式。",
+            action = if (wifiProbe.loading) "检测中…" else "检测",
+            enabled = !wifiProbe.loading,
+            onClick = onProbeWifi
+        )
         if (wifiProbe.loading) {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2082,33 +2014,13 @@ private fun DeviceCapabilityCard(
         Spacer(Modifier.height(10.dp))
         // Kali's tools exist; what differs is what Android lets them do. Measure that
         // instead of letting the user discover it through opaque tool errors.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "运行环境自检",
-                    color = TextPrimary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "检查 PRoot 实际可用的网络能力；结果只代表这台设备当前的内核权限。",
-                    color = TextMuted,
-                    fontSize = 10.5.sp,
-                    lineHeight = 15.sp
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "检测",
-                color = if (envProbe.loading) TextMuted else Accent,
-                fontSize = 11.sp,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(7.dp))
-                    .clickable(enabled = !envProbe.loading, onClick = onProbeEnvironment)
-                    .padding(horizontal = 6.dp, vertical = 4.dp)
-            )
-        }
+        DeviceActionRow(
+            title = "运行环境自检",
+            detail = "检查 PRoot 实际可用的网络能力；结果只代表这台设备当前的内核权限。",
+            action = if (envProbe.loading) "检测中…" else "检测",
+            enabled = !envProbe.loading,
+            onClick = onProbeEnvironment
+        )
         if (envProbe.loading) {
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2174,6 +2086,34 @@ private fun DeviceCapabilityCard(
                 auditEntries = emptyList()
             },
             onDismiss = { showAudit = false }
+        )
+    }
+}
+
+/** One secondary device row; all three sub-tools use the same hierarchy and action style. */
+@Composable
+private fun DeviceActionRow(
+    title: String,
+    detail: String,
+    action: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = TextSecondary, fontSize = 11.5.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(detail, color = TextMuted, fontSize = 10.sp, lineHeight = 14.sp)
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            action,
+            color = if (enabled) Accent else TextMuted,
+            fontSize = 10.5.sp,
+            modifier = Modifier
+                .clip(RoundedCornerShape(7.dp))
+                .clickable(enabled = enabled, onClick = onClick)
+                .padding(horizontal = 6.dp, vertical = 4.dp)
         )
     }
 }

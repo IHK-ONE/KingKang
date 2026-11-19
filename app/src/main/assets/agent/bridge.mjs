@@ -3331,6 +3331,11 @@ function listWorkspaceFiles(rawRoot, rawPath) {
   const entries = [];
   for (const entry of dirents) {
     const full = posixPath.join(path, entry.name);
+    // The file page can walk to "/", where pseudo-filesystems would otherwise appear
+    // as rows that every read refuses. Hide them instead of advertising dead entries.
+    if (BROWSE_DENY.some((prefix) => full === prefix || full.startsWith(`${prefix}/`))) {
+      continue;
+    }
     let info = null;
     try {
       info = lstatSync(full);

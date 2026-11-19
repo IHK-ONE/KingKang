@@ -23,7 +23,6 @@ import com.kingkang.app.R
 object TaskNotifications {
 
     const val CHANNEL_ID = "kingkang_tasks"
-    private const val TEST_ID = 0x4b50
 
     /** Whether Android would actually show a notification right now. */
     fun permitted(context: Context): Boolean {
@@ -116,24 +115,4 @@ object TaskNotifications {
         }.getOrDefault(false)
     }
 
-    /**
-     * Posts a sample through the same builder. Returns null on success, or the reason the
-     * user needs to fix first; the settings card shows that sentence verbatim.
-     */
-    fun sendTest(context: Context): String? {
-        if (!permitted(context)) {
-            return "系统通知权限未开启。请允许 KingKang 发送通知后再试。"
-        }
-        val posted = post(
-            context = context,
-            key = "test-notification",
-            title = "KingKang 测试通知",
-            text = "通知正常。后台任务完成后会以同样的方式提醒你。",
-            sessionId = null,
-            isError = false
-        )
-        return if (posted) null else "系统拒绝了这次通知，请在系统设置中检查 KingKang 的通知权限。"
-    }
-
-    internal fun testNotificationId(): Int = TEST_ID
 }
