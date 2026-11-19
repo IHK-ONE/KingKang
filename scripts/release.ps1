@@ -24,13 +24,22 @@ if ($LASTEXITCODE -ne 0) { throw "构建或测试失败" }
 $apk = "app/build/outputs/apk/debug/app-debug.apk"
 if (-not (Test-Path $apk)) { throw "找不到 $apk" }
 
-$changelog = Get-Content CHANGELOG.md -Raw
+# Read and write UTF-8 explicitly: Windows PowerShell's default ANSI decoding turns the
+# Chinese changelog into mojibake before it reaches the release body.
+$changelog = [System.IO.File]::ReadAllText(
+    (Join-Path $root "CHANGELOG.md"),
+    [System.Text.Encoding]::UTF8
+)
 $pattern = "(?s)##\s+$([regex]::Escape($version)).*?(?=\r?\n##\s|\z)"
 $section = [regex]::Match($changelog, $pattern).Value.Trim()
 if (-not $section) { $section = "## KingKang $version" }
 $notes = Join-Path $root "build/release-notes-$version.md"
 New-Item -ItemType Directory -Force (Split-Path $notes) | Out-Null
-$section | Set-Content -Path $notes -Encoding utf8
+[System.IO.File]::WriteAllText(
+    $notes,
+    $section,
+    (New-Object System.Text.UTF8Encoding($false))
+)
 
 $tag = "v$version"
 Write-Host "APK：$apk"
