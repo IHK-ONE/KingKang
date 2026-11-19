@@ -18,7 +18,16 @@ data class AgentSession(
     val presetId: String? = null
 ) {
     val displayTitle: String
-        get() = title.ifBlank { if (blank) "新对话" else "未命名对话" }
+        get() {
+            // dsh titles a session from its first prompt, and the app appends a capability
+            // note to that prompt. A short first message can leave "[KingKang 环境]…" (or
+            // its truncated form) in the title; cut it before showing the name.
+            val cleaned = title
+                // DOTALL: the note spans a newline ("...环境]\n当前设备能力…").
+                .replace(Regex("(?s)\\s*\\[(?:Ki|KingKang).*"), "")
+                .trim()
+            return cleaned.ifBlank { if (blank) "新对话" else "未命名对话" }
+        }
 }
 
 enum class AgentConnection {
